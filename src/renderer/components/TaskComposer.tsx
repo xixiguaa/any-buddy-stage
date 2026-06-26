@@ -1,0 +1,1218 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Input, Select, Button, Space, Divider, Popover, Checkbox, Tooltip, Modal, Tag } from 'antd'
+import {
+  PlusOutlined,
+  SendOutlined,
+  SlidersOutlined,
+  LinkOutlined,
+  FolderOpenOutlined,
+  FileTextOutlined,
+  SettingOutlined,
+  InfoCircleOutlined,
+  CloseOutlined,
+  RightOutlined,
+  CompassOutlined
+} from '@ant-design/icons'
+import type { CreateTaskInput, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
+import { useAppStore } from '../stores/app-store.js'
+import { useNavigate } from 'react-router-dom'
+
+// Custom icons matching the user's screenshot
+const CraftIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 12 }}>
+    <path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M16 8L2 22" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M17.5 15H9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    {/* Sparkle star */}
+    <path d="M19 3h.01M22 6h.01M16 6h.01" fill="currentColor" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+)
+
+const AskIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 12 }}>
+    <path d="M21 11.5C21 16.1944 16.9706 20 12 20C10.4289 20 8.95663 19.5969 7.68367 18.8911L3 20L4.25417 15.8236C3.4687 14.5772 3 13.0984 3 11.5C3 6.80558 7.02944 3 12 3C16.9706 3 21 6.80558 21 11.5Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M9 11.5C9.5 12.5 14.5 12.5 15 11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+)
+
+const PlanIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 12 }}>
+    <rect x="5" y="4" width="14" height="16" rx="2" stroke="currentColor" strokeWidth="1.8" />
+    <path d="M9 2H15V5H9V2Z" fill="currentColor" stroke="currentColor" strokeWidth="1" />
+    <path d="M9 9H15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M9 13H15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    <path d="M9 17H13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+)
+
+const ExpertIcon = ({ color = '#475569' }: { color?: string }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 12 }}>
+    <circle cx="12" cy="13" r="7" stroke={color} strokeWidth="1.8" />
+    <circle cx="9.5" cy="12.5" r="1" fill={color} />
+    <circle cx="14.5" cy="12.5" r="1" fill={color} />
+    <path d="M10.5 15.5C11 16 13 16 13.5 15.5" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M12 6C12 4.5 14 3.5 15 4.5C16 5.5 14.5 7 12 7C10.5 7 9 8 9 9.5" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+)
+
+const CheckIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginRight: 8, color: '#0f172a' }}>
+    <path d="M20 6L9 17L4 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
+const BoyAvatar = () => (
+  <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="16" cy="16" r="16" fill="#E0F2FE" />
+    <path d="M9 16C9 11 11 9 16 9C21 9 23 11 23 16V18H9V16Z" fill="#1E293B" />
+    <circle cx="16" cy="17" r="6" fill="#FED7AA" />
+    <path d="M10 13C12 10 20 10 22 13C20 11 12 11 10 13Z" fill="#1E293B" />
+    <path d="M9 12C10.5 10 14 10 15 12C16 10 19.5 10 21 12C20 9 11 9 9 12Z" fill="#1E293B" />
+    <circle cx="14" cy="16.5" r="0.8" fill="#1E293B" />
+    <circle cx="18" cy="16.5" r="0.8" fill="#1E293B" />
+    <path d="M14.5 19C15 19.5 17 19.5 17.5 19" stroke="#1E293B" strokeWidth="0.8" strokeLinecap="round" />
+    <circle cx="12.5" cy="17.8" r="0.6" fill="#FCA5A5" />
+    <circle cx="19.5" cy="17.8" r="0.6" fill="#FCA5A5" />
+    <circle cx="25" cy="25" r="5" fill="#22C55E" stroke="#FFFFFF" strokeWidth="1" />
+    <path d="M23.5 24.5C23.5 23.7 24.2 23 25 23C25.8 23 26.5 23.7 26.5 24.5C26.5 25.3 25.8 26 25 26C24.7 26 24.5 25.9 24.3 25.8L23.5 26.2L23.7 25.4C23.6 25.1 23.5 24.8 23.5 24.5Z" fill="white" />
+  </svg>
+)
+
+const MeituanAvatar = () => (
+  <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="16" cy="16" r="16" fill="#FEF08A" />
+    <path d="M12 12C11 7 13 4 14 5C15 6 14.5 9 14 12" fill="#FACC15" stroke="#EAB308" strokeWidth="0.5" />
+    <path d="M20 12C21 7 19 4 18 5C17 6 17.5 9 18 12" fill="#FACC15" stroke="#EAB308" strokeWidth="0.5" />
+    <circle cx="16" cy="17" r="7" fill="#FACC15" />
+    <ellipse cx="16" cy="18.5" rx="3.5" ry="2.2" fill="#FFFFFF" />
+    <ellipse cx="14" cy="16" rx="0.8" ry="1.2" fill="#1E293B" />
+    <ellipse cx="18" cy="16" rx="0.8" ry="1.2" fill="#1E293B" />
+    <circle cx="16" cy="17.8" r="0.6" fill="#1E293B" />
+    <path d="M15 19C15.5 19.5 16.5 19.5 17 19" stroke="#1E293B" strokeWidth="0.6" strokeLinecap="round" />
+  </svg>
+)
+
+const getExpertAvatar = (name: string) => {
+  if (name === '微信小程序开发者') return <BoyAvatar />
+  if (name === '美团生活助手') return <MeituanAvatar />
+  return <BoyAvatar />
+}
+
+const MODE_OPTIONS: CreateTaskInput['mode'][] = ['ask', 'plan', 'craft']
+
+export default function TaskComposer({
+  workspaces,
+  onCreate,
+  onSend,
+  defaultWorkspaceId,
+  draft,
+  onDraftChange,
+  onClearDraft,
+  onPickWorkspace,
+  hideWorkspacePicker = false,
+  hideTitle = false,
+  buttonLabel
+}: {
+  workspaces: WorkspaceSummary[]
+  onCreate?: (input: CreateTaskInput, initialMessage: string) => Promise<void>
+  onSend?: (content: string, options: {
+    mode: CreateTaskInput['mode']
+    modelId: string
+    skillIds: string[]
+    connectorIds: string[]
+    permissionMode: 'default' | 'full_access'
+  }) => Promise<void>
+  defaultWorkspaceId?: string
+  draft?: TaskDraft
+  onDraftChange?: (draft: Omit<TaskDraft, 'taskId' | 'updatedAt'>) => Promise<void> | void
+  onClearDraft?: () => Promise<void> | void
+  onPickWorkspace?: () => Promise<WorkspaceSummary | undefined> | WorkspaceSummary | undefined
+  hideWorkspacePicker?: boolean
+  hideTitle?: boolean
+  buttonLabel?: string
+}) {
+  const navigate = useNavigate()
+  const workspaceOptions = useMemo(() => workspaces.filter(workspace => !workspace.isArchived), [workspaces])
+  const [title, setTitle] = useState('未命名任务')
+  const [message, setMessage] = useState(draft?.content ?? '')
+  const [mode, setMode] = useState<CreateTaskInput['mode']>('plan')
+  const [modelId, setModelId] = useState('local-preview')
+  const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? workspaceOptions[0]?.id ?? '')
+  const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
+  const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || 'frontend-design, ipc-design')
+  const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
+  const [permissionMode, setPermissionMode] = useState<'default' | 'full_access'>('default')
+  const [busy, setBusy] = useState(false)
+
+  // Popover visible states
+  const [showModePopover, setShowModePopover] = useState(false)
+  const [showModelPopover, setShowModelPopover] = useState(false)
+  const [showSkillsPopover, setShowSkillsPopover] = useState(false)
+  const [showConnectorPopover, setShowConnectorPopover] = useState(false)
+  const [showAttachPopover, setShowAttachPopover] = useState(false)
+  const [showPermissionPopover, setShowPermissionPopover] = useState(false)
+  const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null)
+  const [showRecentExperts, setShowRecentExperts] = useState(false)
+  const [expertSelected, setExpertSelected] = useState(false)
+
+  // Search filter states
+  const [skillSearch, setSkillSearch] = useState('')
+  const [wsSearch, setWsSearch] = useState('')
+
+  // Local model add state
+  const [addingModel, setAddingModel] = useState(false)
+  const [newModelName, setNewModelName] = useState('')
+  const [newModelEndpoint, setNewModelEndpoint] = useState('')
+  const [newModelKey, setNewModelKey] = useState('')
+  const [selectedModelId, setSelectedModelId] = useState('') // This is used to store manually entered Model ID
+
+  // Import custom skills locally
+  const [customSkills, setCustomSkills] = useState<string[]>([])
+
+  const customModels = useAppStore(state => state.customModels)
+  const saveCustomModels = useAppStore(state => state.saveCustomModels)
+  const summonedExpert = useAppStore(state => state.summonedExpert)
+  const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
+
+  useEffect(() => {
+    if (!workspaceId && workspaceOptions[0]) {
+      setWorkspaceId(workspaceOptions[0].id)
+    }
+  }, [workspaceId, workspaceOptions])
+
+  useEffect(() => {
+    if (summonedExpert) {
+      if (onCreate) {
+        setExpertSelected(true)
+      } else {
+        setExpertSelected(false)
+      }
+    }
+  }, [summonedExpert, onCreate])
+
+  useEffect(() => {
+    if (!draft) {
+      return
+    }
+    setMessage(draft.content)
+    setSkills(draft.selectedSkillIds.join(', '))
+    setConnectors(draft.selectedConnectorIds.join(', '))
+  }, [draft])
+
+  useEffect(() => {
+    onDraftChange?.({
+      content: message,
+      selectedSkillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
+      selectedConnectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+    })
+  }, [connectors, message, onDraftChange, skills])
+
+  async function handlePickWorkspace() {
+    const workspace = await onPickWorkspace?.()
+    if (!workspace) {
+      return
+    }
+    setWorkspaceId(workspace.id)
+  }
+
+  async function handleSubmit() {
+    const initialMessage = message.trim()
+    if (!initialMessage) return
+    setBusy(true)
+    try {
+      if (onSend) {
+        await onSend(initialMessage, {
+          mode,
+          modelId,
+          skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
+          connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+          permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
+        })
+      } else if (onCreate) {
+        const taskTitle = title.trim() || initialMessage.split('\n')[0]?.slice(0, 80) || '未命名任务'
+        await onCreate(
+          {
+            title: taskTitle,
+            mode,
+            modelId,
+            workspaceId: workspaceId || undefined,
+            additionalWorkspaceIds: attachedWorkspaceIds,
+            permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
+            connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+            skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
+          },
+          initialMessage,
+        )
+      }
+      await onClearDraft?.()
+      setMessage('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void handleSubmit()
+    }
+  }
+
+  const selectedSkillsList = useMemo(() => skills.split(',').map(s => s.trim()).filter(Boolean), [skills])
+  const selectedConnectorsList = useMemo(() => connectors.split(',').map(c => c.trim()).filter(Boolean), [connectors])
+
+  const builtInModels = [
+    { label: 'local-preview', value: 'local-preview' },
+    { label: 'gemini-3.5-flash', value: 'gemini-3.5-flash' },
+    { label: 'gemini-3.5-pro', value: 'gemini-3.5-pro' },
+    { label: 'claude-3.5-sonnet', value: 'claude-3.5-sonnet' }
+  ]
+
+  const allModels = useMemo(() => {
+    return [
+      ...builtInModels.map(m => ({ ...m, isCustom: false })),
+      ...customModels.map(m => ({ label: `${m.name} (自建)`, value: m.name, isCustom: true }))
+    ]
+  }, [customModels])
+
+  const availableSkills = useMemo(() => {
+    const base = [
+      'frontend-design',
+      'ui-ux-pro-max',
+      'design-taste-frontend',
+      'doc-coauthoring',
+      'writing-plans',
+      'systematic-debugging',
+      'web-search'
+    ]
+    const combined = Array.from(new Set([...base, ...customSkills]))
+    if (!skillSearch.trim()) return combined
+    return combined.filter(s => s.toLowerCase().includes(skillSearch.toLowerCase()))
+  }, [customSkills, skillSearch])
+
+  const handleRemoveCustomModel = async (nameToRemove: string) => {
+    Modal.confirm({
+      title: '删除模型',
+      content: `确定要删除自定义模型 "${nameToRemove}" 吗？`,
+      okText: '确定',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        const updated = customModels.filter(m => m.name !== nameToRemove)
+        await saveCustomModels(updated)
+        if (modelId === nameToRemove) {
+          setModelId('local-preview')
+        }
+        Modal.success({ title: '删除成功', content: '自定义模型已删除' })
+      }
+    })
+  }
+
+  const handleAddLocalModel = async () => {
+    if (!newModelEndpoint.trim()) {
+      Modal.error({ title: '添加失败', content: '接口地址不能为空' })
+      return
+    }
+    if (!selectedModelId.trim()) {
+      Modal.error({ title: '添加失败', content: '模型型号不能为空' })
+      return
+    }
+    const finalName = newModelName.trim() || selectedModelId.trim()
+    const newModel = {
+      name: finalName,
+      endpoint: newModelEndpoint.trim(),
+      apiKey: newModelKey.trim(),
+      baseModel: selectedModelId.trim()
+    }
+    const updated = [...customModels, newModel]
+    await saveCustomModels(updated)
+    setModelId(finalName)
+    setNewModelName('')
+    setNewModelEndpoint('')
+    setNewModelKey('')
+    setSelectedModelId('')
+    setAddingModel(false)
+    Modal.success({ title: '保存成功', content: '自定义模型已添加' })
+  }
+
+  const handleImportSkill = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = (evt) => {
+        try {
+          const json = JSON.parse(evt.target?.result as string)
+          const importedName = json.name || json.id || file.name.replace('.json', '')
+          setCustomSkills(prev => [...prev, importedName])
+          if (!selectedSkillsList.includes(importedName)) {
+            setSkills(prev => (prev ? `${prev}, ${importedName}` : importedName))
+          }
+          Modal.success({ title: '导入成功', content: `成功导入技能: ${importedName}` })
+        } catch (err) {
+          Modal.error({ title: '解析失败', content: '非法的 JSON 技能配置文件' })
+        }
+      }
+      reader.readAsText(file)
+    }
+    input.click()
+  }
+
+  const currentWorkspaceName = useMemo(() => {
+    const ws = workspaceOptions.find(w => w.id === workspaceId)
+    return ws ? ws.name : '未选择工作空间'
+  }, [workspaceId, workspaceOptions])
+
+  const filteredWorkspaceOptions = useMemo(() => {
+    if (!wsSearch.trim()) return workspaceOptions
+    return workspaceOptions.filter(w => w.name.toLowerCase().includes(wsSearch.toLowerCase()))
+  }, [wsSearch, workspaceOptions])
+
+  return (
+    <div style={{
+      border: '1px solid #e2e8f0',
+      borderRadius: '16px',
+      padding: '16px',
+      background: '#f8fafc',
+      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.04)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '12px'
+    }}>
+      {/* Title Row */}
+      {!hideTitle && (
+        <div style={{ display: 'flex', alignItems: 'center', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+          <Input
+            variant="borderless"
+            placeholder="给你的任务起个名字..."
+            value={title}
+            onChange={event => setTitle(event.target.value)}
+            style={{
+              fontSize: '15px',
+              fontWeight: 600,
+              color: '#1e293b',
+              padding: 0
+            }}
+          />
+        </div>
+      )}
+
+      {/* Selected Skills Block */}
+      {selectedSkillsList.length > 0 && (
+        <div style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '6px',
+          padding: '8px 12px',
+          background: '#ffffff',
+          borderRadius: '8px',
+          border: '1px solid #f1f5f9'
+        }}>
+          <span style={{ fontSize: '11px', color: '#64748b', display: 'flex', alignItems: 'center', marginRight: '4px' }}>
+            已加载技能:
+          </span>
+          {selectedSkillsList.map(skill => (
+            <Tag
+              key={skill}
+              closable
+              onClose={() => {
+                const updated = selectedSkillsList.filter(s => s !== skill).join(', ')
+                setSkills(updated)
+              }}
+              style={{
+                background: '#f1f5f9',
+                border: 'none',
+                borderRadius: '4px',
+                color: '#334155',
+                fontSize: '11px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '2px',
+                margin: 0
+              }}
+            >
+              {skill}
+            </Tag>
+          ))}
+        </div>
+      )}
+
+      {/* Main Textarea Prompt Bar */}
+      <Input.TextArea
+        rows={6}
+        value={message}
+        onChange={event => setMessage(event.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={onSend ? "描述后续步骤或要求 Agent 继续执行..." : "描述你想让 Agent 做什么。你可以包含工作区、约束或粗略的计划。直接回车将触发创建..."}
+        style={{
+          borderRadius: '8px',
+          border: '1px solid #e2e8f0',
+          background: '#ffffff',
+          padding: '12px',
+          fontSize: '14px',
+          color: '#334155'
+        }}
+      />
+
+      {/* Floating Option Pills & Actions Bar */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '12px',
+        paddingTop: '4px'
+      }}>
+        {/* Configuration Selectors */}
+        <Space wrap size={6}>
+          {/* Mode Option */}
+          <Popover
+            open={showModePopover}
+            onOpenChange={setShowModePopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
+            content={
+              <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {[
+                  { value: 'craft', label: 'Craft', icon: <CraftIcon />, desc: 'CRAFT (执行模式): 完全自主的代码改写与写入' },
+                  { value: 'ask', label: 'Ask', icon: <AskIcon />, desc: 'ASK (问答模式): 快速问答与检索，不改动代码' },
+                  { value: 'plan', label: 'Plan', icon: <PlanIcon />, desc: 'PLAN (规划模式): 生成分步方案待批准后执行' }
+                ].map(opt => {
+                  const isSelected = mode === opt.value
+                  const isHovered = hoveredItem === opt.value
+                  return (
+                    <div
+                      key={opt.value}
+                      onClick={() => {
+                        setMode(opt.value as any)
+                        setShowModePopover(false)
+                      }}
+                      onMouseEnter={() => setHoveredItem(opt.value)}
+                      onMouseLeave={() => setHoveredItem(null)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        background: (isSelected || isHovered) ? '#f1f5f9' : 'transparent',
+                        transition: 'background 0.2s',
+                        userSelect: 'none'
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', color: '#1e293b' }}>
+                        {opt.icon}
+                      </span>
+                      <span style={{ fontSize: '14px', fontWeight: 500, color: '#1e293b', flex: 1 }}>
+                        {opt.label}
+                      </span>
+                      {isSelected && <CheckIcon />}
+                      <Tooltip title={opt.desc} placement="right" mouseEnterDelay={0.5}>
+                        <InfoCircleOutlined 
+                          style={{ 
+                            color: '#94a3b8', 
+                            fontSize: '14px', 
+                            cursor: 'help' 
+                          }} 
+                          onClick={(e) => e.stopPropagation()} 
+                        />
+                      </Tooltip>
+                    </div>
+                  )
+                })}
+
+                <Divider style={{ margin: '6px 0' }} />
+
+                <Popover
+                  placement="rightTop"
+                  trigger="hover"
+                  open={showRecentExperts}
+                  onOpenChange={setShowRecentExperts}
+                  overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
+                  content={
+                    <div style={{ width: '220px', padding: '4px' }}>
+                      <div style={{ fontSize: '12px', color: '#94a3b8', padding: '4px 8px 8px 8px', fontWeight: 500 }}>
+                        最近召唤专家
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {(() => {
+                          const recentList = [
+                            { 
+                              name: '微信小程序开发者', 
+                              sub: '小程达', 
+                              avatar: <BoyAvatar />,
+                              skills: ['frontend-design', 'design-taste-frontend'],
+                              desc: '开发微信小程序'
+                            },
+                            { 
+                              name: '美团生活助手', 
+                              sub: '领券下单找我', 
+                              avatar: <MeituanAvatar />,
+                              skills: ['web-search', 'writing-plans'],
+                              desc: '美团领券和生活省钱助手'
+                            }
+                          ]
+                          if (summonedExpert && !['微信小程序开发者', '美团生活助手'].includes(summonedExpert.name)) {
+                            recentList.push({
+                              name: summonedExpert.name,
+                              sub: summonedExpert.description || summonedExpert.desc || '已召唤专家',
+                              avatar: <BoyAvatar />,
+                              skills: summonedExpert.skills || [],
+                              desc: summonedExpert.description || summonedExpert.desc || ''
+                            })
+                          }
+
+                          return recentList.map(exp => {
+                            const isExpSelected = expertSelected && summonedExpert?.name === exp.name
+                            const isExpHovered = hoveredItem === exp.name
+                            return (
+                              <div
+                                key={exp.name}
+                                onClick={() => {
+                                  if (isExpSelected) {
+                                    setExpertSelected(false)
+                                    const expertSkills = exp.skills
+                                    const currentSkillsList = skills.split(',').map(s => s.trim()).filter(Boolean)
+                                    const updatedSkillsList = currentSkillsList.filter(s => !expertSkills.includes(s))
+                                    setSkills(updatedSkillsList.join(', '))
+                                  } else {
+                                    setSummonedExpert({ id: exp.name, name: exp.name, description: exp.desc, skills: exp.skills })
+                                    setExpertSelected(true)
+                                    setSkills(exp.skills.join(', '))
+                                    if (onCreate) {
+                                      setMessage(`帮我创建一个 ${exp.name}，擅长 ${exp.desc}。`)
+                                    }
+                                  }
+                                }}
+                                onMouseEnter={() => setHoveredItem(exp.name)}
+                                onMouseLeave={() => setHoveredItem(null)}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  padding: '8px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  background: isExpHovered ? '#f1f5f9' : 'transparent',
+                                  transition: 'background 0.2s'
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
+                                  {exp.avatar}
+                                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {exp.name}
+                                    </span>
+                                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                                      {exp.sub}
+                                    </span>
+                                  </div>
+                                </div>
+                                {isExpSelected && <CheckIcon />}
+                              </div>
+                            )
+                          })
+                        })()}
+                      </div>
+
+                      <Divider style={{ margin: '6px 0' }} />
+
+                      <div
+                        onClick={() => {
+                          setShowModePopover(false)
+                          navigate('/experts')
+                        }}
+                        onMouseEnter={() => setHoveredItem('other_experts')}
+                        onMouseLeave={() => setHoveredItem(null)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          color: '#4f46e5',
+                          background: hoveredItem === 'other_experts' ? '#f1f5f9' : 'transparent',
+                          transition: 'background 0.2s'
+                        }}
+                      >
+                        <ExpertIcon color="#4f46e5" />
+                        <span style={{ fontSize: '13px', fontWeight: 600 }}>召唤其它专家</span>
+                      </div>
+                    </div>
+                  }
+                >
+                  <div
+                    onMouseEnter={() => setHoveredItem('expert')}
+                    onMouseLeave={() => setHoveredItem(null)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      background: (expertSelected || hoveredItem === 'expert' || showRecentExperts) ? '#f1f5f9' : 'transparent',
+                      transition: 'background 0.2s',
+                      userSelect: 'none'
+                    }}
+                  >
+                    {expertSelected && summonedExpert ? (
+                      <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
+                        {getExpertAvatar(summonedExpert.name)}
+                        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {summonedExpert.name}
+                          </span>
+                          <span style={{ fontSize: '11px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {summonedExpert.name === '微信小程序开发者' ? '小程达' : summonedExpert.name === '美团生活助手' ? '领券下单找我' : (summonedExpert.description || summonedExpert.desc || '')}
+                          </span>
+                        </div>
+                        <CheckIcon />
+                      </div>
+                    ) : (
+                      <>
+                        <span style={{ display: 'flex', alignItems: 'center', color: '#1e293b' }}>
+                          <ExpertIcon />
+                        </span>
+                        <span style={{ fontSize: '14px', fontWeight: 500, color: '#1e293b', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          召唤专家
+                        </span>
+                      </>
+                    )}
+                    <RightOutlined style={{ fontSize: '11px', color: '#94a3b8' }} />
+                  </div>
+                </Popover>
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              ⚡ 模式: {mode.toUpperCase()}
+            </Button>
+          </Popover>
+
+          {/* Model Option */}
+          <Popover
+            open={showModelPopover}
+            onOpenChange={setShowModelPopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
+            content={
+              <div style={{ width: '260px', padding: '2px 0' }}>
+                {!addingModel ? (
+                  <>
+                    <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '6px' }}>
+                      切换底层大模型
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: '180px', overflowY: 'auto' }}>
+                      {allModels.map(m => {
+                        const isSelected = modelId === m.value
+                        return (
+                          <div
+                            key={m.value}
+                            onClick={() => {
+                              setModelId(m.value)
+                              setShowModelPopover(false)
+                            }}
+                            style={{
+                              padding: '6px 8px',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              background: isSelected ? '#f1f5f9' : 'transparent',
+                              transition: 'background 0.2s',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              position: 'relative'
+                            }}
+                            onMouseEnter={e => !isSelected && (e.currentTarget.style.background = '#f8fafc')}
+                            onMouseLeave={e => !isSelected && (e.currentTarget.style.background = 'transparent')}
+                          >
+                            <span style={{ fontSize: '12px', fontWeight: 500, color: isSelected ? '#0f172a' : '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: '24px' }}>
+                              🤖 {m.label}
+                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {m.isCustom && (
+                                <Tooltip title="删除此自定义模型">
+                                  <CloseOutlined
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      void handleRemoveCustomModel(m.value)
+                                    }}
+                                    style={{
+                                      fontSize: '11px',
+                                      color: '#94a3b8',
+                                      cursor: 'pointer',
+                                      padding: '2px',
+                                      borderRadius: '4px',
+                                      transition: 'all 0.2s',
+                                    }}
+                                    onMouseEnter={e => {
+                                      e.currentTarget.style.color = '#ef4444'
+                                      e.currentTarget.style.background = '#fee2e2'
+                                    }}
+                                    onMouseLeave={e => {
+                                      e.currentTarget.style.color = '#94a3b8'
+                                      e.currentTarget.style.background = 'transparent'
+                                    }}
+                                  />
+                                </Tooltip>
+                              )}
+                              {isSelected && <span style={{ color: '#0f172a', fontSize: '11px', fontWeight: 'bold' }}>✓</span>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <Divider style={{ margin: '6px 0' }} />
+                    <div style={{ padding: '0 4px' }}>
+                      <Button
+                        type="dashed"
+                        block
+                        size="small"
+                        icon={<PlusOutlined />}
+                        onClick={() => setAddingModel(true)}
+                        style={{ borderRadius: '6px', fontSize: '11px' }}
+                      >
+                        添加自定义模型 config
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ padding: '4px 8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontWeight: 600, fontSize: '12px', color: '#334155' }}>添加自定义模型 (兼容 OpenAI)</div>
+                    <Input
+                      placeholder="API 接口地址 (如 https://api.openai.com/v1)"
+                      value={newModelEndpoint}
+                      onChange={e => setNewModelEndpoint(e.target.value)}
+                      size="small"
+                      style={{ borderRadius: '4px' }}
+                    />
+                    <Input.Password
+                      placeholder="API Key (API 密钥)"
+                      value={newModelKey}
+                      onChange={e => setNewModelKey(e.target.value)}
+                      size="small"
+                      style={{ borderRadius: '4px' }}
+                    />
+                    <Input
+                      placeholder="模型型号 (如 gpt-4o)"
+                      value={selectedModelId}
+                      onChange={e => setSelectedModelId(e.target.value)}
+                      size="small"
+                      style={{ borderRadius: '4px' }}
+                    />
+                    <Input
+                      placeholder="自定义显示名称 (如 My-GPT-4)"
+                      value={newModelName}
+                      onChange={e => setNewModelName(e.target.value)}
+                      size="small"
+                      style={{ borderRadius: '4px' }}
+                    />
+
+                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                      <Button 
+                        size="small" 
+                        onClick={() => {
+                          setAddingModel(false)
+                          setNewModelEndpoint('')
+                          setNewModelKey('')
+                          setSelectedModelId('')
+                          setNewModelName('')
+                        }} 
+                        style={{ borderRadius: '4px', fontSize: '11px' }}
+                      >
+                        取消
+                      </Button>
+                      <Button 
+                        size="small" 
+                        type="primary" 
+                        disabled={!newModelEndpoint.trim() || !selectedModelId.trim()}
+                        style={{ 
+                          background: (newModelEndpoint.trim() && selectedModelId.trim()) ? '#0f172a' : '#cbd5e1', 
+                          border: 'none', 
+                          borderRadius: '4px', 
+                          fontSize: '11px',
+                          color: '#ffffff'
+                        }} 
+                        onClick={handleAddLocalModel}
+                      >
+                        保存
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              🤖 模型: {modelId}
+            </Button>
+          </Popover>
+
+          {/* Composable Skills Popover */}
+          <Popover
+            open={showSkillsPopover}
+            onOpenChange={setShowSkillsPopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            content={
+              <div style={{ width: '220px', padding: '2px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
+                  可用技能组合列表
+                </div>
+                <div style={{ padding: '0 8px 8px 8px' }}>
+                  <Input
+                    placeholder="检索技能包..."
+                    size="small"
+                    value={skillSearch}
+                    onChange={e => setSkillSearch(e.target.value)}
+                    style={{ borderRadius: '4px' }}
+                  />
+                </div>
+                <div style={{ maxHeight: '160px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '2px', padding: '0 4px' }}>
+                  {availableSkills.map(skill => {
+                    const isChecked = selectedSkillsList.includes(skill)
+                    return (
+                      <div
+                        key={skill}
+                        onClick={() => {
+                          let nextList
+                          if (!isChecked) {
+                            nextList = [...selectedSkillsList, skill]
+                          } else {
+                            nextList = selectedSkillsList.filter(s => s !== skill)
+                          }
+                          setSkills(nextList.join(', '))
+                        }}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          background: isChecked ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          transition: 'background 0.2s'
+                        }}
+                        onMouseEnter={e => !isChecked && (e.currentTarget.style.background = '#f8fafc')}
+                        onMouseLeave={e => !isChecked && (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <span style={{ fontSize: '12px', color: isChecked ? '#0f172a' : '#475569', fontWeight: isChecked ? 600 : 500 }}>
+                          {skill}
+                        </span>
+                        <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
+                      </div>
+                    )
+                  })}
+                  {availableSkills.length === 0 && (
+                    <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无匹配技能</div>
+                  )}
+                </div>
+                <Divider style={{ margin: '8px 0' }} />
+                <div style={{ padding: '0 4px' }}>
+                  <Button
+                    type="dashed"
+                    block
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={handleImportSkill}
+                    style={{ borderRadius: '6px', fontSize: '11px' }}
+                  >
+                    导入本地技能 (.json)
+                  </Button>
+                </div>
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              🛠️ 技能 ({selectedSkillsList.length})
+            </Button>
+          </Popover>
+
+          {/* App Connectors Popover */}
+          <Popover
+            open={showConnectorPopover}
+            onOpenChange={setShowConnectorPopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            content={
+              <div style={{ width: '220px', padding: '2px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
+                  连接外部应用渠道
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '0 4px' }}>
+                  {[
+                    { label: '微信助手 (WeChat)', value: 'wechat', desc: '微信客户端消息推送' },
+                    { label: '钉钉助手 (DingTalk)', value: 'dingtalk', desc: '钉钉机器人通知流水' },
+                    { label: 'MCP 协议 (MCP Server)', value: 'mcp', desc: '大模型上下文协议网关' },
+                    { label: '本地文件 (Filesystem)', value: 'filesystem', desc: '挂载主工作空间读写' },
+                    { label: '网页搜索 (Search)', value: 'web-search', desc: '网页端多渠道搜索' }
+                  ].map(opt => {
+                    const isChecked = selectedConnectorsList.includes(opt.value)
+                    return (
+                      <div
+                        key={opt.value}
+                        onClick={() => {
+                          let nextList
+                          if (!isChecked) {
+                            nextList = [...selectedConnectorsList, opt.value]
+                          } else {
+                            nextList = selectedConnectorsList.filter(c => c !== opt.value)
+                          }
+                          setConnectors(nextList.join(', '))
+                        }}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          background: isChecked ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '2px',
+                          transition: 'background 0.2s'
+                        }}
+                        onMouseEnter={e => !isChecked && (e.currentTarget.style.background = '#f8fafc')}
+                        onMouseLeave={e => !isChecked && (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: isChecked ? '#0f172a' : '#334155' }}>
+                            {opt.label}
+                          </span>
+                          <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
+                        </div>
+                        <span style={{ fontSize: '9px', color: '#94a3b8', lineHeight: '1.2' }}>{opt.desc}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              🔗 连应用 ({selectedConnectorsList.length})
+            </Button>
+          </Popover>
+
+          {/* Attached Workspaces Check List */}
+          <Popover
+            open={showAttachPopover}
+            onOpenChange={setShowAttachPopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            content={
+              <div style={{ width: '220px', padding: '2px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
+                  挂载其他关联空间
+                </div>
+                {workspaceOptions.filter(w => w.id !== workspaceId).length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '0 4px' }}>
+                    {workspaceOptions.filter(w => w.id !== workspaceId).map(w => {
+                      const isChecked = attachedWorkspaceIds.includes(w.id)
+                      return (
+                        <div
+                          key={w.id}
+                          onClick={() => {
+                            let nextList
+                            if (!isChecked) {
+                              nextList = [...attachedWorkspaceIds, w.id]
+                            } else {
+                              nextList = attachedWorkspaceIds.filter(id => id !== w.id)
+                            }
+                            setAttachedWorkspaceIds(nextList)
+                          }}
+                          style={{
+                            padding: '6px 8px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            background: isChecked ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            transition: 'background 0.2s'
+                          }}
+                          onMouseEnter={e => !isChecked && (e.currentTarget.style.background = '#f8fafc')}
+                          onMouseLeave={e => !isChecked && (e.currentTarget.style.background = 'transparent')}
+                        >
+                          <span style={{ fontSize: '12px', color: isChecked ? '#0f172a' : '#475569' }}>📁 {w.name}</span>
+                          <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无可用的其他空间</div>
+                )}
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              📂 关联 ({attachedWorkspaceIds.length})
+            </Button>
+          </Popover>
+
+          {/* Permission Mode Popover */}
+          <Popover
+            open={showPermissionPopover}
+            onOpenChange={setShowPermissionPopover}
+            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            content={
+              <div style={{ width: '220px', padding: '2px 0' }}>
+                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
+                  执行安全控制级别
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
+                  {[
+                    { value: 'default', label: '🔒 默认受限权限', desc: '任何写入和运行动作均需用户批准后执行。' },
+                    { value: 'full_access', label: '🔑 完全访问权限', desc: '大模型可以自动无限制读写并免审批执行。' }
+                  ].map(opt => {
+                    const isSelected = permissionMode === opt.value
+                    return (
+                      <div
+                        key={opt.value}
+                        onClick={() => {
+                          setPermissionMode(opt.value as any)
+                          setShowPermissionPopover(false)
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          background: isSelected ? '#f1f5f9' : 'transparent',
+                          transition: 'background 0.2s',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '2px',
+                          border: isSelected ? '1px solid #cbd5e1' : '1px solid transparent'
+                        }}
+                        onMouseEnter={e => !isSelected && (e.currentTarget.style.background = '#f8fafc')}
+                        onMouseLeave={e => !isSelected && (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: isSelected ? '#0f172a' : '#334155' }}>
+                          {opt.label}
+                        </span>
+                        <span style={{ fontSize: '10px', color: '#94a3b8', lineHeight: '1.3' }}>{opt.desc}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            }
+            trigger="click"
+            placement="bottomLeft"
+          >
+            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+              🛡️ 权限: {permissionMode === 'full_access' ? '完全' : '默认'}
+            </Button>
+          </Popover>
+        </Space>
+
+        {/* Right Action buttons */}
+        <Space size={8}>
+          <Button
+            type="primary"
+            shape="round"
+            icon={<SendOutlined />}
+            onClick={handleSubmit}
+            disabled={busy || !message.trim()}
+            style={{ background: '#0f172a', fontWeight: 600, height: '32px', border: 'none' }}
+          >
+            {buttonLabel || (onSend ? '发送' : '创建任务')}
+          </Button>
+        </Space>
+      </div>
+
+      {/* Bottom Workspace Selector Bar */}
+      {!hideWorkspacePicker && (
+        <Popover
+          open={showWorkspacePicker}
+          onOpenChange={setShowWorkspacePicker}
+          trigger="click"
+          placement="bottomLeft"
+          content={
+            <div style={{ padding: '4px', width: '240px' }}>
+              <div style={{ fontWeight: 600, fontSize: '12px', color: '#475569', marginBottom: '8px' }}>切换主工作空间</div>
+              <Input
+                placeholder="搜索工作空间..."
+                size="small"
+                value={wsSearch}
+                onChange={e => setWsSearch(e.target.value)}
+                style={{ marginBottom: '8px', borderRadius: '4px' }}
+              />
+              <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
+                {filteredWorkspaceOptions.map(ws => (
+                  <Button
+                    key={ws.id}
+                    type={workspaceId === ws.id ? 'primary' : 'text'}
+                    block
+                    size="small"
+                    style={{
+                      textAlign: 'left',
+                      background: workspaceId === ws.id ? '#0f172a' : 'transparent',
+                      color: workspaceId === ws.id ? '#ffffff' : '#334155',
+                      borderRadius: '4px'
+                    }}
+                    onClick={() => {
+                      setWorkspaceId(ws.id)
+                      setShowWorkspacePicker(false)
+                    }}
+                  >
+                    📁 {ws.name}
+                  </Button>
+                ))}
+                {filteredWorkspaceOptions.length === 0 && (
+                  <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无匹配空间</div>
+                )}
+              </div>
+              <Divider style={{ margin: '8px 0' }} />
+              <Button
+                type="dashed"
+                block
+                size="small"
+                icon={<PlusOutlined />}
+                style={{ borderRadius: '4px' }}
+                onClick={async () => {
+                  setShowWorkspacePicker(false)
+                  await handlePickWorkspace()
+                }}
+              >
+                打开本地工作空间...
+              </Button>
+            </div>
+          }
+        >
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 12px',
+            background: '#f1f5f9',
+            border: '1px solid #e2e8f0',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            marginTop: '4px',
+            transition: 'background 0.2s',
+            userSelect: 'none'
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = '#e2e8f0'}
+          onMouseLeave={e => e.currentTarget.style.background = '#f1f5f9'}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#334155' }}>
+              <FolderOpenOutlined style={{ color: '#64748b' }} />
+              <span>主工作空间: <strong>{currentWorkspaceName}</strong></span>
+            </div>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>点击切换 ▾</span>
+          </div>
+        </Popover>
+      )}
+    </div>
+  )
+}

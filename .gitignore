@@ -1,0 +1,7 @@
+node_modules
+.vite
+dist
+out
+*.log
+*.tsbuildinfo
+src/main/state.json
