@@ -118,7 +118,8 @@ export default function TaskDetailPage() {
   const handleSaveEditApproval = async () => {
     if (!editApprovalId) return
     try {
-      await approveTask(editApprovalId, 'edited')
+      const editedArgs = JSON.parse(editedArgsText)
+      await approveTask(editApprovalId, 'edited', editedArgs)
       setEditApprovalId(null)
     } catch (e) {
       console.error(e)
@@ -183,6 +184,7 @@ export default function TaskDetailPage() {
             const isAssistant = message.role === 'assistant'
             const isSystem = message.role === 'system'
             const isTool = message.role === 'tool'
+            const isStreamingAssistant = isAssistant && Boolean(message.metadata?.streaming)
 
             if (isSystem) {
               return (
@@ -205,7 +207,7 @@ export default function TaskDetailPage() {
                 }}
               >
                 <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
-                  {isUser ? '用户' : isAssistant ? 'WorkBuddy' : '工具调用'}
+                  {isUser ? '用户' : isAssistant ? (isStreamingAssistant ? 'WorkBuddy 正在输出' : 'WorkBuddy') : '工具调用'}
                 </div>
                 <div style={{
                   maxWidth: '85%',
@@ -214,7 +216,7 @@ export default function TaskDetailPage() {
                   background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
                   color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
                   boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
-                  border: isUser ? 'none' : '1px solid #e2e8f0',
+                  border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
                   fontSize: '14px',
                   lineHeight: '1.6',
                   whiteSpace: 'pre-wrap',

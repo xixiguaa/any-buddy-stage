@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import os from 'node:os'
@@ -27,6 +27,7 @@ import type {
   UpdateTaskInput,
   Workspace,
   WorkspaceSummary,
+  ModelConfig,
 } from '../../shared/types.js'
 import { createId, nowIso } from '../../shared/utils.js'
 import { dialog } from 'electron'
@@ -508,8 +509,218 @@ export class AppService {
     return this.listAgentRuns().filter(run => run.taskId === taskId)
   }
 
+  /**
+   * 返回任务运行所需的完整上下文，供 runtime 组装提示词和工具输入。
+   */
+  getTaskContext(taskId: string) {
+    const task = this.getTask(taskId)
+    if (!task) {
+      return null
+    }
+
+    return {
+      task,
+      messages: this.listMessages(taskId),
+      workspaces: this.listTaskWorkspaces(taskId),
+      runs: this.listAgentRunsByTask(taskId),
+      events: this.listAgentEvents(taskId),
+      approvals: this.listApprovals(taskId),
+    }
+  }
+
   getAgentRun(runId: string): AgentRun | null {
     return this.snapshot.agentRuns.find(run => run.id === runId) ?? null
+  }
+
+  getApproval(approvalId: string): HumanApproval | null {
+    return this.snapshot.approvals.find(approval => approval.id === approvalId) ?? null
+  }
+
+  /**
+   * 创建 runtime 运行记录，只负责落库和事件初始化，不做真实执行。
+   */
+  async createRuntimeRun(taskId: string, input: CreateAgentRunInput = { agentName: 'Main Agent', kind: 'main' }): Promise<AgentRun> {
+    const task = this.getTask(taskId)
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`)
+    }
+
+    const now = nowIso()
+    const run: AgentRun = {
+      id: createId('run'),
+      taskId,
+      workspaceIds: this.snapshot.taskWorkspaces.filter(rel => rel.taskId === taskId).map(rel => rel.workspaceId),
+      agentId: randomUUID(),
+      agentName: input.agentName,
+      kind: input.kind ?? 'main',
+      status: 'queued',
+      graphThreadId: createId('thread'),
+      parentRunId: input.parentRunId,
+      currentNode: 'plan',
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    await this.mutate(state => {
+      state.agentRuns.unshift(run)
+      state.agentEvents.push(this.createAgentEvent(run, 'run_started', {
+        agentName: run.agentName,
+        kind: run.kind,
+        currentNode: run.currentNode,
+      }))
+      const target = state.tasks.find(item => item.id === taskId)
+      if (target) {
+        if (run.kind === 'main') {
+          target.status = 'queued'
+          target.lastRunId = run.id
+        }
+        target.updatedAt = now
+      }
+    })
+
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    this.emitTaskRuntime(taskId)
+    return run
+  }
+
+  /**
+   * 追加 runtime 事件，前端任务详情页会实时消费这条事件流。
+   */
+  async appendRuntimeEvent(runId: string, type: AgentEvent['type'], payload: Record<string, unknown>): Promise<void> {
+    let taskId = ''
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+      taskId = run.taskId
+      state.agentEvents.push(this.createAgentEvent(run, type, payload))
+    })
+
+    if (taskId) {
+      this.emitTaskRuntime(taskId)
+    }
+  }
+
+  /**
+   * 追加 runtime 消息，包含 system、assistant 和 tool 三类消息。
+   */
+  async appendRuntimeMessage(taskId: string, runId: string, role: Message['role'], content: string, metadata?: Record<string, unknown>): Promise<void> {
+    await this.mutate(state => {
+      state.messages.push({
+        id: createId('message'),
+        taskId,
+        runId,
+        role,
+        content,
+        metadata,
+        createdAt: nowIso(),
+      })
+      const task = state.tasks.find(item => item.id === taskId)
+      if (task) {
+        task.updatedAt = nowIso()
+      }
+    })
+
+    this.emitTaskRuntime(taskId)
+  }
+
+  /**
+   * 正常结束 runtime run，并补一条最终助手消息。
+   */
+  async completeRuntimeRun(runId: string, content: string): Promise<void> {
+    let taskId = ''
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+      taskId = run.taskId
+      run.status = 'completed'
+      run.currentNode = 'finished'
+      run.completedAt = nowIso()
+      run.updatedAt = run.completedAt
+      const task = state.tasks.find(item => item.id === run.taskId)
+      if (task && task.lastRunId === run.id) {
+        task.status = 'completed'
+        task.updatedAt = run.updatedAt
+      }
+      state.agentEvents.push(this.createAgentEvent(run, 'run_status', {
+        status: 'completed',
+        currentNode: run.currentNode,
+      }))
+      state.agentEvents.push(this.createAgentEvent(run, 'run_completed', {
+        status: 'completed',
+      }))
+      state.messages.push({
+        id: createId('message'),
+        taskId: run.taskId,
+        runId,
+        role: 'assistant',
+        content,
+        createdAt: nowIso(),
+      })
+    })
+
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (taskId) {
+      this.emitTaskRuntime(taskId)
+    }
+  }
+
+  /**
+   * 运行时失败统一走这里，确保错误能同步到事件流和任务状态。
+   */
+  async failRuntimeRun(runId: string, error: unknown): Promise<void> {
+    let taskId = ''
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        return
+      }
+      taskId = run.taskId
+      run.status = 'failed'
+      run.currentNode = 'failed'
+      run.completedAt = nowIso()
+      run.updatedAt = run.completedAt
+      const task = state.tasks.find(item => item.id === run.taskId)
+      if (task && task.lastRunId === run.id) {
+        task.status = 'failed'
+        task.updatedAt = run.updatedAt
+      }
+      state.agentEvents.push(this.createAgentEvent(run, 'run_failed', {
+        message: error instanceof Error ? error.message : 'Unknown runtime failure',
+      }))
+    })
+
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (taskId) {
+      this.emitTaskRuntime(taskId)
+    }
+  }
+
+  /**
+   * 同步读取模型配置，供 runtime 启动阶段直接使用。
+   */
+  readModelsConfigSync(): string {
+    const file = join(os.homedir(), '.anybuddy', 'models.json')
+    try {
+      if (!existsSync(file)) {
+        return '[]'
+      }
+      return readFileSync(file, 'utf8')
+    } catch {
+      return '[]'
+    }
+  }
+
+  listModelConfigs(): ModelConfig[] {
+    try {
+      return JSON.parse(this.readModelsConfigSync()) as ModelConfig[]
+    } catch {
+      return []
+    }
   }
 
   async startAgentRun(taskId: string, input: CreateAgentRunInput = { agentName: 'Main Agent', kind: 'main' }): Promise<AgentRun> {
@@ -687,9 +898,84 @@ export class AppService {
     return run
   }
 
-  async approveRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<void> {
+  async pauseRuntimeRun(runId: string): Promise<AgentRun> {
+    return this.updateAgentRunStatus(runId, 'paused')
+  }
+
+  async resumeRuntimeRun(runId: string): Promise<AgentRun> {
+    return this.updateAgentRunStatus(runId, 'running')
+  }
+
+  async cancelRuntimeRun(runId: string): Promise<AgentRun> {
+    return this.updateAgentRunStatus(runId, 'cancelled')
+  }
+
+  /**
+   * 为运行时工具调用创建审批记录，并把任务切换到待审批状态。
+   */
+  async requestRuntimeApproval(runId: string, reason: string, originalArgs: Record<string, unknown>): Promise<HumanApproval> {
+    let approval: HumanApproval | null = null
+    let taskId = ''
+
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+
+      taskId = run.taskId
+      run.status = 'waiting_approval'
+      run.currentNode = 'approval_pending'
+      run.updatedAt = nowIso()
+
+      const task = state.tasks.find(item => item.id === run.taskId)
+      if (task && task.lastRunId === run.id) {
+        task.status = 'waiting_approval'
+        task.updatedAt = run.updatedAt
+      }
+
+      approval = {
+        id: createId('approval'),
+        taskId: run.taskId,
+        runId: run.id,
+        toolCallId: createId('toolCall'),
+        reason,
+        originalArgs,
+        decision: 'pending',
+        createdAt: nowIso(),
+      }
+
+      state.approvals.push(approval)
+      state.agentEvents.push(this.createAgentEvent(run, 'approval_requested', {
+        approvalId: approval.id,
+        reason,
+        originalArgs,
+      }))
+      state.agentEvents.push(this.createAgentEvent(run, 'interrupt_requested', {
+        approvalId: approval.id,
+        reason,
+      }))
+    })
+
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (taskId) {
+      this.emitTaskRuntime(taskId)
+    }
+
+    if (!approval) {
+      throw new Error('Failed to create approval request')
+    }
+
+    return approval
+  }
+
+  async approveRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<HumanApproval> {
+    return this.approveRuntimeRequest(approvalId, decision, editedArgs)
+  }
+
+  async approveRuntimeRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<HumanApproval> {
     let targetTaskId = ''
-    let targetRunId = ''
+    let resolvedApproval: HumanApproval | null = null
     await this.mutate(state => {
       const approval = state.approvals.find(item => item.id === approvalId)
       if (!approval) {
@@ -699,20 +985,23 @@ export class AppService {
       approval.editedArgs = editedArgs
       approval.decidedAt = nowIso()
       targetTaskId = approval.taskId
-      targetRunId = approval.runId
+      resolvedApproval = { ...approval }
 
       const run = state.agentRuns.find(item => item.id === approval.runId)
       if (!run) {
         throw new Error(`Agent run not found: ${approval.runId}`)
       }
 
-      run.status = 'running'
-      run.currentNode = 'execution'
+      run.status = decision === 'rejected' ? 'failed' : 'running'
+      run.currentNode = decision === 'rejected' ? 'approval_rejected' : 'approval_resolved'
       run.updatedAt = nowIso()
+      if (decision === 'rejected') {
+        run.completedAt = run.updatedAt
+      }
 
       const task = state.tasks.find(item => item.id === approval.taskId)
       if (task) {
-        task.status = 'running'
+        task.status = decision === 'rejected' ? 'failed' : 'running'
         task.updatedAt = run.updatedAt
       }
 
@@ -731,10 +1020,10 @@ export class AppService {
         runId: run.id,
         role: 'assistant',
         content: decision === 'rejected'
-          ? '授权拒绝，正在终止任务流程...'
+          ? '????????????'
           : decision === 'edited'
-            ? '修改后的参数已授权，Agent 继续以新参数执行...'
-            : `已获得执行授权，Agent 继续在工作区 [${workspaceName}] 中执行...`,
+            ? '??????????????????'
+            : `????????????? [${workspaceName}] ??????`,
         createdAt: nowIso(),
       })
     })
@@ -744,54 +1033,11 @@ export class AppService {
       this.emitTaskRuntime(targetTaskId)
     }
 
-    // Transition to final state after 1.5 seconds
-    setTimeout(async () => {
-      await this.mutate(state => {
-        const runRef = state.agentRuns.find(item => item.id === targetRunId)
-        if (!runRef) return
+    if (!resolvedApproval) {
+      throw new Error(`Approval not found after resolve: ${approvalId}`)
+    }
 
-        const finalStatus = decision === 'rejected' ? 'failed' : 'completed'
-        runRef.status = finalStatus
-        runRef.currentNode = finalStatus === 'completed' ? 'finished' : 'failed'
-        runRef.completedAt = nowIso()
-        runRef.updatedAt = runRef.completedAt
-
-        const taskRef = state.tasks.find(item => item.id === targetTaskId)
-        if (taskRef) {
-          taskRef.status = finalStatus
-          taskRef.updatedAt = runRef.updatedAt
-        }
-
-        state.agentEvents.push(this.createAgentEvent(runRef, 'run_status', {
-          status: finalStatus,
-          currentNode: runRef.currentNode,
-        }))
-        state.agentEvents.push(this.createAgentEvent(runRef, finalStatus === 'completed' ? 'run_completed' : 'run_failed', {
-          status: finalStatus,
-        }))
-
-        const messages = state.messages.filter(m => m.taskId === targetTaskId)
-        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content ?? (taskRef ? taskRef.title : '')
-        const primaryWorkspace = state.workspaces.find(w => w.id === taskRef?.primaryWorkspaceId)
-        const workspaceName = primaryWorkspace ? primaryWorkspace.name : 'workspace'
-
-        state.messages.push({
-          id: createId('message'),
-          taskId: targetTaskId,
-          runId: targetRunId,
-          role: 'assistant',
-          content: finalStatus === 'completed'
-            ? `任务 [${taskRef?.title}] 已顺利执行完毕！所有操作均已应用到工作区 [${workspaceName}]：\n1. 成功解析了指令："${lastUserMsg}"；\n2. 文件修改已安全提交；\n3. 本地编译与验证成功。`
-            : `任务 [${taskRef?.title}] 运行终止：用户拒绝了写入敏感文件的权限请求。`,
-          createdAt: nowIso(),
-        })
-      })
-
-      this.bus.emitActiveRuns(this.listActiveAgentRuns())
-      if (targetTaskId) {
-        this.emitTaskRuntime(targetTaskId)
-      }
-    }, 1500)
+    return resolvedApproval
   }
 
   private async updateAgentRunStatus(runId: string, status: AgentRun['status']): Promise<AgentRun> {
@@ -814,7 +1060,7 @@ export class AppService {
       if (status === 'completed' || status === 'failed' || status === 'cancelled') {
         run.completedAt = nowIso()
         const task = state.tasks.find(item => item.id === run.taskId)
-        if (task) {
+        if (task && task.lastRunId === run.id) {
           task.status = status === 'completed' ? 'completed' : status
           task.updatedAt = run.updatedAt
         }

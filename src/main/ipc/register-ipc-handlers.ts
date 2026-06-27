@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '../../shared/ipc.js'
 import type { IpcResult } from '../../shared/types.js'
 import { toIpcError } from './serialize-error.js'
 import type { AppService } from '../services/app-service.js'
+import { AgentRuntimeService } from '../services/agent-runtime-service.js'
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
@@ -13,6 +14,8 @@ function fail(error: unknown): IpcResult<never> {
 }
 
 export function registerIpcHandlers(appService: AppService) {
+  const agentRuntime = new AgentRuntimeService(appService)
+
   ipcMain.handle(IPC_CHANNELS.tasksList, async (_event, filter) => {
     try {
       return ok(appService.listTasks(filter))
@@ -270,7 +273,7 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.agentRunsStart, async (_event, taskId: string, input) => {
     try {
-      return ok(await appService.startAgentRun(taskId, input))
+      return ok(await agentRuntime.start(taskId, input))
     } catch (error) {
       return fail(error)
     }
@@ -278,7 +281,7 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.agentRunsPause, async (_event, runId: string) => {
     try {
-      return ok(await appService.pauseAgentRun(runId))
+      return ok(await agentRuntime.pause(runId))
     } catch (error) {
       return fail(error)
     }
@@ -286,7 +289,7 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.agentRunsResume, async (_event, runId: string) => {
     try {
-      return ok(await appService.resumeAgentRun(runId))
+      return ok(await agentRuntime.resume(runId))
     } catch (error) {
       return fail(error)
     }
@@ -294,7 +297,7 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.agentRunsCancel, async (_event, runId: string) => {
     try {
-      return ok(await appService.cancelAgentRun(runId))
+      return ok(await agentRuntime.cancel(runId))
     } catch (error) {
       return fail(error)
     }
@@ -302,7 +305,7 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.agentRunsApprove, async (_event, approvalId: string, decision, editedArgs) => {
     try {
-      await appService.approveRequest(approvalId, decision, editedArgs)
+      await agentRuntime.approve(approvalId, decision, editedArgs)
       return ok(undefined)
     } catch (error) {
       return fail(error)

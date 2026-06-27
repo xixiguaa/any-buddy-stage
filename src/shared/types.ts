@@ -5,6 +5,7 @@ export type WorkspaceRole = 'primary' | 'attached'
 export type WorkspaceAccessMode = 'read_only' | 'read_write'
 export type AgentRunStatus = 'queued' | 'running' | 'paused' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'archived'
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
+export type ModelProvider = 'builtin' | 'openai_compatible' | 'custom'
 
 export type Workspace = {
   id: string
@@ -105,8 +106,12 @@ export type AgentEventType =
   | 'run_status'
   | 'agent_message'
   | 'subagent_started'
+  | 'subagent_completed'
+  | 'tool_called'
+  | 'tool_result'
   | 'interrupt_requested'
   | 'interrupt_resolved'
+  | 'approval_requested'
   | 'run_completed'
   | 'run_failed'
 
@@ -130,6 +135,18 @@ export type AppSettings = {
   wechatSecret?: string
   dingtalkWebhook?: string
   dingtalkSecret?: string
+}
+
+export type ModelConfig = {
+  id: string
+  name: string
+  provider: ModelProvider
+  baseUrl?: string
+  apiKeyRef?: string
+  modelName: string
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
 }
 
 export type AppState = {
@@ -217,4 +234,5 @@ export type CreateAgentRunInput = {
   agentName: string
   kind?: 'main' | 'subagent'
   parentRunId?: string
+  expertId?: string
 }

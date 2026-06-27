@@ -15,6 +15,7 @@ import type {
 } from '../../shared/types.js'
 import { createAnybuddyClients } from '../api/clients.js'
 import { useAnybuddyClients } from '../api/context.js'
+import { buildVisibleMessages } from './runtime-message-view.js'
 
 export type SidebarTimeRange = 'all' | 'today' | 'last_7_days' | 'last_30_days'
 
@@ -48,7 +49,7 @@ type AppStoreState = {
   pauseRun(runId: string): Promise<void>
   resumeRun(runId: string): Promise<void>
   cancelRun(runId: string): Promise<void>
-  approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited'): Promise<void>
+  approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<void>
   updateSettings(patch: Partial<AppSettings>): Promise<void>
   setSidebarSearch(value: string): void
   setSidebarStatusFilter(value: AppStoreState['sidebarStatusFilter']): void
@@ -151,14 +152,23 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       selectedTaskSubscription()
     }
     selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
-      set(state => ({
-        agentRuns: [
-          ...state.agentRuns.filter(run => run.taskId !== taskId),
-          ...payload.runs,
-        ],
-        taskEvents: payload.events,
-        taskApprovals: payload.approvals,
-      }))
+      void clients.message.list(taskId).then(messagesLiveResult => {
+        set(state => {
+          const nextMessages = messagesLiveResult.ok
+            ? buildVisibleMessages(messagesLiveResult.data, payload.events)
+            : state.messages
+
+          return {
+            agentRuns: [
+              ...state.agentRuns.filter(run => run.taskId !== taskId),
+              ...payload.runs,
+            ],
+            taskEvents: payload.events,
+            taskApprovals: payload.approvals,
+            messages: nextMessages,
+          }
+        })
+      })
       void get().refreshTaskIndex()
     })
 
@@ -166,7 +176,11 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       selectedTaskId: taskId,
       taskDetail: taskResult.ok ? taskResult.data : state.taskDetail,
       taskWorkspaces: taskWorkspacesResult.ok ? taskWorkspacesResult.data : state.taskWorkspaces,
-      messages: messagesResult.ok ? messagesResult.data : state.messages,
+      messages: messagesResult.ok && eventsResult.ok
+        ? buildVisibleMessages(messagesResult.data, eventsResult.data)
+        : messagesResult.ok
+          ? messagesResult.data
+          : state.messages,
       drafts: draftResult.ok && draftResult.data
         ? { ...state.drafts, [taskId]: draftResult.data }
         : state.drafts,
@@ -316,9 +330,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await clients.agentRun.cancel(runId)
     await get().refreshTaskIndex()
   },
-  async approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited') {
+  async approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.approve(approvalId, decision)
+    await clients.agentRun.approve(approvalId, decision, editedArgs)
     if (get().selectedTaskId) {
       await get().reloadTask(get().selectedTaskId!)
     }

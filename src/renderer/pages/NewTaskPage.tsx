@@ -37,7 +37,7 @@ export default function NewTaskPage() {
       {/* Title Header */}
       <div style={{ textAlign: 'center', marginBottom: '24px' }}>
         <h1 style={{ fontSize: '48px', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em', margin: 0 }}>
-          WorkBuddy
+          AnyBuddy
         </h1>
         <div style={{ fontSize: '18px', color: '#64748b', fontWeight: 500, marginTop: '8px' }}>
           你的职场超能力
