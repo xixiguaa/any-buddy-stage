@@ -19,6 +19,9 @@ function createToolRegistry() {
     listTaskWorkspaces() {
       return [];
     },
+    listAgentRunsByTask() {
+      return [];
+    },
   };
 
   return new ToolRegistryService(appService as never);
@@ -96,6 +99,12 @@ test('web_search 会映射真实搜索结果并执行域名过滤与数量限制
       spawnSubagent: async () => {
         throw new Error('not used');
       },
+      sendSubagentMessage: async () => {
+        throw new Error('not used');
+      },
+      stopSubagent: async () => {
+        throw new Error('not used');
+      },
     }, {
       query: 'openai',
       domains: ['openai.com', 'platform.openai.com'],
@@ -116,4 +125,99 @@ test('web_search 会映射真实搜索结果并执行域名过滤与数量限制
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('list_agent_runs 返回当前任务的主子 agent 运行摘要', async () => {
+  const registry = new ToolRegistryService({
+    getTaskContext() {
+      return null;
+    },
+    getAgentRun() {
+      return null;
+    },
+    listApprovals() {
+      return [];
+    },
+    listAgentEvents() {
+      return [];
+    },
+    listTaskWorkspaces() {
+      return [];
+    },
+    listAgentRunsByTask() {
+      return [
+        {
+          id: 'run-main',
+          kind: 'main',
+          agentName: 'Main Agent',
+          parentRunId: undefined,
+          status: 'running',
+          currentNode: 'execution',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          completedAt: undefined,
+        },
+        {
+          id: 'run-sub',
+          kind: 'subagent',
+          agentName: 'research-subagent',
+          parentRunId: 'run-main',
+          status: 'completed',
+          currentNode: 'finished',
+          startedAt: '2026-01-01T00:00:01.000Z',
+          completedAt: '2026-01-01T00:00:03.000Z',
+        },
+      ];
+    },
+  } as never);
+
+  const tool = registry.getTool('list_agent_runs');
+  assert.ok(tool);
+
+  const result = await tool.execute({
+    task: {
+      id: 'task-1',
+      title: 'subagent task',
+      mode: 'ask',
+      modelId: 'model-1',
+      permissionMode: 'default',
+      connectorIds: [],
+      skillIds: [],
+      status: 'running',
+      unreadEventCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    run: {
+      id: 'run-main',
+      taskId: 'task-1',
+      workspaceIds: [],
+      agentId: 'agent-1',
+      agentName: 'Main Agent',
+      kind: 'main',
+      status: 'running',
+      graphThreadId: 'thread-1',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    model: null,
+    settings: {
+      networkEnabled: false,
+      webSearchEnabled: false,
+      maxConcurrentRuns: 1,
+    },
+    requestApproval: async () => {
+      throw new Error('not used');
+    },
+    spawnSubagent: async () => {
+      throw new Error('not used');
+    },
+    sendSubagentMessage: async () => {
+      throw new Error('not used');
+    },
+    stopSubagent: async () => {
+      throw new Error('not used');
+    },
+  }, {});
+
+  assert.equal((result.data.runs as Array<unknown>).length, 2);
 });

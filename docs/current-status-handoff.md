@@ -225,3 +225,10 @@ npm run lint
 node ./node_modules/typescript/bin/tsc -p tsconfig.test.json
 node --test .tmp-tests/src/main/state/default-state.test.js .tmp-tests/src/main/services/agent-runtime-service.test.js .tmp-tests/src/main/services/langchain-agent-service.test.js .tmp-tests/src/main/services/openai-model-service.test.js .tmp-tests/src/main/services/tool-registry-service.test.js .tmp-tests/src/renderer/stores/runtime-message-view.test.js
 ```
+
+## 9. This Round
+
+- 右侧运行面板补了工具调用卡片流，工具调用和结果现在会按 run / tool 聚合展示。
+- 子 Agent 的追加消息改成了持续线程式会话，线程视图可继续发消息并延续执行。
+- 运行摘要、中断恢复和时间线仍保留，便于回退和排查。
+- 本轮验证通过了 `npm run lint`、`tsc -p tsconfig.test.json`，以及相关的 main / renderer 测试。

@@ -312,6 +312,32 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  ipcMain.handle(IPC_CHANNELS.agentRunsSendSubagentMessage, async (_event, runId: string, content: string) => {
+    try {
+      const run = appService.getAgentRun(runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+      await agentRuntime.sendSubagentMessage(run.taskId, runId, content)
+      return ok(undefined)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.agentRunsStopSubagent, async (_event, runId: string, reason?: string) => {
+    try {
+      const run = appService.getAgentRun(runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+      await agentRuntime.stopSubagentRun(run.taskId, runId, reason)
+      return ok(undefined)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.configReadModels, async () => {
     try {
       return ok(await appService.readModelsConfig())

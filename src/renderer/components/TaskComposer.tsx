@@ -13,7 +13,7 @@ import {
   RightOutlined,
   CompassOutlined
 } from '@ant-design/icons'
-import type { CreateTaskInput, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
+import type { CreateTaskInput, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
 import { useAppStore } from '../stores/app-store.js'
 import { useNavigate } from 'react-router-dom'
 
@@ -133,10 +133,18 @@ export default function TaskComposer({
 }) {
   const navigate = useNavigate()
   const workspaceOptions = useMemo(() => workspaces.filter(workspace => !workspace.isArchived), [workspaces])
+  const customModels = useAppStore(state => state.customModels)
+  const saveCustomModels = useAppStore(state => state.saveCustomModels)
+  const summonedExpert = useAppStore(state => state.summonedExpert)
+  const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
+  const defaultModelId = useMemo(
+    () => customModels.find(model => model.enabled)?.id ?? customModels[0]?.id ?? '',
+    [customModels],
+  )
   const [title, setTitle] = useState('未命名任务')
   const [message, setMessage] = useState(draft?.content ?? '')
   const [mode, setMode] = useState<CreateTaskInput['mode']>('plan')
-  const [modelId, setModelId] = useState('local-preview')
+  const [modelId, setModelId] = useState(defaultModelId)
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? workspaceOptions[0]?.id ?? '')
   const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
   const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || 'frontend-design, ipc-design')
@@ -170,16 +178,18 @@ export default function TaskComposer({
   // Import custom skills locally
   const [customSkills, setCustomSkills] = useState<string[]>([])
 
-  const customModels = useAppStore(state => state.customModels)
-  const saveCustomModels = useAppStore(state => state.saveCustomModels)
-  const summonedExpert = useAppStore(state => state.summonedExpert)
-  const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
-
   useEffect(() => {
     if (!workspaceId && workspaceOptions[0]) {
       setWorkspaceId(workspaceOptions[0].id)
     }
   }, [workspaceId, workspaceOptions])
+
+  useEffect(() => {
+    const hasCurrent = customModels.some(model => model.id === modelId)
+    if (!hasCurrent) {
+      setModelId(defaultModelId)
+    }
+  }, [customModels, defaultModelId, modelId])
 
   useEffect(() => {
     if (summonedExpert) {
@@ -219,6 +229,11 @@ export default function TaskComposer({
   async function handleSubmit() {
     const initialMessage = message.trim()
     if (!initialMessage) return
+    if (!modelId) {
+      Modal.warning({ title: '请选择模型', content: '当前没有可用模型，请先添加或启用一个模型配置。' })
+      setShowModelPopover(true)
+      return
+    }
     setBusy(true)
     try {
       if (onSend) {
@@ -262,18 +277,15 @@ export default function TaskComposer({
   const selectedSkillsList = useMemo(() => skills.split(',').map(s => s.trim()).filter(Boolean), [skills])
   const selectedConnectorsList = useMemo(() => connectors.split(',').map(c => c.trim()).filter(Boolean), [connectors])
 
-  const builtInModels = [
-    { label: 'local-preview', value: 'local-preview' },
-    { label: 'gemini-3.5-flash', value: 'gemini-3.5-flash' },
-    { label: 'gemini-3.5-pro', value: 'gemini-3.5-pro' },
-    { label: 'claude-3.5-sonnet', value: 'claude-3.5-sonnet' }
-  ]
-
   const allModels = useMemo(() => {
-    return [
-      ...builtInModels.map(m => ({ ...m, isCustom: false })),
-      ...customModels.map(m => ({ label: `${m.name} (自建)`, value: m.name, isCustom: true }))
-    ]
+    return customModels.map(model => ({
+      label: model.name,
+      value: model.id,
+      provider: model.provider,
+      modelName: model.modelName,
+      isCustom: model.provider !== 'builtin',
+      enabled: model.enabled,
+    }))
   }, [customModels])
 
   const availableSkills = useMemo(() => {
@@ -299,10 +311,10 @@ export default function TaskComposer({
       cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
-        const updated = customModels.filter(m => m.name !== nameToRemove)
+        const updated = customModels.filter(m => m.id !== nameToRemove)
         await saveCustomModels(updated)
         if (modelId === nameToRemove) {
-          setModelId('local-preview')
+          setModelId(updated.find(model => model.enabled)?.id ?? updated[0]?.id ?? '')
         }
         Modal.success({ title: '删除成功', content: '自定义模型已删除' })
       }
@@ -318,16 +330,24 @@ export default function TaskComposer({
       Modal.error({ title: '添加失败', content: '模型型号不能为空' })
       return
     }
+    const now = new Date().toISOString()
     const finalName = newModelName.trim() || selectedModelId.trim()
-    const newModel = {
+    const normalizedId = finalName.toLowerCase().replace(/[^a-z0-9-_]+/g, '-')
+    const apiKeyRef = newModelKey.trim()
+    const newModel: ModelConfig = {
+      id: normalizedId,
       name: finalName,
-      endpoint: newModelEndpoint.trim(),
-      apiKey: newModelKey.trim(),
-      baseModel: selectedModelId.trim()
+      provider: 'openai_compatible',
+      baseUrl: newModelEndpoint.trim(),
+      apiKeyRef: apiKeyRef || undefined,
+      modelName: selectedModelId.trim(),
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
     }
     const updated = [...customModels, newModel]
     await saveCustomModels(updated)
-    setModelId(finalName)
+    setModelId(newModel.id)
     setNewModelName('')
     setNewModelEndpoint('')
     setNewModelKey('')
@@ -479,7 +499,7 @@ export default function TaskComposer({
                 {[
                   { value: 'craft', label: 'Craft', icon: <CraftIcon />, desc: 'CRAFT (执行模式): 完全自主的代码改写与写入' },
                   { value: 'ask', label: 'Ask', icon: <AskIcon />, desc: 'ASK (问答模式): 快速问答与检索，不改动代码' },
-                  { value: 'plan', label: 'Plan', icon: <PlanIcon />, desc: 'PLAN (规划模式): 生成分步方案待批准后执行' }
+                  { value: 'plan', label: 'Plan', icon: <PlanIcon />, desc: 'PLAN (规划模式): 生成分步方案，确认后继续执行' }
                 ].map(opt => {
                   const isSelected = mode === opt.value
                   const isHovered = hoveredItem === opt.value
@@ -708,6 +728,11 @@ export default function TaskComposer({
                       切换底层大模型
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxHeight: '180px', overflowY: 'auto' }}>
+                      {allModels.length === 0 && (
+                        <div style={{ fontSize: '12px', color: '#94a3b8', padding: '12px 8px', textAlign: 'center' }}>
+                          暂无可用模型配置
+                        </div>
+                      )}
                       {allModels.map(m => {
                         const isSelected = modelId === m.value
                         return (
@@ -777,7 +802,7 @@ export default function TaskComposer({
                         onClick={() => setAddingModel(true)}
                         style={{ borderRadius: '6px', fontSize: '11px' }}
                       >
-                        添加自定义模型 config
+                        添加模型配置
                       </Button>
                     </div>
                   </>
@@ -851,7 +876,7 @@ export default function TaskComposer({
             placement="bottomLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
-              🤖 模型: {modelId}
+              🤖 模型: {allModels.find(model => model.value === modelId)?.label ?? '未配置'}
             </Button>
           </Popover>
 
@@ -1071,7 +1096,7 @@ export default function TaskComposer({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
                   {[
-                    { value: 'default', label: '🔒 默认受限权限', desc: '任何写入和运行动作均需用户批准后执行。' },
+                    { value: 'default', label: '🔒 默认受限权限', desc: '写入和运行动作会暂停到恢复点，确认参数后继续。' },
                     { value: 'full_access', label: '🔑 完全访问权限', desc: '大模型可以自动无限制读写并免审批执行。' }
                   ].map(opt => {
                     const isSelected = permissionMode === opt.value

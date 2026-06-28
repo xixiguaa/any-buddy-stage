@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings } from '../../shared/types.js'
+import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig } from '../../shared/types.js'
 
 export class AppStateRepository {
   private db: Database.Database | null = null
@@ -121,6 +121,23 @@ export class AppStateRepository {
       );
 
       CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS model_configs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        baseUrl TEXT,
+        apiKeyRef TEXT,
+        modelName TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS app_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
@@ -273,6 +290,25 @@ export class AppStateRepository {
       dingtalkSecret: settingsMap.dingtalkSecret || undefined,
     }
 
+    const modelConfigRows = db.prepare('SELECT * FROM model_configs').all() as any[]
+    const modelConfigs: ModelConfig[] = modelConfigRows.map(row => ({
+      id: row.id,
+      name: row.name,
+      provider: row.provider,
+      baseUrl: row.baseUrl || undefined,
+      apiKeyRef: row.apiKeyRef || undefined,
+      modelName: row.modelName,
+      enabled: Boolean(row.enabled),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }))
+
+    const appConfigRows = db.prepare('SELECT * FROM app_config').all() as { key: string, value: string }[]
+    const appConfigMap: Record<string, string> = {}
+    for (const row of appConfigRows) {
+      appConfigMap[row.key] = row.value
+    }
+
     return {
       version: 1,
       tasks,
@@ -283,6 +319,8 @@ export class AppStateRepository {
       agentRuns,
       agentEvents,
       approvals,
+      modelConfigs: modelConfigs.length ? modelConfigs : initialState.modelConfigs,
+      mcpConfigRaw: appConfigMap.mcpConfigRaw || initialState.mcpConfigRaw,
       settings,
     }
   }
@@ -301,6 +339,8 @@ export class AppStateRepository {
       db.prepare('DELETE FROM agent_events').run()
       db.prepare('DELETE FROM approvals').run()
       db.prepare('DELETE FROM settings').run()
+      db.prepare('DELETE FROM model_configs').run()
+      db.prepare('DELETE FROM app_config').run()
 
       // Insert workspaces
       const insertWorkspace = db.prepare(`
@@ -466,6 +506,30 @@ export class AppStateRepository {
           insertSetting.run(key, String(value))
         }
       }
+
+      const insertModelConfig = db.prepare(`
+        INSERT INTO model_configs (id, name, provider, baseUrl, apiKeyRef, modelName, enabled, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const model of s.modelConfigs) {
+        insertModelConfig.run(
+          model.id,
+          model.name,
+          model.provider,
+          model.baseUrl || null,
+          model.apiKeyRef || null,
+          model.modelName,
+          model.enabled ? 1 : 0,
+          model.createdAt,
+          model.updatedAt
+        )
+      }
+
+      const insertAppConfig = db.prepare(`
+        INSERT INTO app_config (key, value)
+        VALUES (?, ?)
+      `)
+      insertAppConfig.run('mcpConfigRaw', s.mcpConfigRaw)
     })
 
     runTransaction(state)

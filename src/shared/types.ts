@@ -159,6 +159,8 @@ export type AppState = {
   agentRuns: AgentRun[]
   agentEvents: AgentEvent[]
   approvals: HumanApproval[]
+  modelConfigs: ModelConfig[]
+  mcpConfigRaw: string
   settings: AppSettings
 }
 

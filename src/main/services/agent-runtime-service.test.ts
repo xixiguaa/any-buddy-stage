@@ -984,7 +984,7 @@ test('approve resumes the main agent loop and finishes with the next model answe
     assert.equal(harness.getCompletedSummary(), 'completed after approval');
     assert.equal(harness.modelCalls.length, 1);
     assert.equal(harness.modelCalls[0]?.toolCountSeen, 1);
-    assert.ok(harness.messages.some(message => message.role === 'tool' && message.content.includes('approved_action:')));
+    assert.ok(harness.messages.some(message => message.role === 'tool' && message.content.includes('resumed_action:')));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -1097,4 +1097,270 @@ test('start stops the langchain run when a tool requests approval', async () => 
   assert.ok(harness.events.some(event => event.type === 'tool_called'));
   assert.ok(harness.events.some(event => event.type === 'tool_result'));
   assert.ok(harness.messages.some(message => message.role === 'tool' && message.content.includes('waiting for approval')));
+});
+
+test('subagent management can append a message and stop a subagent run', async () => {
+  const task = {
+    id: 'task-subagent-1',
+    title: 'Subagent control task',
+    mode: 'ask',
+    modelId: 'model-1',
+    permissionMode: 'default',
+    connectorIds: [],
+    skillIds: [],
+    status: 'running',
+    unreadEventCount: 0,
+    primaryWorkspaceId: 'workspace-1',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const mainRun = {
+    id: 'run-main',
+    taskId: task.id,
+    workspaceIds: ['workspace-1'],
+    agentId: 'agent-main',
+    agentName: 'Main Agent',
+    kind: 'main',
+    status: 'running',
+    graphThreadId: 'thread-main',
+    currentNode: 'execution',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const subRun = {
+    id: 'run-sub',
+    taskId: task.id,
+    workspaceIds: ['workspace-1'],
+    agentId: 'agent-sub',
+    agentName: 'research-subagent',
+    kind: 'subagent',
+    status: 'running',
+    graphThreadId: 'thread-sub',
+    parentRunId: mainRun.id,
+    currentNode: 'execution',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const messages: Array<{ role: string; content: string; metadata?: Record<string, unknown> }> = [];
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+
+  const appService = {
+    getTask(taskId: string) {
+      return taskId === task.id ? task : null;
+    },
+    getSettings() {
+      return {
+        networkEnabled: false,
+        webSearchEnabled: false,
+        maxConcurrentRuns: 1,
+        sandboxEnabled: true,
+      };
+    },
+    getAgentRun(runId: string) {
+      return runId === mainRun.id ? mainRun : runId === subRun.id ? subRun : null;
+    },
+    listModelConfigs() {
+      return [];
+    },
+    async createRuntimeRun() {
+      throw new Error('not used');
+    },
+    async resumeRuntimeRun() {
+      return mainRun;
+    },
+    getTaskContext() {
+      return {
+        task,
+        messages,
+        workspaces: [],
+        approvals: [],
+      };
+    },
+    async appendRuntimeMessage(_taskId: string, _runId: string, role: string, content: string, metadata?: Record<string, unknown>) {
+      messages.push({ role, content, metadata });
+    },
+    async appendRuntimeEvent(_runId: string, type: string, payload: Record<string, unknown>) {
+      events.push({ type, payload });
+    },
+    async appendSubagentMessage(_runId: string, content: string) {
+      messages.push({ role: 'assistant', content, metadata: { source: 'subagent_message' } });
+    },
+    async stopSubagentRun(runId: string) {
+      if (runId !== subRun.id) {
+        throw new Error('unexpected run id');
+      }
+      subRun.status = 'cancelled';
+      return subRun;
+    },
+    async completeRuntimeRun() {
+      return;
+    },
+    async failRuntimeRun() {
+      return;
+    },
+  };
+
+  const toolRegistry = {
+    listTools() {
+      return [
+        { name: 'send_subagent_message', description: 'message subagent', requiresApproval: false },
+        { name: 'stop_subagent', description: 'stop subagent', requiresApproval: false },
+      ];
+    },
+    getTool(name: AgentToolCall['name']) {
+      if (name === 'send_subagent_message') {
+        return {
+          name,
+          async execute(context: any, args: Record<string, unknown>) {
+            return context.sendSubagentMessage(String(args.runId), String(args.content));
+          },
+        };
+      }
+
+      if (name === 'stop_subagent') {
+        return {
+          name,
+          async execute(context: any, args: Record<string, unknown>) {
+            return context.stopSubagent(String(args.runId), typeof args.reason === 'string' ? args.reason : undefined);
+          },
+        };
+      }
+
+      return null;
+    },
+  };
+
+  const runtime = new AgentRuntimeService(appService as never, {
+    modelService: {
+      resolveModelConfig() {
+        return null;
+      },
+    } as never,
+    toolRegistry: toolRegistry as never,
+    langChainAgentService: createFallbackLangChainHarness() as never,
+  });
+
+  await (runtime as any).handleToolCall({
+    task,
+    run: mainRun,
+    model: null,
+    settings: appService.getSettings(),
+  }, {
+    name: 'send_subagent_message',
+    arguments: {
+      runId: subRun.id,
+      content: 'Please continue the analysis',
+    },
+  });
+
+  await (runtime as any).handleToolCall({
+    task,
+    run: mainRun,
+    model: null,
+    settings: appService.getSettings(),
+  }, {
+    name: 'stop_subagent',
+    arguments: {
+      runId: subRun.id,
+      reason: 'main agent no longer needs parallel work',
+    },
+  });
+
+  assert.ok(messages.some(message => message.content.includes('Please continue the analysis')));
+  assert.equal(subRun.status, 'cancelled');
+  assert.ok(events.some(event => event.type === 'subagent_completed'));
+});
+
+test('public subagent runtime controls forward to subagent helpers', async () => {
+  const task = {
+    id: 'task-subagent-public-1',
+    title: 'Subagent public control task',
+    mode: 'ask',
+    modelId: 'model-1',
+    permissionMode: 'default',
+    connectorIds: [],
+    skillIds: [],
+    status: 'running',
+    unreadEventCount: 0,
+    primaryWorkspaceId: 'workspace-1',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const subRun = {
+    id: 'run-sub-public',
+    taskId: task.id,
+    workspaceIds: ['workspace-1'],
+    agentId: 'agent-sub',
+    agentName: 'ops-subagent',
+    kind: 'subagent',
+    status: 'running',
+    graphThreadId: 'thread-sub',
+    parentRunId: 'run-main',
+    currentNode: 'execution',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const calls: string[] = [];
+
+  const appService = {
+    getTask(taskId: string) {
+      return taskId === task.id ? task : null;
+    },
+    getAgentRun(runId: string) {
+      return runId === subRun.id ? subRun : null;
+    },
+    getSettings() {
+      return {
+        networkEnabled: false,
+        webSearchEnabled: false,
+        maxConcurrentRuns: 1,
+        sandboxEnabled: true,
+      };
+    },
+    listModelConfigs() {
+      return [];
+    },
+    async appendSubagentMessage(_runId: string, content: string) {
+      calls.push(`message:${content}`);
+    },
+    async stopSubagentRun(_runId: string, reason?: string) {
+      calls.push(`stop:${reason ?? ''}`);
+      subRun.status = 'cancelled';
+      return subRun;
+    },
+    async appendRuntimeEvent(_runId: string, type: string) {
+      calls.push(`event:${type}`);
+    },
+  };
+
+  const runtime = new AgentRuntimeService(appService as never, {
+    modelService: {
+      resolveModelConfig() {
+        return null;
+      },
+    } as never,
+    toolRegistry: {
+      listTools() {
+        return [];
+      },
+      getTool() {
+        return null;
+      },
+    } as never,
+    langChainAgentService: createFallbackLangChainHarness() as never,
+  });
+
+  await runtime.sendSubagentMessage(task.id, subRun.id, 'follow up');
+  await runtime.stopSubagentRun(task.id, subRun.id, 'done');
+
+  assert.deepEqual(calls, [
+    'message:follow up',
+    'stop:done',
+    'event:subagent_completed',
+  ]);
 });

@@ -7,6 +7,7 @@ import type {
   CreateWorkspaceInput,
   HumanApproval,
   Message,
+  ModelConfig,
   Task,
   TaskDraft,
   TaskSummary,
@@ -50,15 +51,18 @@ type AppStoreState = {
   resumeRun(runId: string): Promise<void>
   cancelRun(runId: string): Promise<void>
   approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<void>
+  resumeInterruptedRun(interruptId: string, action: 'resume' | 'cancel' | 'resume_with_edits', editedArgs?: Record<string, unknown>): Promise<void>
+  sendSubagentMessage(runId: string, content: string): Promise<void>
+  stopSubagent(runId: string, reason?: string): Promise<void>
   updateSettings(patch: Partial<AppSettings>): Promise<void>
   setSidebarSearch(value: string): void
   setSidebarStatusFilter(value: AppStoreState['sidebarStatusFilter']): void
   setSidebarTimeRange(value: SidebarTimeRange): void
   refreshTaskIndex(): Promise<void>
-  customModels: any[]
+  customModels: ModelConfig[]
   mcpConfigRaw: string
   loadCustomModels(): Promise<void>
-  saveCustomModels(models: any[]): Promise<void>
+  saveCustomModels(models: ModelConfig[]): Promise<void>
   loadMcpConfig(): Promise<void>
   saveMcpConfig(content: string): Promise<void>
   summonedExpert: any | null
@@ -338,6 +342,30 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
     await get().refreshTaskIndex()
   },
+  async resumeInterruptedRun(interruptId: string, action: 'resume' | 'cancel' | 'resume_with_edits', editedArgs?: Record<string, unknown>) {
+    const decision = action === 'cancel'
+      ? 'rejected'
+      : action === 'resume_with_edits'
+        ? 'edited'
+        : 'approved'
+
+    await get().approveTask(interruptId, decision, editedArgs)
+  },
+  async sendSubagentMessage(runId: string, content: string) {
+    const clients = createAnybuddyClients(window.anybuddy)
+    await clients.agentRun.sendSubagentMessage(runId, content)
+    if (get().selectedTaskId) {
+      await get().reloadTask(get().selectedTaskId!)
+    }
+  },
+  async stopSubagent(runId: string, reason?: string) {
+    const clients = createAnybuddyClients(window.anybuddy)
+    await clients.agentRun.stopSubagent(runId, reason)
+    if (get().selectedTaskId) {
+      await get().reloadTask(get().selectedTaskId!)
+    }
+    await get().refreshTaskIndex()
+  },
   async updateSettings(patch: Partial<AppSettings>) {
     const clients = createAnybuddyClients(window.anybuddy)
     const result = await clients.settings.update(patch)
@@ -359,7 +387,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const result = await clients.config.readModels()
     if (result.ok) {
       try {
-        const list = JSON.parse(result.data)
+        const list = JSON.parse(result.data) as ModelConfig[]
         set({ customModels: Array.isArray(list) ? list : [] })
       } catch {
         set({ customModels: [] })

@@ -5,3 +5,4 @@ out
 *.log
 *.tsbuildinfo
 src/main/state.json
+.tmp-tests/

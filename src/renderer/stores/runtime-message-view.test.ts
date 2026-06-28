@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentEvent, Message } from '../../shared/types.js';
-import { buildVisibleMessages } from './runtime-message-view.js';
+import { buildRuntimeEventCard, buildVisibleMessages, summarizeRuntimeEvent } from './runtime-message-view.js';
 
 function createMessage(input: Partial<Message> & Pick<Message, 'id' | 'taskId' | 'role' | 'content' | 'createdAt'>): Message {
   return {
@@ -112,4 +112,52 @@ test('buildVisibleMessages does not duplicate a persisted final assistant messag
 
   assert.equal(visibleMessages.length, 1);
   assert.equal(visibleMessages[0]?.id, 'message-1');
+});
+
+test('summarizeRuntimeEvent converts tool and interrupt events into readable synthetic messages', () => {
+  const toolEvent = createEvent({
+    id: 'event-tool',
+    taskId: 'task-1',
+    runId: 'run-1',
+    type: 'tool_called',
+    payload: {
+      toolName: 'read_workspace_file',
+    },
+    createdAt: '2026-01-01T00:00:03.000Z',
+  });
+
+  const interruptEvent = createEvent({
+    id: 'event-interrupt',
+    taskId: 'task-1',
+    runId: 'run-1',
+    type: 'approval_requested',
+    payload: {
+      reason: '请求写入文件',
+    },
+    createdAt: '2026-01-01T00:00:04.000Z',
+  });
+
+  assert.equal(summarizeRuntimeEvent(toolEvent)?.content, '调用工具: read_workspace_file');
+  assert.equal(summarizeRuntimeEvent(interruptEvent)?.content, '等待恢复: 请求写入文件');
+});
+
+test('buildRuntimeEventCard exposes structured tool result details for runtime timeline cards', () => {
+  const toolResultEvent = createEvent({
+    id: 'event-result',
+    taskId: 'task-1',
+    runId: 'run-1',
+    type: 'tool_result',
+    payload: {
+      toolName: 'read_workspace_file',
+      result: {
+        path: 'src/app.ts',
+      },
+    },
+    createdAt: '2026-01-01T00:00:05.000Z',
+  });
+
+  const card = buildRuntimeEventCard(toolResultEvent);
+  assert.equal(card.title, '工具结果 · read_workspace_file');
+  assert.equal(card.tone, 'success');
+  assert.match(card.detail ?? '', /src\/app\.ts/);
 });

@@ -28,7 +28,7 @@ const { Sider } = Layout
 const STATUS_FILTERS = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Running' },
-  { value: 'waiting_approval', label: 'Waiting' },
+  { value: 'waiting_approval', label: 'Paused' },
   { value: 'failed', label: 'Failed' },
 ] as const
 
@@ -97,7 +97,7 @@ export default function Sidebar() {
   const [newModelName, setNewModelName] = useState('')
   const [newModelEndpoint, setNewModelEndpoint] = useState('')
   const [newModelKey, setNewModelKey] = useState('')
-  const [newModelBase, setNewModelBase] = useState('gemini-3.5-flash')
+  const [newModelBase, setNewModelBase] = useState('')
 
   // Global Assistant Setup Form States
   const [wechatWebhook, setWechatWebhook] = useState(settings?.wechatWebhook ?? '')
@@ -133,6 +133,20 @@ export default function Sidebar() {
       return `${task.title} ${task.primaryWorkspaceName ?? ''} ${task.status}`.toLowerCase().includes(keyword)
     })
   }, [search, statusFilter, tasks, timeRange])
+
+  const activeRuns = useMemo(() => {
+    return runs.filter(run => ['queued', 'running', 'paused', 'waiting_approval'].includes(run.status))
+  }, [runs])
+
+  const runningTasks = useMemo(() => {
+    const taskMap = new Map(tasks.map(task => [task.id, task]))
+    return activeRuns
+      .map(run => ({
+        run,
+        task: taskMap.get(run.taskId),
+      }))
+      .filter((item): item is { run: typeof activeRuns[number]; task: typeof tasks[number] } => Boolean(item.task))
+  }, [activeRuns, tasks])
 
   const tasksByWorkspace = useMemo(() => {
     return workspaces.map(workspace => ({
@@ -179,7 +193,7 @@ export default function Sidebar() {
       case 'running':
         return <Tag color="processing" style={{ margin: 0, scale: '0.85' }}>Running</Tag>
       case 'waiting_approval':
-        return <Tag color="warning" style={{ margin: 0, scale: '0.85' }}>Waiting</Tag>
+        return <Tag color="warning" style={{ margin: 0, scale: '0.85' }}>Paused</Tag>
       case 'failed':
         return <Tag color="error" style={{ margin: 0, scale: '0.85' }}>Failed</Tag>
       case 'completed':
@@ -196,22 +210,33 @@ export default function Sidebar() {
       Modal.error({ title: '添加失败', content: '模型名称和接口地址不能为空' })
       return
     }
+    if (!newModelBase.trim()) {
+      Modal.error({ title: '添加失败', content: '模型型号不能为空' })
+      return
+    }
+    const now = new Date().toISOString()
     const newModel = {
+      id: newModelName.toLowerCase().replace(/[^a-z0-9-_]+/g, '-'),
       name: newModelName,
-      endpoint: newModelEndpoint,
-      apiKey: newModelKey,
-      baseModel: newModelBase
+      provider: 'openai_compatible' as const,
+      baseUrl: newModelEndpoint,
+      apiKeyRef: newModelKey || undefined,
+      modelName: newModelBase.trim(),
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
     }
     const updated = [...customModels, newModel]
     await saveCustomModels(updated)
     setNewModelName('')
     setNewModelEndpoint('')
     setNewModelKey('')
+    setNewModelBase('')
     Modal.success({ title: '保存成功', content: '自定义模型已保存写入' })
   }
 
-  const handleDeleteCustomModel = async (index: number) => {
-    const updated = customModels.filter((_, idx) => idx !== index)
+  const handleDeleteCustomModel = async (modelId: string) => {
+    const updated = customModels.filter(model => model.id !== modelId)
     await saveCustomModels(updated)
   }
 
@@ -410,6 +435,60 @@ export default function Sidebar() {
 
           {!collapsed && (
             <>
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '4px 8px',
+                  fontSize: '11px',
+                  color: '#94a3b8',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  userSelect: 'none',
+                }}>
+                  <Space size={4}>
+                    <span>运行中任务</span>
+                    <Badge count={runningTasks.length} size="small" style={{ backgroundColor: '#dbeafe', color: '#1d4ed8', boxShadow: 'none' }} />
+                  </Space>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px', paddingLeft: '4px' }}>
+                  {runningTasks.map(({ run, task }) => (
+                    <NavLink
+                      key={run.id}
+                      to={`/tasks/${task.id}`}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '2px',
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        background: '#ffffff',
+                        border: '1px solid #e2e8f0',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
+                          {task.title}
+                        </span>
+                        <Tag color={run.status === 'waiting_approval' ? 'warning' : run.status === 'paused' ? 'default' : 'processing'} style={{ margin: 0, fontSize: '10px' }}>
+                          {run.status === 'waiting_approval' ? 'paused' : run.status}
+                        </Tag>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8' }}>
+                        <span>{run.agentName}</span>
+                        <span>{run.currentNode ?? 'idle'}</span>
+                      </div>
+                    </NavLink>
+                  ))}
+                  {!runningTasks.length && (
+                    <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px', textAlign: 'center' }}>暂无运行中的任务</div>
+                  )}
+                </div>
+              </div>
+
               {/* Tasks Accordion */}
               <div style={{ marginBottom: '16px' }}>
                 <div
@@ -893,9 +972,9 @@ export default function Sidebar() {
                 <div style={{ marginBottom: '24px' }}>
                   <div style={{ fontSize: '14px', fontWeight: 600, color: '#334155', marginBottom: '12px' }}>已保存模型列表：</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {customModels.map((model, idx) => (
+                    {customModels.map(model => (
                       <div
-                        key={idx}
+                        key={model.id}
                         style={{
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -909,7 +988,7 @@ export default function Sidebar() {
                         <div>
                           <strong style={{ fontSize: '13px', color: '#0f172a' }}>{model.name}</strong>
                           <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                            Base Model: {model.baseModel} · Endpoint: {model.endpoint}
+                            Base Model: {model.modelName} · Endpoint: {model.baseUrl}
                           </div>
                         </div>
                         <Button
@@ -917,7 +996,7 @@ export default function Sidebar() {
                           type="text"
                           size="small"
                           icon={<DeleteOutlined />}
-                          onClick={() => handleDeleteCustomModel(idx)}
+                          onClick={() => handleDeleteCustomModel(model.id)}
                         />
                       </div>
                     ))}
@@ -943,17 +1022,12 @@ export default function Sidebar() {
                       />
                     </div>
                     <div>
-                      <span style={{ fontSize: '12px', color: '#64748b', display: 'block', marginBottom: '4px' }}>底模选择：</span>
-                      <select
+                      <span style={{ fontSize: '12px', color: '#64748b', display: 'block', marginBottom: '4px' }}>模型型号：</span>
+                      <Input
+                        placeholder="例如: gpt-4o-mini、deepseek-chat、qwen2.5-coder"
                         value={newModelBase}
                         onChange={e => setNewModelBase(e.target.value)}
-                        style={{ width: '100%', height: '36px', borderRadius: '8px', border: '1px solid #e2e8f0', padding: '0 8px' }}
-                      >
-                        <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-                        <option value="gemini-3.5-pro">gemini-3.5-pro</option>
-                        <option value="claude-3.5-sonnet">claude-3.5-sonnet</option>
-                        <option value="gpt-4o">gpt-4o</option>
-                      </select>
+                      />
                     </div>
                     <div>
                       <span style={{ fontSize: '12px', color: '#64748b', display: 'block', marginBottom: '4px' }}>接口地址 (Endpoint)：</span>

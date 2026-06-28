@@ -179,9 +179,9 @@ export class ToolRegistryService {
     const toolName = typeof args.toolName === 'string' ? args.toolName : ''
     if (!toolName) {
       return {
-        summary: '审批已通过，但没有需要恢复执行的工具动作。',
+        summary: '恢复点已确认，但没有需要继续执行的工具动作。',
         data: {
-          toolName: 'approved_action',
+          toolName: 'resumed_action',
           resumed: false,
           reason: 'missing_tool_name',
         },
@@ -196,7 +196,7 @@ export class ToolRegistryService {
       case 'run_shell_command':
         return this.runAllowedShellCommand(context, args)
       default:
-        throw new Error(`Unsupported approved tool action: ${toolName}`)
+        throw new Error(`Unsupported resumed tool action: ${toolName}`)
     }
   }
 
@@ -250,7 +250,7 @@ export class ToolRegistryService {
           }))
 
         return {
-          summary: `当前运行状态为 ${run.status}，最近事件 ${recentEvents.length} 条，待处理审批 ${approvals.length} 条。`,
+          summary: `当前运行状态为 ${run.status}，最近事件 ${recentEvents.length} 条，等待恢复的中断点 ${approvals.length} 个。`,
           data: {
             runId: run.id,
             status: run.status,
@@ -353,7 +353,7 @@ export class ToolRegistryService {
             path: targetPath.relativePath,
             content,
           },
-          summary: '文件写入需要用户审批，运行已暂停。',
+          summary: '文件写入已暂停到恢复点，等待确认参数后继续。',
         })
       },
     })
@@ -376,17 +376,17 @@ export class ToolRegistryService {
             path: targetPath.relativePath,
             patch: args.patch ?? null,
           },
-          summary: '文件修改需要用户审批，运行已暂停。',
+          summary: '文件修改已暂停到恢复点，等待确认参数后继续。',
         })
       },
     })
 
     this.register({
       name: 'request_approval',
-      description: '显式发起用户审批。',
+      description: '显式发起运行中断恢复点。',
       requiresApproval: false,
       execute: async (context, args) => {
-        const reason = typeof args.reason === 'string' ? args.reason : '请求用户审批敏感操作'
+        const reason = typeof args.reason === 'string' ? args.reason : '请求确认敏感操作参数'
         const originalArgs = typeof args.originalArgs === 'object' && args.originalArgs
           ? args.originalArgs as Record<string, unknown>
           : {}
@@ -394,7 +394,7 @@ export class ToolRegistryService {
         return context.requestApproval({
           reason,
           originalArgs,
-          summary: '已创建审批请求，运行已暂停。',
+          summary: '已创建运行恢复点，当前运行已暂停。',
         })
       },
     })
@@ -413,6 +413,62 @@ export class ToolRegistryService {
           expertId,
           reason,
         })
+      },
+    })
+
+    this.register({
+      name: 'send_subagent_message',
+      description: '给指定子 Agent 追加一条消息。',
+      requiresApproval: false,
+      execute: async (context, args) => {
+        const runId = typeof args.runId === 'string' ? args.runId : ''
+        const content = typeof args.content === 'string' ? args.content.trim() : ''
+        if (!runId || !content) {
+          throw new Error('send_subagent_message requires runId and content')
+        }
+
+        return context.sendSubagentMessage(runId, content)
+      },
+    })
+
+    this.register({
+      name: 'stop_subagent',
+      description: '停止指定子 Agent。',
+      requiresApproval: false,
+      execute: async (context, args) => {
+        const runId = typeof args.runId === 'string' ? args.runId : ''
+        const reason = typeof args.reason === 'string' ? args.reason : 'stopped by parent agent'
+        if (!runId) {
+          throw new Error('stop_subagent requires runId')
+        }
+
+        return context.stopSubagent(runId, reason)
+      },
+    })
+
+    this.register({
+      name: 'list_agent_runs',
+      description: '列出当前任务下主 Agent 与子 Agent 的运行情况。',
+      requiresApproval: false,
+      execute: async context => {
+        const runs = this.appService.listAgentRunsByTask(context.task.id)
+
+        return {
+          summary: `已列出 ${runs.length} 个 Agent 运行。`,
+          data: {
+            taskId: context.task.id,
+            runs: runs.map(run => ({
+              id: run.id,
+              kind: run.kind,
+              agentName: run.agentName,
+              parentRunId: run.parentRunId ?? null,
+              status: run.status,
+              currentNode: run.currentNode ?? null,
+              startedAt: run.startedAt ?? null,
+              completedAt: run.completedAt ?? null,
+            })),
+          },
+        }
       },
     })
     this.register({
@@ -506,7 +562,7 @@ export class ToolRegistryService {
               toolName: 'run_shell_command',
               command: matched.command,
             },
-            summary: '命令执行需要用户审批，运行已暂停。',
+            summary: '命令执行已暂停到恢复点，等待确认参数后继续。',
           })
         }
 
@@ -603,7 +659,7 @@ export class ToolRegistryService {
     })
     const nextContent = content ?? (patch ? applySimplePatch(originalContent, patch) : null)
     if (nextContent === null) {
-      throw new Error('edit_workspace_file 审批恢复需要 content 或 patch')
+      throw new Error('edit_workspace_file 恢复执行需要 content 或 patch')
     }
 
     await fs.writeFile(targetPath.absolutePath, nextContent, 'utf8')

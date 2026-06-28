@@ -89,6 +89,22 @@ function createToolContext(): ToolExecutionContext {
         },
       };
     },
+    async sendSubagentMessage() {
+      return {
+        summary: 'subagent message sent',
+        data: {
+          ok: true,
+        },
+      };
+    },
+    async stopSubagent() {
+      return {
+        summary: 'subagent stopped',
+        data: {
+          ok: true,
+        },
+      };
+    },
   };
 }
 

@@ -34,6 +34,7 @@ import { dialog } from 'electron'
 
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
+const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
 
 function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange']) {
   if (!timeRange || timeRange === 'all') {
@@ -69,6 +70,7 @@ export class AppService {
 
   async init() {
     this.state = await this.repository.load(createDefaultState())
+    await this.hydrateConfigStateFromFiles()
     
     // Cleanup stuck active tasks/runs on startup
     let changed = false
@@ -110,6 +112,69 @@ export class AppService {
     const result = await fn(this.snapshot)
     await this.persist()
     return result
+  }
+
+  private getConfigDir() {
+    return join(os.homedir(), '.anybuddy')
+  }
+
+  private getModelsConfigFile() {
+    return join(this.getConfigDir(), 'models.json')
+  }
+
+  private getMcpConfigFile() {
+    return join(this.getConfigDir(), 'mcp.json')
+  }
+
+  private async ensureConfigDir() {
+    await mkdir(this.getConfigDir(), { recursive: true })
+  }
+
+  private readModelsConfigFileSync(): string {
+    const file = this.getModelsConfigFile()
+    try {
+      if (!existsSync(file)) {
+        return '[]'
+      }
+      return readFileSync(file, 'utf8')
+    } catch {
+      return '[]'
+    }
+  }
+
+  private async syncConfigFilesFromState() {
+    await this.ensureConfigDir()
+    await Promise.all([
+      writeFile(this.getModelsConfigFile(), JSON.stringify(this.snapshot.modelConfigs, null, 2), 'utf8'),
+      writeFile(this.getMcpConfigFile(), this.snapshot.mcpConfigRaw || defaultMcpConfigRaw, 'utf8'),
+    ])
+  }
+
+  private async hydrateConfigStateFromFiles() {
+    const fileModelsRaw = this.readModelsConfigFileSync()
+    const fileMcpRaw = await this.readMcpConfigFromFile()
+    let changed = false
+
+    try {
+      const parsedModels = JSON.parse(fileModelsRaw) as ModelConfig[]
+      if (Array.isArray(parsedModels) && parsedModels.length > 0) {
+        this.snapshot.modelConfigs = parsedModels
+        changed = true
+      }
+    } catch {
+      // Keep SQLite state when file content is invalid.
+    }
+
+    if (fileMcpRaw && fileMcpRaw !== defaultMcpConfigRaw) {
+      this.snapshot.mcpConfigRaw = fileMcpRaw
+      changed = true
+    }
+
+    if (changed) {
+      await this.persist()
+    }
+
+    await this.syncConfigFilesFromState()
   }
 
   private emitTaskRuntime(taskId: string) {
@@ -199,11 +264,12 @@ export class AppService {
   async createTask(input: CreateTaskInput): Promise<Task> {
     return this.mutate(state => {
       const now = nowIso()
+      const resolvedModelId = this.resolveTaskModelId(input.modelId)
       const task: Task = {
         id: createId('task'),
         title: input.title,
         mode: input.mode,
-        modelId: input.modelId,
+        modelId: resolvedModelId,
         expertId: input.expertId,
         primaryWorkspaceId: input.workspaceId,
         permissionMode: input.permissionMode,
@@ -248,7 +314,11 @@ export class AppService {
       if (!task) {
         throw new Error(`Task not found: ${taskId}`)
       }
-      Object.assign(task, input, { updatedAt: nowIso() })
+      const nextInput = {
+        ...input,
+        modelId: input.modelId ? this.resolveTaskModelId(input.modelId) : input.modelId,
+      }
+      Object.assign(task, nextInput, { updatedAt: nowIso() })
       return task
     })
   }
@@ -509,6 +579,23 @@ export class AppService {
     return this.listAgentRuns().filter(run => run.taskId === taskId)
   }
 
+  listModelConfigs(): ModelConfig[] {
+    return [...this.snapshot.modelConfigs]
+  }
+
+  private resolveTaskModelId(requestedModelId?: string) {
+    if (requestedModelId && this.snapshot.modelConfigs.some(model => model.id === requestedModelId)) {
+      return requestedModelId
+    }
+
+    const fallbackModel = this.snapshot.modelConfigs.find(model => model.enabled) ?? this.snapshot.modelConfigs[0]
+    if (!fallbackModel) {
+      throw new Error('No model config is available')
+    }
+
+    return fallbackModel.id
+  }
+
   /**
    * 返回任务运行所需的完整上下文，供 runtime 组装提示词和工具输入。
    */
@@ -534,6 +621,40 @@ export class AppService {
 
   getApproval(approvalId: string): HumanApproval | null {
     return this.snapshot.approvals.find(approval => approval.id === approvalId) ?? null
+  }
+
+  async appendSubagentMessage(runId: string, content: string, metadata?: Record<string, unknown>) {
+    const run = this.getAgentRun(runId)
+    if (!run) {
+      throw new Error(`Agent run not found: ${runId}`)
+    }
+
+    await this.appendRuntimeMessage(run.taskId, run.id, 'user', content, {
+      ...(metadata ?? {}),
+      source: 'subagent_message',
+    })
+    await this.appendRuntimeEvent(run.id, 'agent_message', {
+      role: 'user',
+      content,
+      source: 'subagent_message',
+    })
+  }
+
+  async stopSubagentRun(runId: string, reason?: string): Promise<AgentRun> {
+    const run = this.getAgentRun(runId)
+    if (!run) {
+      throw new Error(`Agent run not found: ${runId}`)
+    }
+    if (run.kind !== 'subagent') {
+      throw new Error(`Run is not a subagent: ${runId}`)
+    }
+
+    const updatedRun = await this.updateAgentRunStatus(runId, 'cancelled')
+    await this.appendRuntimeEvent(runId, 'interrupt_resolved', {
+      reason: reason ?? 'subagent_stopped',
+      source: 'stop_subagent',
+    })
+    return updatedRun
   }
 
   /**
@@ -700,204 +821,6 @@ export class AppService {
     }
   }
 
-  /**
-   * 同步读取模型配置，供 runtime 启动阶段直接使用。
-   */
-  readModelsConfigSync(): string {
-    const file = join(os.homedir(), '.anybuddy', 'models.json')
-    try {
-      if (!existsSync(file)) {
-        return '[]'
-      }
-      return readFileSync(file, 'utf8')
-    } catch {
-      return '[]'
-    }
-  }
-
-  listModelConfigs(): ModelConfig[] {
-    try {
-      return JSON.parse(this.readModelsConfigSync()) as ModelConfig[]
-    } catch {
-      return []
-    }
-  }
-
-  async startAgentRun(taskId: string, input: CreateAgentRunInput = { agentName: 'Main Agent', kind: 'main' }): Promise<AgentRun> {
-    const task = this.getTask(taskId)
-    if (!task) {
-      throw new Error(`Task not found: ${taskId}`)
-    }
-    const now = nowIso()
-    const run: AgentRun = {
-      id: createId('run'),
-      taskId,
-      workspaceIds: this.snapshot.taskWorkspaces.filter(rel => rel.taskId === taskId).map(rel => rel.workspaceId),
-      agentId: randomUUID(),
-      agentName: input.agentName,
-      kind: input.kind ?? 'main',
-      status: 'queued',
-      graphThreadId: createId('thread'),
-      parentRunId: input.parentRunId,
-      currentNode: 'plan',
-      startedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    }
-    await this.mutate(state => {
-      state.agentRuns.unshift(run)
-      state.agentEvents.push(this.createAgentEvent(run, 'run_started', {
-        agentName: run.agentName,
-        kind: run.kind,
-        currentNode: run.currentNode,
-      }))
-      const target = state.tasks.find(item => item.id === taskId)
-      if (target) {
-        target.status = 'queued'
-        target.lastRunId = run.id
-        target.updatedAt = now
-      }
-    })
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
-    this.emitTaskRuntime(taskId)
-
-    // Simulate lifecycle: Planning (queued) -> In Progress (running) -> Pending/Completed
-    setTimeout(async () => {
-      // 1. Transition to 'running' (In Progress)
-      await this.mutate(state => {
-        const runRef = state.agentRuns.find(item => item.id === run.id)
-        if (!runRef) return
-        runRef.status = 'running'
-        runRef.currentNode = 'execution'
-        runRef.updatedAt = nowIso()
-
-        const taskRef = state.tasks.find(item => item.id === taskId)
-        if (taskRef) {
-          taskRef.status = 'running'
-          taskRef.updatedAt = runRef.updatedAt
-        }
-
-        state.agentEvents.push(this.createAgentEvent(runRef, 'run_status', {
-          status: 'running',
-          currentNode: runRef.currentNode,
-        }))
-      })
-      this.bus.emitActiveRuns(this.listActiveAgentRuns())
-      this.emitTaskRuntime(taskId)
-
-      // 2. Transition to waiting_approval (Pending) or completed (Completed)
-      setTimeout(async () => {
-        const currentTask = this.getTask(taskId)
-        if (!currentTask) return
-
-        const primaryWorkspace = this.snapshot.workspaces.find(w => w.id === currentTask.primaryWorkspaceId)
-        const workspacePath = primaryWorkspace ? primaryWorkspace.path : 'D:/workspace'
-        const workspaceName = primaryWorkspace ? primaryWorkspace.name : 'workspace'
-        const messages = this.listMessages(taskId)
-        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')?.content ?? currentTask.title
-
-        if (currentTask.permissionMode === 'default') {
-          await this.mutate(state => {
-            const runRef = state.agentRuns.find(item => item.id === run.id)
-            if (!runRef) return
-            runRef.status = 'waiting_approval'
-            runRef.currentNode = 'approval_pending'
-            runRef.updatedAt = nowIso()
-
-            const taskRef = state.tasks.find(item => item.id === taskId)
-            if (taskRef) {
-              taskRef.status = 'waiting_approval'
-              taskRef.updatedAt = runRef.updatedAt
-            }
-
-            state.agentEvents.push(this.createAgentEvent(runRef, 'run_status', {
-              status: 'waiting_approval',
-              currentNode: runRef.currentNode,
-            }))
-            state.agentEvents.push(this.createAgentEvent(runRef, 'interrupt_requested', {
-              reason: `请求写入或修改文件系统的敏感操作权限：在工作区 [${workspaceName}] 中更新相关源文件。`,
-            }))
-
-            const approvalId = createId('approval')
-            state.approvals.push({
-              id: approvalId,
-              taskId,
-              runId: run.id,
-              toolCallId: createId('toolCall'),
-              reason: `请求写入或修改文件系统的敏感操作权限：在工作区 [${workspaceName}] 中更新相关源文件。`,
-              originalArgs: {
-                action: 'write_file',
-                path: `${workspacePath}/src/main.ts`,
-                content: `// Dynamic plan for instruction: "${lastUserMsg}"\n// Updates applied to workspace...\n`,
-              },
-              decision: 'pending',
-              createdAt: nowIso(),
-            })
-          })
-          this.bus.emitActiveRuns(this.listActiveAgentRuns())
-          this.emitTaskRuntime(taskId)
-        } else {
-          await this.mutate(state => {
-            const runRef = state.agentRuns.find(item => item.id === run.id)
-            if (!runRef) return
-            runRef.status = 'completed'
-            runRef.currentNode = 'finished'
-            runRef.completedAt = nowIso()
-            runRef.updatedAt = runRef.completedAt
-
-            const taskRef = state.tasks.find(item => item.id === taskId)
-            if (taskRef) {
-              taskRef.status = 'completed'
-              taskRef.updatedAt = runRef.updatedAt
-            }
-
-            state.agentEvents.push(this.createAgentEvent(runRef, 'run_status', {
-              status: 'completed',
-              currentNode: runRef.currentNode,
-            }))
-            state.agentEvents.push(this.createAgentEvent(runRef, 'run_completed', {
-              status: 'completed',
-            }))
-
-            state.messages.push({
-              id: createId('message'),
-              taskId,
-              runId: run.id,
-              role: 'assistant',
-              content: `任务 [${currentTask.title}] 已顺利执行完毕！所有步骤已成功在本地工作区 [${workspaceName}] 规划并运行：\n1. 成功解析了您的指令："${lastUserMsg}"；\n2. 自动检查并更新了对应模块的代码文件；\n3. 执行了本地编译与验证，没有发现任何错误。`,
-              createdAt: nowIso(),
-            })
-          })
-          this.bus.emitActiveRuns(this.listActiveAgentRuns())
-          this.emitTaskRuntime(taskId)
-        }
-      }, 2000)
-    }, 1500)
-
-    return run
-  }
-
-  async pauseAgentRun(runId: string): Promise<AgentRun> {
-    const run = await this.updateAgentRunStatus(runId, 'paused')
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
-    this.emitTaskRuntime(run.taskId)
-    return run
-  }
-
-  async resumeAgentRun(runId: string): Promise<AgentRun> {
-    const run = await this.updateAgentRunStatus(runId, 'running')
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
-    this.emitTaskRuntime(run.taskId)
-    return run
-  }
-
-  async cancelAgentRun(runId: string): Promise<AgentRun> {
-    const run = await this.updateAgentRunStatus(runId, 'cancelled')
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
-    this.emitTaskRuntime(run.taskId)
-    return run
-  }
-
   async pauseRuntimeRun(runId: string): Promise<AgentRun> {
     return this.updateAgentRunStatus(runId, 'paused')
   }
@@ -911,7 +834,7 @@ export class AppService {
   }
 
   /**
-   * 为运行时工具调用创建审批记录，并把任务切换到待审批状态。
+   * 为运行时工具调用创建中断恢复点，并把任务切换到等待恢复状态。
    */
   async requestRuntimeApproval(runId: string, reason: string, originalArgs: Record<string, unknown>): Promise<HumanApproval> {
     let approval: HumanApproval | null = null
@@ -1020,10 +943,10 @@ export class AppService {
         runId: run.id,
         role: 'assistant',
         content: decision === 'rejected'
-          ? '????????????'
+          ? '已取消本次敏感操作，当前运行已停止。'
           : decision === 'edited'
-            ? '??????????????????'
-            : `????????????? [${workspaceName}] ??????`,
+            ? `已按修改后的参数恢复执行，目标工作区：[${workspaceName}]。`
+            : `已按原参数恢复执行，目标工作区：[${workspaceName}]。`,
         createdAt: nowIso(),
       })
     })
@@ -1075,44 +998,49 @@ export class AppService {
   }
 
   async readModelsConfig(): Promise<string> {
-    const dir = join(os.homedir(), '.anybuddy')
-    const file = join(dir, 'models.json')
-    try {
-      if (!existsSync(file)) {
-        return '[]'
-      }
-      return await readFile(file, 'utf8')
-    } catch (error) {
-      console.error('Failed to read models config', error)
-      return '[]'
-    }
+    return JSON.stringify(this.snapshot.modelConfigs, null, 2)
   }
 
   async writeModelsConfig(content: string): Promise<void> {
-    const dir = join(os.homedir(), '.anybuddy')
-    const file = join(dir, 'models.json')
-    await mkdir(dir, { recursive: true })
-    await writeFile(file, content, 'utf8')
+    const parsed = JSON.parse(content) as ModelConfig[]
+    if (!Array.isArray(parsed)) {
+      throw new Error('Models config must be a JSON array')
+    }
+
+    await this.mutate(state => {
+      state.modelConfigs = parsed
+    })
+    await this.syncConfigFilesFromState()
   }
 
   async readMcpConfig(): Promise<string> {
-    const dir = join(os.homedir(), '.anybuddy')
-    const file = join(dir, 'mcp.json')
     try {
-      if (!existsSync(file)) {
-        return JSON.stringify({ mcpServers: {} }, null, 2)
-      }
-      return await readFile(file, 'utf8')
+      JSON.parse(this.snapshot.mcpConfigRaw)
+      return this.snapshot.mcpConfigRaw
     } catch (error) {
-      console.error('Failed to read mcp config', error)
-      return JSON.stringify({ mcpServers: {} }, null, 2)
+      console.error('Failed to read mcp config from state', error)
+      return defaultMcpConfigRaw
     }
   }
 
   async writeMcpConfig(content: string): Promise<void> {
-    const dir = join(os.homedir(), '.anybuddy')
-    const file = join(dir, 'mcp.json')
-    await mkdir(dir, { recursive: true })
-    await writeFile(file, content, 'utf8')
+    JSON.parse(content)
+    await this.mutate(state => {
+      state.mcpConfigRaw = content
+    })
+    await this.syncConfigFilesFromState()
+  }
+
+  private async readMcpConfigFromFile(): Promise<string> {
+    const file = this.getMcpConfigFile()
+    try {
+      if (!existsSync(file)) {
+        return defaultMcpConfigRaw
+      }
+      return await readFile(file, 'utf8')
+    } catch (error) {
+      console.error('Failed to read mcp config', error)
+      return defaultMcpConfigRaw
+    }
   }
 }

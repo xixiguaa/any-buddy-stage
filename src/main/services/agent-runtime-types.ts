@@ -23,6 +23,9 @@ export type AgentToolName =
   | 'post_message'
   | 'request_approval'
   | 'consult_subagent'
+  | 'send_subagent_message'
+  | 'stop_subagent'
+  | 'list_agent_runs'
   | 'web_search'
   | 'run_shell_command'
   | 'get_task_context'
@@ -41,6 +44,8 @@ export type ToolExecutionResult = {
 export type ToolExecutionContext = RuntimeContext & {
   requestApproval(input: ToolApprovalRequest): Promise<ToolExecutionResult>
   spawnSubagent(input: CreateAgentRunInput & { reason?: string }): Promise<ToolExecutionResult>
+  sendSubagentMessage(runId: string, content: string): Promise<ToolExecutionResult>
+  stopSubagent(runId: string, reason?: string): Promise<ToolExecutionResult>
 }
 
 export type AllowedShellCommand = {

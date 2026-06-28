@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { join } from 'node:path';
-import type { AppSettings, AppState } from '../../shared/types.js';
+import type { AppSettings, AppState, ModelConfig } from '../../shared/types.js';
 import { createId, nowIso } from '../../shared/utils.js';
 
 export function createDefaultSettings(): AppSettings {
@@ -16,6 +16,15 @@ export function createDefaultState(): AppState {
   const now = nowIso();
   const workspaceId = createId('workspace');
   const taskId = createId('task');
+  const defaultModel: ModelConfig = {
+    id: 'local-preview',
+    name: 'Local Preview',
+    provider: 'builtin',
+    modelName: 'gpt-4o-mini',
+    enabled: true,
+    createdAt: now,
+    updatedAt: now,
+  };
 
   const workspace = {
     id: workspaceId,
@@ -63,6 +72,8 @@ export function createDefaultState(): AppState {
     agentRuns: [],
     agentEvents: [],
     approvals: [],
+    modelConfigs: [defaultModel],
+    mcpConfigRaw: JSON.stringify({ mcpServers: {} }, null, 2),
     settings: {
       ...createDefaultSettings(),
       defaultWorkspaceId: workspaceId,

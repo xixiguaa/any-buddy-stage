@@ -91,7 +91,7 @@ export class AgentRuntimeService {
     }
 
     try {
-      // 审批通过后不重新规划，而是先把被卡住的工具动作真正执行掉。
+      // 恢复时不重新规划，而是先把被中断的工具动作真正执行掉。
       const result = await this.toolRegistry.executeApprovedAction(
         this.createToolExecutionContext({
           task,
@@ -103,16 +103,16 @@ export class AgentRuntimeService {
       );
 
       await this.appService.appendRuntimeEvent(run.id, 'tool_result', {
-        toolName: result.data.toolName ?? 'approved_action',
+        toolName: result.data.toolName ?? 'resumed_action',
         result: result.data,
-        resumedFromApproval: true,
+        resumedFromInterrupt: true,
       });
 
       await this.appService.appendRuntimeMessage(
         task.id,
         run.id,
         'tool',
-        `approved_action: ${result.summary}`,
+        `resumed_action: ${result.summary}`,
         result.data,
       );
 
@@ -121,7 +121,7 @@ export class AgentRuntimeService {
         return;
       }
 
-      // 默认行为是审批后继续主循环，并且不重复追加 system prompt，避免上下文污染。
+      // 默认行为是恢复后继续主循环，并且不重复追加 system prompt，避免上下文污染。
       await this.executeRuntime({
         task,
         run,
@@ -134,6 +134,40 @@ export class AgentRuntimeService {
       await this.appService.failRuntimeRun(run.id, error);
       throw error;
     }
+  }
+
+  async sendSubagentMessage(taskId: string, runId: string, content: string) {
+    const task = this.appService.getTask(taskId);
+    const run = this.appService.getAgentRun(runId);
+    if (!task || !run) {
+      throw new Error(`Runtime context missing for subagent message: ${runId}`);
+    }
+
+    const context: RuntimeContext = {
+      task,
+      run,
+      model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId)?.model ?? null,
+      settings: this.appService.getSettings(),
+    };
+
+    return this.sendSubagentMessageInternal(context, runId, content);
+  }
+
+  async stopSubagentRun(taskId: string, runId: string, reason?: string) {
+    const task = this.appService.getTask(taskId);
+    const run = this.appService.getAgentRun(runId);
+    if (!task || !run) {
+      throw new Error(`Runtime context missing for subagent stop: ${runId}`);
+    }
+
+    const context: RuntimeContext = {
+      task,
+      run,
+      model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId)?.model ?? null,
+      settings: this.appService.getSettings(),
+    };
+
+    return this.stopSubagent(context, runId, reason);
   }
 
   private async executeRuntime(
@@ -217,7 +251,7 @@ export class AgentRuntimeService {
       return true;
     } catch (error) {
       if (error instanceof AgentApprovalPendingError) {
-        // 审批事件和 tool message 已经在工具执行阶段写入，这里只需停止当前轮次。
+        // 中断事件和 tool message 已经在工具执行阶段写入，这里只需停止当前轮次。
         return true;
       }
 
@@ -357,7 +391,7 @@ export class AgentRuntimeService {
       },
     ];
 
-    if (context.task.expertId) {
+    if (context.task.expertId && context.run.kind === 'main') {
       tools.push({
         name: 'consult_subagent',
         arguments: {
@@ -433,6 +467,8 @@ export class AgentRuntimeService {
       ...context,
       requestApproval: input => this.requestApproval(context, input),
       spawnSubagent: input => this.spawnSubagent(context, input),
+      sendSubagentMessage: (runId, content) => this.sendSubagentMessageInternal(context, runId, content),
+      stopSubagent: (runId, reason) => this.stopSubagent(context, runId, reason),
     };
   }
 
@@ -466,6 +502,16 @@ export class AgentRuntimeService {
   }
 
   private async spawnSubagent(context: RuntimeContext, input: CreateAgentRunInput & { reason?: string }): Promise<ToolExecutionResult> {
+    if (context.run.kind === 'subagent') {
+      return {
+        summary: '当前子 Agent 不再继续派生新的子 Agent，以避免递归调度。',
+        data: {
+          nestedSubagentAllowed: false,
+          parentRunId: context.run.id,
+        },
+      };
+    }
+
     const expertId = input.expertId ?? 'default-expert';
     const reason = input.reason ?? '补充子任务分析';
     const subRun = await this.appService.createRuntimeRun(context.task.id, {
@@ -483,33 +529,110 @@ export class AgentRuntimeService {
 
     await this.appService.resumeRuntimeRun(subRun.id);
 
-    // 这里仍然是占位版 subagent：先把运行链路打通，后续再替换成真实的专家 agent 执行。
-    const summary = `专家 ${expertId} 已完成协作，建议主 Agent 围绕“${context.task.title}”继续输出结构化结论。`;
-
     await this.appService.appendRuntimeMessage(
       context.task.id,
       subRun.id,
-      'assistant',
-      `子专家已收到任务：${reason}`,
+      'system',
+      `Subagent brief\nexpertId: ${expertId}\nreason: ${reason}\nparentTask: ${context.task.title}`,
       {
         expertId,
         parentRunId: context.run.id,
       },
     );
 
-    await this.appService.completeRuntimeRun(subRun.id, summary);
-    await this.appService.appendRuntimeEvent(context.run.id, 'subagent_completed', {
-      subagentRunId: subRun.id,
-      expertId,
-      summary,
-    });
+    try {
+      await this.executeRuntime({
+        task: context.task,
+        run: subRun,
+        model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), context.task.modelId)?.model ?? null,
+        settings: this.appService.getSettings(),
+      });
 
-    return {
-      summary,
-      data: {
+      const completedRun = this.appService.getAgentRun(subRun.id);
+      const summary = this.appService
+        .listMessages(context.task.id)
+        .filter(message => message.runId === subRun.id && message.role === 'assistant')
+        .at(-1)?.content
+        ?? `专家 ${expertId} 已完成协作，但没有返回额外总结。`;
+
+      await this.appService.appendRuntimeEvent(context.run.id, 'subagent_completed', {
         subagentRunId: subRun.id,
         expertId,
         summary,
+        status: completedRun?.status ?? 'completed',
+      });
+
+      return {
+        summary,
+        data: {
+          subagentRunId: subRun.id,
+          expertId,
+          summary,
+          status: completedRun?.status ?? 'completed',
+        },
+      };
+    } catch (error) {
+      await this.appService.appendRuntimeEvent(context.run.id, 'subagent_completed', {
+        subagentRunId: subRun.id,
+        expertId,
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw error;
+    }
+  }
+
+  private async sendSubagentMessageInternal(context: RuntimeContext, runId: string, content: string): Promise<ToolExecutionResult> {
+    const targetRun = this.appService.getAgentRun(runId);
+    if (!targetRun || targetRun.taskId !== context.task.id || targetRun.kind !== 'subagent') {
+      throw new Error(`Subagent run not found in current task: ${runId}`);
+    }
+
+    await this.appService.appendSubagentMessage(runId, content, {
+      requestedByRunId: context.run.id,
+    });
+
+    const subagentContext: RuntimeContext = {
+      task: context.task,
+      run: targetRun,
+      model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), context.task.modelId)?.model ?? null,
+      settings: this.appService.getSettings(),
+    };
+
+    if (typeof this.appService.resumeRuntimeRun === 'function' && typeof this.appService.failRuntimeRun === 'function') {
+      void this.executeRuntime(subagentContext).catch(error => {
+        void this.appService.failRuntimeRun(runId, error);
+      });
+    }
+
+    return {
+      summary: 'Subagent message sent and thread continues.',
+      data: {
+        subagentRunId: runId,
+        content,
+      },
+    };
+  }
+  private async stopSubagent(context: RuntimeContext, runId: string, reason?: string): Promise<ToolExecutionResult> {
+    const targetRun = this.appService.getAgentRun(runId);
+    if (!targetRun || targetRun.taskId !== context.task.id || targetRun.kind !== 'subagent') {
+      throw new Error(`Subagent run not found in current task: ${runId}`);
+    }
+
+    await this.appService.stopSubagentRun(runId, reason);
+    await this.appService.appendRuntimeEvent(context.run.id, 'subagent_completed', {
+      subagentRunId: runId,
+      expertId: targetRun.agentName,
+      status: 'cancelled',
+      reason: reason ?? 'stopped by parent agent',
+    });
+
+    return {
+      summary: `已停止子 Agent ${targetRun.agentName}。`,
+      data: {
+        subagentRunId: runId,
+        status: 'cancelled',
+        reason: reason ?? 'stopped by parent agent',
       },
     };
   }

@@ -48,13 +48,13 @@ type LangChainAgentServiceDependencies = {
   }) => unknown
 };
 
-// 工具执行如果触发审批，需要立刻中断当前 agent 轮次，等待人工确认后再恢复。
+// 工具执行如果触发敏感操作恢复点，需要立刻中断当前 agent 轮次，等待确认后再恢复。
 export class AgentApprovalPendingError extends Error {
   constructor(
     public readonly toolName: string,
     public readonly result: ToolExecutionResult,
   ) {
-    super(`Tool requires approval: ${toolName}`);
+    super(`Tool paused for confirmation: ${toolName}`);
     this.name = 'AgentApprovalPendingError';
   }
 }
@@ -140,7 +140,7 @@ export class LangChainAgentService {
 
   private toLangChainTool(toolDefinition: ToolDefinition, context: ToolExecutionContext) {
     const description = toolDefinition.requiresApproval
-      ? `${toolDefinition.description} (requires approval before side effects)`
+      ? `${toolDefinition.description} (pauses for confirmation before side effects)`
       : toolDefinition.description;
 
     return tool(
