@@ -32,6 +32,7 @@ function createResolvedModel(): ResolvedModelConfig {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 }
@@ -172,6 +173,7 @@ test('createRuntimeAgent builds ChatOpenAI and createAgent with wrapped tools', 
     model: 'gpt-4o-mini',
     apiKey: 'test-key',
     temperature: 0.2,
+    useResponsesApi: false,
     configuration: {
       baseURL: 'https://example.com/v1',
     },
@@ -291,4 +293,150 @@ test('stream forwards messages and defaults to values mode', async () => {
   assert.deepEqual(chunks[0], {
     messages: [{ role: 'assistant', content: 'chunk-1' }],
   });
+});
+
+test('stream normalizes assistant content blocks into plain text', async () => {
+  const fakeAgent: FakeRuntimeAgent = {
+    invokeCalls: [],
+    streamCalls: [],
+    async invoke() {
+      throw new Error('invoke should not be called in this test');
+    },
+    async stream() {
+      return (async function* streamGenerator() {
+        yield {
+          messages: [{
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'chunk ' },
+              { type: 'text', text: 'from blocks' },
+            ],
+          }],
+        };
+      })() as never;
+    },
+  };
+
+  const service = new LangChainAgentService({
+    createChatModel: fields => ({ kind: 'chat-model', fields }),
+    createAgent: () => fakeAgent as never,
+  });
+
+  const runtimeAgent = await service.createRuntimeAgent({
+    model: createResolvedModel(),
+    tools: [],
+    context: createToolContext(),
+  });
+
+  const stream = await runtimeAgent.stream({
+    messages: [{ role: 'user', content: 'stream please' }],
+  });
+
+  const chunks: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      messages: [{ role: 'assistant', content: 'chunk from blocks' }],
+    },
+  ]);
+});
+
+test('stream normalizes LangChain message tuple chunks', async () => {
+  const fakeAgent: FakeRuntimeAgent = {
+    invokeCalls: [],
+    streamCalls: [],
+    async invoke() {
+      throw new Error('invoke should not be called in this test');
+    },
+    async stream() {
+      return (async function* streamGenerator() {
+        yield [
+          {
+            _getType: () => 'ai',
+            content: 'tuple chunk',
+          },
+          {
+            langgraph_node: 'agent',
+          },
+        ];
+      })() as never;
+    },
+  };
+
+  const service = new LangChainAgentService({
+    createChatModel: fields => ({ kind: 'chat-model', fields }),
+    createAgent: () => fakeAgent as never,
+  });
+
+  const runtimeAgent = await service.createRuntimeAgent({
+    model: createResolvedModel(),
+    tools: [],
+    context: createToolContext(),
+  });
+
+  const stream = await runtimeAgent.stream({
+    messages: [{ role: 'user', content: 'stream please' }],
+  });
+
+  const chunks: Array<{ messages: ModelMessage[] }> = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      messages: [{ role: 'assistant', content: 'tuple chunk' }],
+    },
+  ]);
+});
+
+test('stream normalizes LangChain messages with direct type property', async () => {
+  const fakeAgent: FakeRuntimeAgent = {
+    invokeCalls: [],
+    streamCalls: [],
+    async invoke() {
+      throw new Error('invoke should not be called in this test');
+    },
+    async stream() {
+      return (async function* streamGenerator() {
+        yield {
+          messages: [
+            {
+              type: 'ai',
+              content: 'response with type prop',
+            },
+          ],
+        };
+      })() as never;
+    },
+  };
+
+  const service = new LangChainAgentService({
+    createChatModel: fields => ({ kind: 'chat-model', fields }),
+    createAgent: () => fakeAgent as never,
+  });
+
+  const runtimeAgent = await service.createRuntimeAgent({
+    model: createResolvedModel(),
+    tools: [],
+    context: createToolContext(),
+  });
+
+  const stream = await runtimeAgent.stream({
+    messages: [{ role: 'user', content: 'stream please' }],
+  });
+
+  const chunks: Array<{ messages: ModelMessage[] }> = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+
+  assert.deepEqual(chunks, [
+    {
+      messages: [{ role: 'assistant', content: 'response with type prop' }],
+    },
+  ]);
 });

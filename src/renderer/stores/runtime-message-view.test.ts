@@ -57,7 +57,7 @@ test('buildVisibleMessages appends a synthetic streaming assistant message from 
 
   assert.equal(visibleMessages.length, 2);
   assert.deepEqual(visibleMessages[1], {
-    id: 'live-run-1',
+    id: 'live-event-1',
     taskId: 'task-1',
     runId: 'run-1',
     role: 'assistant',
@@ -110,8 +110,38 @@ test('buildVisibleMessages does not duplicate a persisted final assistant messag
 
   const visibleMessages = buildVisibleMessages(baseMessages, events);
 
-  assert.equal(visibleMessages.length, 1);
-  assert.equal(visibleMessages[0]?.id, 'message-1');
+  assert.equal(visibleMessages.length, 2);
+  assert.equal(visibleMessages[0]?.id, 'live-event-1');
+  assert.equal(visibleMessages[1]?.id, 'message-1');
+});
+
+test('buildVisibleMessages keeps multiple assistant stream events in order', () => {
+  const visibleMessages = buildVisibleMessages([], [
+    createEvent({
+      id: 'event-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'agent_message',
+      payload: {
+        role: 'assistant',
+        content: 'first chunk',
+      },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    }),
+    createEvent({
+      id: 'event-2',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'agent_message',
+      payload: {
+        role: 'assistant',
+        content: 'second chunk',
+      },
+      createdAt: '2026-01-01T00:00:02.000Z',
+    }),
+  ]);
+
+  assert.deepEqual(visibleMessages.map(message => message.content), ['first chunk', 'second chunk']);
 });
 
 test('summarizeRuntimeEvent converts tool and interrupt events into readable synthetic messages', () => {

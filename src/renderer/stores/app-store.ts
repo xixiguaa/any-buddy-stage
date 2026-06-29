@@ -156,12 +156,31 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       selectedTaskSubscription()
     }
     selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
+      console.log('[AppStore] subscribeTask payload events:', payload.events);
+      set(state => {
+        const next = buildVisibleMessages(state.messages, payload.events);
+        console.log('[AppStore] computed visible messages (init):', next.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
+        return {
+          agentRuns: [
+            ...state.agentRuns.filter(run => run.taskId !== taskId),
+            ...payload.runs,
+          ],
+          taskEvents: payload.events,
+          taskApprovals: payload.approvals,
+          messages: next,
+        };
+      });
+
       void clients.message.list(taskId).then(messagesLiveResult => {
+        if (messagesLiveResult.ok) {
+          console.log('[AppStore] message list loaded:', messagesLiveResult.data.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
+        }
         set(state => {
           const nextMessages = messagesLiveResult.ok
             ? buildVisibleMessages(messagesLiveResult.data, payload.events)
             : state.messages
 
+          console.log('[AppStore] computed visible messages (final):', nextMessages.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
           return {
             agentRuns: [
               ...state.agentRuns.filter(run => run.taskId !== taskId),
@@ -265,6 +284,12 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!result.ok) {
       throw new Error(result.error.message)
     }
+    set(state => ({
+      messages: [
+        ...state.messages.filter(message => message.id !== result.data.id),
+        result.data,
+      ].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
+    }))
     await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
     await get().selectTask(taskId)
     await get().refreshTaskIndex()

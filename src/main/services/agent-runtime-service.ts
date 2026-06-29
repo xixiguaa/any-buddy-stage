@@ -193,12 +193,14 @@ export class AgentRuntimeService {
   }
 
   private async tryExecuteWithLangChain(context: RuntimeContext, systemPrompt: string): Promise<boolean> {
+    console.log('[Runtime] tryExecuteWithLangChain entered');
     const resolvedModel = this.modelService.resolveModelConfig(
       this.appService.listModelConfigs(),
       context.task.modelId,
     );
 
     if (!resolvedModel?.apiKey) {
+      console.log('[Runtime] no resolved model apiKey, falling back to legacy planner');
       return false;
     }
 
@@ -215,6 +217,7 @@ export class AgentRuntimeService {
         role: message.role,
         content: message.content,
       }));
+      console.log('[Runtime] invoking stream with messages count:', runtimeMessages.length);
       const stream = await runtimeAgent.stream({
         messages: runtimeMessages,
       });
@@ -222,8 +225,10 @@ export class AgentRuntimeService {
       let latestMessages: ModelMessage[] = [];
       let lastStreamedAssistantContent: string | null = null;
       for await (const chunk of stream) {
+        console.log('[Runtime] stream chunk received:', JSON.stringify(chunk).slice(0, 300));
         latestMessages = chunk.messages;
         const assistantMessage = this.pickFinalAssistantMessage(chunk.messages);
+        console.log('[Runtime] picked assistant message:', assistantMessage);
         if (!assistantMessage || assistantMessage === lastStreamedAssistantContent) {
           continue;
         }
@@ -237,6 +242,7 @@ export class AgentRuntimeService {
       }
 
       const finalMessage = this.pickFinalAssistantMessage(latestMessages);
+      console.log('[Runtime] finalMessage:', finalMessage);
       if (finalMessage) {
         await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
           status: 'running',
@@ -250,6 +256,7 @@ export class AgentRuntimeService {
       );
       return true;
     } catch (error) {
+      console.error('[Runtime] tryExecuteWithLangChain error:', error);
       if (error instanceof AgentApprovalPendingError) {
         // 中断事件和 tool message 已经在工具执行阶段写入，这里只需停止当前轮次。
         return true;

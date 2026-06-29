@@ -132,6 +132,7 @@ export class AppStateRepository {
         baseUrl TEXT,
         apiKeyRef TEXT,
         modelName TEXT NOT NULL,
+        apiMode TEXT,
         enabled INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL,
         updatedAt TEXT NOT NULL
@@ -149,6 +150,10 @@ export class AppStateRepository {
 
   async load(initialState: AppState): Promise<AppState> {
     const db = this.initDb()
+    const modelConfigColumns = db.prepare('PRAGMA table_info(model_configs)').all() as Array<{ name: string }>
+    if (!modelConfigColumns.some(column => column.name === 'apiMode')) {
+      db.prepare('ALTER TABLE model_configs ADD COLUMN apiMode TEXT').run()
+    }
 
     // Check if the database has any tasks or workspaces, if not, seed with initial state
     const workspaceCount = (db.prepare('SELECT count(*) as count FROM workspaces').get() as { count: number }).count
@@ -298,10 +303,18 @@ export class AppStateRepository {
       baseUrl: row.baseUrl || undefined,
       apiKeyRef: row.apiKeyRef || undefined,
       modelName: row.modelName,
+      apiMode: row.apiMode || 'auto',
       enabled: Boolean(row.enabled),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-    }))
+    })).filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
+
+    const validModelIds = new Set(modelConfigs.map(model => model.id))
+    for (const task of tasks) {
+      if (task.modelId && !validModelIds.has(task.modelId)) {
+        task.modelId = ''
+      }
+    }
 
     const appConfigRows = db.prepare('SELECT * FROM app_config').all() as { key: string, value: string }[]
     const appConfigMap: Record<string, string> = {}
@@ -508,8 +521,8 @@ export class AppStateRepository {
       }
 
       const insertModelConfig = db.prepare(`
-        INSERT INTO model_configs (id, name, provider, baseUrl, apiKeyRef, modelName, enabled, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO model_configs (id, name, provider, baseUrl, apiKeyRef, modelName, apiMode, enabled, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const model of s.modelConfigs) {
         insertModelConfig.run(
@@ -519,6 +532,7 @@ export class AppStateRepository {
           model.baseUrl || null,
           model.apiKeyRef || null,
           model.modelName,
+          model.apiMode || 'auto',
           model.enabled ? 1 : 0,
           model.createdAt,
           model.updatedAt

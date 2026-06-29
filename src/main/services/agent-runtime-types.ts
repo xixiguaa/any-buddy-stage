@@ -2,6 +2,7 @@ import type {
   AgentRun,
   AppSettings,
   CreateAgentRunInput,
+  ModelApiMode,
   ModelConfig,
   Task,
   TaskWorkspaceContext,
@@ -78,6 +79,7 @@ export type ResolvedModelConfig = {
   model: ModelConfig
   baseUrl: string
   modelName: string
+  apiMode: ModelApiMode
   apiKey: string | null
 }
 

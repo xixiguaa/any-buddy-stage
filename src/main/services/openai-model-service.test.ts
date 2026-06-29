@@ -32,6 +32,7 @@ function createResolvedModel(): ResolvedModelConfig {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 }
@@ -69,4 +70,23 @@ test('buildToolPlan throws when sdk response content is empty', async () => {
     () => service.buildToolPlan(createResolvedModel(), [], []),
     /Model returned empty content/,
   );
+});
+
+test('resolveModelConfig defaults apiMode to auto when model config omits it', () => {
+  const service = new OpenAIModelService();
+  const resolved = service.resolveModelConfig([
+    {
+      id: 'model-1',
+      name: 'Planner',
+      provider: 'openai_compatible',
+      baseUrl: 'https://example.com/v1',
+      apiKeyRef: 'OPENAI_API_KEY',
+      modelName: 'gpt-4o-mini',
+      enabled: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  ]);
+
+  assert.equal(resolved?.apiMode, 'auto');
 });

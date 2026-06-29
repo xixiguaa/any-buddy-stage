@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Input, Select, Button, Space, Divider, Popover, Checkbox, Tooltip, Modal, Tag } from 'antd'
 import {
   PlusOutlined,
@@ -13,7 +13,7 @@ import {
   RightOutlined,
   CompassOutlined
 } from '@ant-design/icons'
-import type { CreateTaskInput, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
+import type { CreateTaskInput, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
 import { useAppStore } from '../stores/app-store.js'
 import { useNavigate } from 'react-router-dom'
 
@@ -174,9 +174,15 @@ export default function TaskComposer({
   const [newModelEndpoint, setNewModelEndpoint] = useState('')
   const [newModelKey, setNewModelKey] = useState('')
   const [selectedModelId, setSelectedModelId] = useState('') // This is used to store manually entered Model ID
+  const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
   // Import custom skills locally
   const [customSkills, setCustomSkills] = useState<string[]>([])
+  const onDraftChangeRef = useRef(onDraftChange)
+
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange
+  }, [onDraftChange])
 
   useEffect(() => {
     if (!workspaceId && workspaceOptions[0]) {
@@ -205,18 +211,29 @@ export default function TaskComposer({
     if (!draft) {
       return
     }
+
+    const nextSkills = draft.selectedSkillIds.join(', ')
+    const nextConnectors = draft.selectedConnectorIds.join(', ')
+    if (
+      draft.content === message &&
+      nextSkills === skills &&
+      nextConnectors === connectors
+    ) {
+      return
+    }
+
     setMessage(draft.content)
-    setSkills(draft.selectedSkillIds.join(', '))
-    setConnectors(draft.selectedConnectorIds.join(', '))
-  }, [draft])
+    setSkills(nextSkills)
+    setConnectors(nextConnectors)
+  }, [connectors, draft, message, skills])
 
   useEffect(() => {
-    onDraftChange?.({
+    onDraftChangeRef.current?.({
       content: message,
       selectedSkillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
       selectedConnectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
     })
-  }, [connectors, message, onDraftChange, skills])
+  }, [connectors, message, skills])
 
   async function handlePickWorkspace() {
     const workspace = await onPickWorkspace?.()
@@ -341,6 +358,7 @@ export default function TaskComposer({
       baseUrl: newModelEndpoint.trim(),
       apiKeyRef: apiKeyRef || undefined,
       modelName: selectedModelId.trim(),
+      apiMode: newModelApiMode,
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -352,6 +370,7 @@ export default function TaskComposer({
     setNewModelEndpoint('')
     setNewModelKey('')
     setSelectedModelId('')
+    setNewModelApiMode('auto')
     setAddingModel(false)
     Modal.success({ title: '保存成功', content: '自定义模型已添加' })
   }
@@ -817,11 +836,22 @@ export default function TaskComposer({
                       style={{ borderRadius: '4px' }}
                     />
                     <Input.Password
-                      placeholder="API Key (API 密钥)"
+                      placeholder="API Key 环境变量名 (如 OPENAI_API_KEY)"
                       value={newModelKey}
                       onChange={e => setNewModelKey(e.target.value)}
                       size="small"
                       style={{ borderRadius: '4px' }}
+                    />
+                    <Select
+                      value={newModelApiMode}
+                      onChange={value => setNewModelApiMode(value)}
+                      size="small"
+                      style={{ width: '100%' }}
+                      options={[
+                        { value: 'auto', label: 'API 模式: 自动' },
+                        { value: 'responses', label: 'API 模式: Responses API' },
+                        { value: 'chat_completions', label: 'API 模式: Compatible Chat API' },
+                      ]}
                     />
                     <Input
                       placeholder="模型型号 (如 gpt-4o)"
@@ -846,6 +876,7 @@ export default function TaskComposer({
                           setNewModelEndpoint('')
                           setNewModelKey('')
                           setSelectedModelId('')
+                          setNewModelApiMode('auto')
                           setNewModelName('')
                         }} 
                         style={{ borderRadius: '4px', fontSize: '11px' }}

@@ -13,6 +13,7 @@ test('createDefaultState returns one default workspace and one default task', ()
   assert.equal(state.agentRuns.length, 0);
   assert.equal(state.agentEvents.length, 0);
   assert.equal(state.approvals.length, 0);
+  assert.equal(state.modelConfigs.length, 0);
 
   const workspace = state.workspaces[0];
   const task = state.tasks[0];
@@ -20,6 +21,7 @@ test('createDefaultState returns one default workspace and one default task', ()
 
   assert.equal(workspace.name, '默认工作区');
   assert.equal(task.title, '开始使用 AnyBuddy');
+  assert.equal(task.modelId, '');
   assert.equal(task.primaryWorkspaceId, workspace.id);
   assert.equal(taskWorkspace.workspaceId, workspace.id);
   assert.equal(taskWorkspace.taskId, task.id);

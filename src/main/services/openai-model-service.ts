@@ -1,6 +1,6 @@
 import process from 'node:process';
 import OpenAI from 'openai';
-import type { ModelConfig } from '../../shared/types.js';
+import type { ModelApiMode, ModelConfig } from '../../shared/types.js';
 import type {
   AgentToolCall,
   ModelMessage,
@@ -17,6 +17,21 @@ function normalizeBaseUrl(value?: string) {
   }
 
   return trimmed.replace(/\/+$/, '');
+}
+
+function normalizeApiMode(value?: ModelApiMode) {
+  return value ?? 'auto';
+}
+
+function shouldUseResponsesApi(model: ResolvedModelConfig) {
+  if (model.apiMode === 'responses') {
+    return true;
+  }
+  if (model.apiMode === 'chat_completions') {
+    return false;
+  }
+
+  return /(^https:\/\/api\.openai\.com(?:\/v1)?$)|(^https:\/\/api\.openai\.com\/v1$)/i.test(model.baseUrl);
 }
 
 function extractJsonBlock(content: string) {
@@ -116,6 +131,7 @@ export class OpenAIModelService {
       model,
       baseUrl: normalizeBaseUrl(model.baseUrl),
       modelName: model.modelName,
+      apiMode: normalizeApiMode(model.apiMode),
       apiKey: this.resolveApiKey(model),
     };
   }
@@ -166,6 +182,36 @@ export class OpenAIModelService {
       apiKey: model.apiKey,
       baseURL: model.baseUrl,
     });
+
+    if (shouldUseResponsesApi(model)) {
+      const response = await client.responses.create({
+        model: model.modelName,
+        temperature: 0.2,
+        text: {
+          format: {
+            type: 'json_object',
+          },
+        },
+        input: [
+          {
+            role: 'system',
+            content: systemInstruction,
+          },
+          ...messages.map(message => ({
+            role: message.role === 'tool' ? 'assistant' : message.role,
+            content: message.role === 'tool' ? `Tool result:\n${message.content}` : message.content,
+          })),
+        ],
+      } as never);
+
+      const responseText = 'output_text' in response && typeof response.output_text === 'string'
+        ? response.output_text
+        : null;
+
+      return {
+        content: extractTextContent(responseText) || null,
+      };
+    }
 
     // 请求细节交给官方 SDK 处理，这一层只关心“给模型什么上下文”和“拿回什么规划结果”。
     const response = await client.chat.completions.create({

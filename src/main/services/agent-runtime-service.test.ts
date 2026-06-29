@@ -99,6 +99,7 @@ function createApprovalHarness() {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 
@@ -245,6 +246,7 @@ function createLoopRuntimeHarness(plans: ModelToolPlan[]) {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 
@@ -472,6 +474,7 @@ function createApprovalResumeHarness(plans: ModelToolPlan[]) {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 
@@ -656,6 +659,7 @@ function createLangChainRuntimeHarness() {
     },
     baseUrl: 'https://example.com/v1',
     modelName: 'gpt-4o-mini',
+    apiMode: 'auto',
     apiKey: 'test-key',
   };
 

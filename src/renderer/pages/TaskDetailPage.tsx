@@ -94,7 +94,7 @@ export default function TaskDetailPage() {
     [taskEvents],
   );
 
-  const systemMessages = useMemo(
+  const runtimeEventMessages = useMemo(
     () => taskEvents.map(summarizeRuntimeEvent).filter((message): message is Message => Boolean(message)),
     [taskEvents],
   );
@@ -205,15 +205,45 @@ export default function TaskDetailPage() {
         )}
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {systemMessages.map(message => {
-            if (message.role !== 'system') return null;
-            return (
-              <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0' }}>
-                <div style={{ background: '#e2e8f0', color: '#475569', padding: '4px 12px', borderRadius: '12px', fontSize: '11px', fontWeight: 500 }}>
-                  {message.content}
+          {runtimeEventMessages.map(message => {
+            if (message.role === 'system') {
+              return (
+                <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0' }}>
+                  <div style={{ background: '#e2e8f0', color: '#475569', padding: '4px 12px', borderRadius: '12px', fontSize: '11px', fontWeight: 500 }}>
+                    {message.content}
+                  </div>
                 </div>
-              </div>
-            );
+              );
+            }
+
+            if (message.role === 'tool') {
+              return (
+                <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', width: '100%' }}>
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
+                    工具调用
+                  </div>
+                  <div
+                    style={{
+                      maxWidth: '85%',
+                      padding: '12px 16px',
+                      borderRadius: '12px',
+                      background: '#1e293b',
+                      color: '#38bdf8',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+                      border: '1px solid #0f172a',
+                      fontSize: '14px',
+                      lineHeight: '1.6',
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: 'Consolas, Courier New, monospace',
+                    }}
+                  >
+                    {message.content}
+                  </div>
+                </div>
+              );
+            }
+
+            return null;
           })}
 
           {messages.map(message => {
@@ -224,7 +254,13 @@ export default function TaskDetailPage() {
             const isStreamingAssistant = isAssistant && Boolean(message.metadata?.streaming);
 
             if (isSystem) {
-              return null;
+              return (
+                <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
+                  <div style={{ background: '#f1f5f9', color: '#64748b', padding: '6px 16px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, border: '1px solid #e2e8f0' }}>
+                    {message.content}
+                  </div>
+                </div>
+              );
             }
 
             return (
@@ -262,7 +298,6 @@ export default function TaskDetailPage() {
 
         <div style={{ padding: '16px 24px', borderTop: '1px solid #f1f5f9', background: '#ffffff' }}>
           <TaskComposer
-            key={taskId}
             workspaces={workspaces}
             draft={drafts[taskId ?? '']}
             hideTitle={true}

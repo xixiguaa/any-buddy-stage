@@ -53,35 +53,31 @@ function readToolName(payload: Record<string, unknown>) {
   return 'unknown';
 }
 
-function extractLatestStreamingEvents(events: AgentEvent[]) {
-  const latestByRunId = new Map<string, StreamingEventSnapshot>();
-
-  for (const event of events) {
+function extractStreamingEvents(events: AgentEvent[]) {
+  return events.flatMap<StreamingEventSnapshot>(event => {
     if (event.type !== 'agent_message') {
-      continue;
+      return [];
     }
 
     const role = typeof event.payload.role === 'string' ? event.payload.role : '';
     const content = typeof event.payload.content === 'string' ? event.payload.content : '';
     if (role !== 'assistant' || !content.trim()) {
-      continue;
+      return [];
     }
 
-    latestByRunId.set(event.runId, {
+    return [{
       eventId: event.id,
       taskId: event.taskId,
       runId: event.runId,
       content,
       createdAt: event.createdAt,
-    });
-  }
-
-  return [...latestByRunId.values()];
+    }];
+  });
 }
 
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
   const visibleMessages = [...baseMessages];
-  const streamingEvents = extractLatestStreamingEvents(events);
+  const streamingEvents = extractStreamingEvents(events);
 
   for (const event of streamingEvents) {
     const alreadyPersisted = baseMessages.some(message =>
@@ -95,7 +91,7 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
     }
 
     visibleMessages.push({
-      id: `live-${event.runId}`,
+      id: `live-${event.eventId}`,
       taskId: event.taskId,
       runId: event.runId,
       role: 'assistant',

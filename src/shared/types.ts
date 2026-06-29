@@ -6,6 +6,7 @@ export type WorkspaceAccessMode = 'read_only' | 'read_write'
 export type AgentRunStatus = 'queued' | 'running' | 'paused' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled' | 'archived'
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export type ModelProvider = 'builtin' | 'openai_compatible' | 'custom'
+export type ModelApiMode = 'auto' | 'responses' | 'chat_completions'
 
 export type Workspace = {
   id: string
@@ -144,6 +145,7 @@ export type ModelConfig = {
   baseUrl?: string
   apiKeyRef?: string
   modelName: string
+  apiMode?: ModelApiMode
   enabled: boolean
   createdAt: string
   updatedAt: string

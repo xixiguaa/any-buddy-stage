@@ -2,6 +2,7 @@ import { createAgent, tool } from 'langchain';
 import { ChatOpenAI } from '@langchain/openai';
 import { z } from 'zod';
 import type { ReactAgent } from 'langchain';
+import type { ModelApiMode } from '../../shared/types.js';
 import type {
   ModelMessage,
   ResolvedModelConfig,
@@ -42,11 +43,23 @@ type LangChainAgentServiceDependencies = {
     model: string
     apiKey: string
     temperature: number
+    useResponsesApi: boolean
     configuration: {
       baseURL: string
     }
   }) => unknown
 };
+
+function shouldUseResponsesApi(model: ResolvedModelConfig) {
+  if (model.apiMode === 'responses') {
+    return true;
+  }
+  if (model.apiMode === 'chat_completions') {
+    return false;
+  }
+
+  return model.baseUrl.toLowerCase() === 'https://api.openai.com/v1';
+}
 
 // 工具执行如果触发敏感操作恢复点，需要立刻中断当前 agent 轮次，等待确认后再恢复。
 export class AgentApprovalPendingError extends Error {
@@ -60,8 +73,21 @@ export class AgentApprovalPendingError extends Error {
 }
 
 // 当前内部消息角色和 LangChain 兼容，因此这里只做一个显式透传点。
-function normalizeRole(role: ModelMessage['role']) {
-  return role;
+function normalizeRole(role: string): ModelMessage['role'] | null {
+  switch (role) {
+    case 'assistant':
+    case 'ai':
+      return 'assistant';
+    case 'user':
+    case 'human':
+      return 'user';
+    case 'system':
+      return 'system';
+    case 'tool':
+      return 'tool';
+    default:
+      return null;
+  }
 }
 
 // 工具结果统一序列化成字符串，便于 LangChain agent 把它作为标准 tool output 回灌给模型。
@@ -70,6 +96,37 @@ function serializeToolResult(result: ToolExecutionResult) {
     summary: result.summary,
     data: result.data,
   });
+}
+
+function normalizeMessageContent(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const text = content
+    .map(item => {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+
+      if ('text' in item && typeof item.text === 'string') {
+        return item.text;
+      }
+
+      if ('content' in item && typeof item.content === 'string') {
+        return item.content;
+      }
+
+      return '';
+    })
+    .join('')
+    .trim();
+
+  return text || null;
 }
 
 export class LangChainAgentService {
@@ -95,6 +152,7 @@ export class LangChainAgentService {
       model: input.model.modelName,
       apiKey: input.model.apiKey,
       temperature: 0.2,
+      useResponsesApi: shouldUseResponsesApi(input.model),
       configuration: {
         baseURL: input.model.baseUrl,
       },
@@ -133,7 +191,7 @@ export class LangChainAgentService {
 
   private toLangChainMessages(messages: ModelMessage[]) {
     return messages.map(message => ({
-      role: normalizeRole(message.role),
+      role: message.role,
       content: message.content,
     }));
   }
@@ -161,31 +219,80 @@ export class LangChainAgentService {
   }
 
   private extractMessages(result: unknown): ModelMessage[] {
-    if (!result || typeof result !== 'object' || !('messages' in result) || !Array.isArray(result.messages)) {
+    if (Array.isArray(result)) {
+      return this.extractMessagesFromArray(result);
+    }
+
+    if (!result || typeof result !== 'object') {
       return [];
     }
 
-    return result.messages.flatMap(message => {
-      if (!message || typeof message !== 'object') {
-        return [];
+    if ('messages' in result && Array.isArray(result.messages)) {
+      return result.messages.flatMap(message => this.extractMessage(message));
+    }
+
+    return this.extractMessage(result);
+  }
+
+  private extractMessagesFromArray(result: unknown[]): ModelMessage[] {
+    if (result.length === 2 && this.looksLikeLangChainMessage(result[0])) {
+      return this.extractMessage(result[0]);
+    }
+
+    return result.flatMap(item => this.extractMessage(item));
+  }
+
+  private looksLikeLangChainMessage(value: unknown) {
+    return Boolean(
+      value &&
+      typeof value === 'object' &&
+      ('content' in value || 'role' in value || 'type' in value || '_getType' in value),
+    );
+  }
+
+  private extractMessage(message: unknown): ModelMessage[] {
+    if (!message || typeof message !== 'object') {
+      return [];
+    }
+
+    const role = this.extractRole(message);
+    const content = normalizeMessageContent((message as { content?: unknown }).content);
+
+    if (!role || content === null) {
+      return [];
+    }
+
+    return [{
+      role,
+      content,
+    }];
+  }
+
+  private extractRole(message: object): ModelMessage['role'] | null {
+    const directRole = (message as { role?: unknown }).role;
+    if (typeof directRole === 'string') {
+      return normalizeRole(directRole);
+    }
+
+    const typeProp = (message as { type?: unknown }).type;
+    if (typeof typeProp === 'string') {
+      return normalizeRole(typeProp);
+    }
+
+    const getType = (message as { _getType?: unknown })._getType;
+    if (typeof getType === 'function') {
+      const type = getType.call(message);
+      if (typeof type === 'string') {
+        return normalizeRole(type);
       }
+    }
 
-      const role = typeof (message as { role?: unknown }).role === 'string'
-        ? (message as { role: ModelMessage['role'] }).role
-        : null;
-      const content = typeof (message as { content?: unknown }).content === 'string'
-        ? (message as { content: string }).content
-        : null;
+    const constructorName = (message as { constructor?: { name?: string } }).constructor?.name;
+    if (constructorName?.toLowerCase().includes('aimessage')) {
+      return 'assistant';
+    }
 
-      if (!role || content === null) {
-        return [];
-      }
-
-      return [{
-        role,
-        content,
-      }];
-    });
+    return null;
   }
 
   private async *normalizeStream(stream: AsyncIterable<unknown>) {

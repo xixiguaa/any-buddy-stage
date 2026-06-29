@@ -31,6 +31,12 @@ async function bootstrap() {
     mainWindow?.webContents.send('agent-run:active-changed', runs)
   })
 
+  const originalEmitTaskRuntime = bus.emitTaskRuntime.bind(bus)
+  bus.emitTaskRuntime = ((taskId, payload) => {
+    mainWindow?.webContents.send(`agent-run:task-changed:${taskId}`, payload)
+    return originalEmitTaskRuntime(taskId, payload)
+  }) as typeof bus.emitTaskRuntime
+
   openMainWindow()
 
   app.on('activate', () => {
