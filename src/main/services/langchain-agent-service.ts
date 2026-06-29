@@ -10,6 +10,7 @@ import type {
   ToolExecutionContext,
   ToolExecutionResult,
 } from './agent-runtime-types.js';
+import { ModelApiModeMismatchError } from './agent-runtime-types.js';
 
 // 统一约束传给 LangChain agent 的输入结构，先只保留当前 runtime 真正需要的 messages。
 type AgentInput = {
@@ -51,14 +52,23 @@ type LangChainAgentServiceDependencies = {
 };
 
 function shouldUseResponsesApi(model: ResolvedModelConfig) {
-  if (model.apiMode === 'responses') {
-    return true;
-  }
   if (model.apiMode === 'chat_completions') {
     return false;
   }
 
-  return model.baseUrl.toLowerCase() === 'https://api.openai.com/v1';
+  const isOpenAiUrl = /(^https:\/\/api\.openai\.com(?:\/v1)?$)/i.test(model.baseUrl);
+  const isKnownNonOpenAi = /deepseek|anthropic|cohere|gemini|google|vertex|mistral|groq|openrouter|together|ollama|lm-studio|localai|lms/i.test(model.baseUrl);
+
+  if (model.apiMode === 'responses') {
+    if (isKnownNonOpenAi) {
+      throw new ModelApiModeMismatchError(
+        `当前模型/接口地址不支持 Responses API。请在模型配置中将该模型的 API 模式修改为 "Compatible Chat API" 或 "自动" (Auto)。`
+      );
+    }
+    return true;
+  }
+
+  return isOpenAiUrl && !isKnownNonOpenAi;
 }
 
 // 工具执行如果触发敏感操作恢复点，需要立刻中断当前 agent 轮次，等待确认后再恢复。
@@ -190,10 +200,18 @@ export class LangChainAgentService {
   }
 
   private toLangChainMessages(messages: ModelMessage[]) {
-    return messages.map(message => ({
-      role: message.role,
-      content: message.content,
-    }));
+    return messages.map(message => {
+      if (message.role === 'tool') {
+        return {
+          role: 'user' as const,
+          content: `Tool result:\n${message.content}`,
+        };
+      }
+      return {
+        role: message.role,
+        content: message.content,
+      };
+    });
   }
 
   private toLangChainTool(toolDefinition: ToolDefinition, context: ToolExecutionContext) {
@@ -262,9 +280,13 @@ export class LangChainAgentService {
       return [];
     }
 
+    const idProp = (message as { id?: unknown }).id;
+    const id = typeof idProp === 'string' ? idProp : undefined;
+
     return [{
       role,
       content,
+      ...(id ? { id } : {}),
     }];
   }
 

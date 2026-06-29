@@ -7,6 +7,7 @@ import type {
   ModelToolPlan,
   ResolvedModelConfig,
 } from './agent-runtime-types.js';
+import { ModelApiModeMismatchError } from './agent-runtime-types.js';
 
 const defaultBaseUrl = 'https://api.openai.com/v1';
 
@@ -24,14 +25,23 @@ function normalizeApiMode(value?: ModelApiMode) {
 }
 
 function shouldUseResponsesApi(model: ResolvedModelConfig) {
-  if (model.apiMode === 'responses') {
-    return true;
-  }
   if (model.apiMode === 'chat_completions') {
     return false;
   }
 
-  return /(^https:\/\/api\.openai\.com(?:\/v1)?$)|(^https:\/\/api\.openai\.com\/v1$)/i.test(model.baseUrl);
+  const isOpenAiUrl = /(^https:\/\/api\.openai\.com(?:\/v1)?$)/i.test(model.baseUrl);
+  const isKnownNonOpenAi = /deepseek|anthropic|cohere|gemini|google|vertex|mistral|groq|openrouter|together|ollama|lm-studio|localai|lms/i.test(model.baseUrl);
+
+  if (model.apiMode === 'responses') {
+    if (isKnownNonOpenAi) {
+      throw new ModelApiModeMismatchError(
+        `当前模型/接口地址不支持 Responses API。请在模型配置中将该模型的 API 模式修改为 "Compatible Chat API" 或 "自动" (Auto)。`
+      );
+    }
+    return true;
+  }
+
+  return isOpenAiUrl && !isKnownNonOpenAi;
 }
 
 function extractJsonBlock(content: string) {

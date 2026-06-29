@@ -71,7 +71,7 @@ test('buildVisibleMessages appends a synthetic streaming assistant message from 
   });
 });
 
-test('buildVisibleMessages does not duplicate a persisted final assistant message', () => {
+test('buildVisibleMessages does not duplicate a persisted final assistant message and hides intermediate stream messages', () => {
   const baseMessages = [
     createMessage({
       id: 'message-1',
@@ -110,12 +110,11 @@ test('buildVisibleMessages does not duplicate a persisted final assistant messag
 
   const visibleMessages = buildVisibleMessages(baseMessages, events);
 
-  assert.equal(visibleMessages.length, 2);
-  assert.equal(visibleMessages[0]?.id, 'live-event-1');
-  assert.equal(visibleMessages[1]?.id, 'message-1');
+  assert.equal(visibleMessages.length, 1);
+  assert.equal(visibleMessages[0]?.id, 'message-1');
 });
 
-test('buildVisibleMessages keeps multiple assistant stream events in order', () => {
+test('buildVisibleMessages only shows the latest streaming event when run is active', () => {
   const visibleMessages = buildVisibleMessages([], [
     createEvent({
       id: 'event-1',
@@ -141,7 +140,8 @@ test('buildVisibleMessages keeps multiple assistant stream events in order', () 
     }),
   ]);
 
-  assert.deepEqual(visibleMessages.map(message => message.content), ['first chunk', 'second chunk']);
+  assert.equal(visibleMessages.length, 1);
+  assert.equal(visibleMessages[0]?.content, 'second chunk');
 });
 
 test('summarizeRuntimeEvent converts tool and interrupt events into readable synthetic messages', () => {

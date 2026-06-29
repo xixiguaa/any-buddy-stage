@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, StopOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Input, Modal, Tag } from 'antd';
@@ -53,6 +53,14 @@ export default function TaskDetailPage() {
   const [editedArgsText, setEditedArgsText] = useState('');
   const [activeSubagentId, setActiveSubagentId] = useState<string | null>(null);
   const [subagentMessageText, setSubagentMessageText] = useState('');
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
+  }, [messages, taskEvents, taskId]);
 
   useEffect(() => {
     if (taskId && selectedTaskId !== taskId) {
@@ -204,7 +212,7 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div ref={scrollContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {runtimeEventMessages.map(message => {
             if (message.role === 'system') {
               return (

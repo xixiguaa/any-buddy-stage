@@ -13,6 +13,7 @@ import type {
   ToolExecutionContext,
   ToolExecutionResult,
 } from './agent-runtime-types.js';
+import { ModelApiModeMismatchError } from './agent-runtime-types.js';
 
 const defaultMaxPlanningRounds = 6;
 
@@ -220,28 +221,34 @@ export class AgentRuntimeService {
       console.log('[Runtime] invoking stream with messages count:', runtimeMessages.length);
       const stream = await runtimeAgent.stream({
         messages: runtimeMessages,
+      }, {
+        streamMode: 'messages',
       });
 
-      let latestMessages: ModelMessage[] = [];
-      let lastStreamedAssistantContent: string | null = null;
+      const accumulatedMessagesMap = new Map<string, string>();
       for await (const chunk of stream) {
         console.log('[Runtime] stream chunk received:', JSON.stringify(chunk).slice(0, 300));
-        latestMessages = chunk.messages;
-        const assistantMessage = this.pickFinalAssistantMessage(chunk.messages);
-        console.log('[Runtime] picked assistant message:', assistantMessage);
-        if (!assistantMessage || assistantMessage === lastStreamedAssistantContent) {
-          continue;
-        }
+        
+        const assistantMsgs = chunk.messages.filter(m => m.role === 'assistant');
+        for (const msg of assistantMsgs) {
+          if (!msg.content) continue;
+          
+          const msgId = msg.id || 'default-streaming';
+          const prevContent = accumulatedMessagesMap.get(msgId) || '';
+          const newContent = prevContent + msg.content;
+          accumulatedMessagesMap.set(msgId, newContent);
 
-        lastStreamedAssistantContent = assistantMessage;
-        await this.appService.appendRuntimeEvent(context.run.id, 'agent_message', {
-          role: 'assistant',
-          content: assistantMessage,
-          source: 'langchain_agent_stream',
-        });
+          const eventId = `msg-${msgId}`;
+          await this.appService.upsertAgentMessageEvent(context.run.id, eventId, newContent);
+        }
       }
 
-      const finalMessage = this.pickFinalAssistantMessage(latestMessages);
+      let finalMessage: string | undefined = undefined;
+      const keys = Array.from(accumulatedMessagesMap.keys());
+      if (keys.length > 0) {
+        finalMessage = accumulatedMessagesMap.get(keys[keys.length - 1]);
+      }
+
       console.log('[Runtime] finalMessage:', finalMessage);
       if (finalMessage) {
         await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
@@ -260,6 +267,9 @@ export class AgentRuntimeService {
       if (error instanceof AgentApprovalPendingError) {
         // 中断事件和 tool message 已经在工具执行阶段写入，这里只需停止当前轮次。
         return true;
+      }
+      if (error instanceof ModelApiModeMismatchError) {
+        throw error;
       }
 
       await this.appService.appendRuntimeMessage(
@@ -363,6 +373,9 @@ export class AgentRuntimeService {
         })),
       );
     } catch (error) {
+      if (error instanceof ModelApiModeMismatchError) {
+        throw error;
+      }
       await this.appService.appendRuntimeMessage(
         context.task.id,
         context.run.id,

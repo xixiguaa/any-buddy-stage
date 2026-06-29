@@ -82,13 +82,19 @@ export type ResolvedModelConfig = {
   apiMode: ModelApiMode
   apiKey: string | null
 }
-
 export type ModelMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  id?: string
 }
-
 export type ModelToolPlan = {
   toolCalls: AgentToolCall[]
   finalMessage?: string
+}
+
+export class ModelApiModeMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ModelApiModeMismatchError';
+  }
 }

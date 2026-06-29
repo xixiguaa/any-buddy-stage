@@ -74,40 +74,49 @@ function extractStreamingEvents(events: AgentEvent[]) {
     }];
   });
 }
-
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
   const visibleMessages = [...baseMessages];
   const streamingEvents = extractStreamingEvents(events);
 
+  // Group streaming events by runId
+  const streamingEventsByRun = new Map<string, StreamingEventSnapshot[]>();
   for (const event of streamingEvents) {
-    const alreadyPersisted = baseMessages.some(message =>
-      message.runId === event.runId &&
-      message.role === 'assistant' &&
-      message.content === event.content,
-    );
+    const list = streamingEventsByRun.get(event.runId) || [];
+    list.push(event);
+    streamingEventsByRun.set(event.runId, list);
+  }
 
-    if (alreadyPersisted) {
+  for (const [runId, list] of streamingEventsByRun.entries()) {
+    // If we already have a persisted assistant message for this run, ignore all streaming events of this run.
+    const hasPersisted = baseMessages.some(message =>
+      message.runId === runId &&
+      message.role === 'assistant',
+    );
+    if (hasPersisted) {
       continue;
     }
 
-    visibleMessages.push({
-      id: `live-${event.eventId}`,
-      taskId: event.taskId,
-      runId: event.runId,
-      role: 'assistant',
-      content: event.content,
-      metadata: {
-        synthetic: true,
-        sourceEventId: event.eventId,
-        streaming: true,
-      },
-      createdAt: event.createdAt,
-    });
+    // Otherwise, only show the LATEST streaming event for this run.
+    const latestEvent = list.at(-1);
+    if (latestEvent) {
+      visibleMessages.push({
+        id: `live-${latestEvent.eventId}`,
+        taskId: latestEvent.taskId,
+        runId: latestEvent.runId,
+        role: 'assistant',
+        content: latestEvent.content,
+        metadata: {
+          synthetic: true,
+          sourceEventId: latestEvent.eventId,
+          streaming: true,
+        },
+        createdAt: latestEvent.createdAt,
+      });
+    }
   }
 
   return visibleMessages.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
-
 export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
   const createdAt = event.createdAt;
 

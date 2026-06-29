@@ -1,3 +1,4 @@
+
 import { randomUUID } from 'node:crypto'
 import { shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
@@ -785,6 +786,47 @@ export class AppService {
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (taskId) {
+      this.emitTaskRuntime(taskId)
+    }
+  }
+
+  /**
+   * 更新或追加运行时流式消息事件，供前端实时显示打字机效果。
+   */
+  async upsertAgentMessageEvent(runId: string, eventId: string, content: string): Promise<void> {
+    let taskId = ''
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+      taskId = run.taskId
+
+      const existing = state.agentEvents.find(event => event.id === eventId)
+      if (existing) {
+        existing.payload = {
+          ...existing.payload,
+          content,
+        }
+      } else {
+        const event = {
+          id: eventId,
+          taskId: run.taskId,
+          runId,
+          parentRunId: run.parentRunId ?? undefined,
+          type: 'agent_message' as const,
+          payload: {
+            role: 'assistant',
+            content,
+            source: 'langchain_agent_stream',
+          },
+          createdAt: nowIso(),
+        }
+        state.agentEvents.push(event)
+      }
+    })
+
     if (taskId) {
       this.emitTaskRuntime(taskId)
     }

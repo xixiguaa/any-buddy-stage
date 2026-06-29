@@ -236,7 +236,7 @@ test('invoke forwards normalized messages to agent.invoke', async () => {
     messages: [
       { role: 'system', content: 'context' },
       { role: 'user', content: 'question' },
-      { role: 'tool', content: 'tool output' },
+      { role: 'user', content: 'Tool result:\ntool output' },
     ],
   });
   assert.equal(result.messages.length, 1);
