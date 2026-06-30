@@ -77,6 +77,18 @@ function extractStreamingEvents(events: AgentEvent[]) {
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
   const visibleMessages = [...baseMessages];
   const streamingEvents = extractStreamingEvents(events);
+  
+  // 1. 将其他的工具和系统日志等运行时事件作为 synthetic message 混入进来，参与排序并展示
+  for (const event of events) {
+    const summary = summarizeRuntimeEvent(event);
+    if (summary) {
+      // 避免重复混入
+      const alreadyHas = visibleMessages.some(m => m.id === `event-${event.id}`);
+      if (!alreadyHas) {
+        visibleMessages.push(summary);
+      }
+    }
+  }
 
   // Group streaming events by runId
   const streamingEventsByRun = new Map<string, StreamingEventSnapshot[]>();

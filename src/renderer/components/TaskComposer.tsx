@@ -13,7 +13,7 @@ import {
   RightOutlined,
   CompassOutlined
 } from '@ant-design/icons'
-import type { CreateTaskInput, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
+import type { CreateTaskInput, ExpertPreset, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
 import { useAppStore } from '../stores/app-store.js'
 import { useNavigate } from 'react-router-dom'
 
@@ -93,8 +93,9 @@ const MeituanAvatar = () => (
 )
 
 const getExpertAvatar = (name: string) => {
-  if (name === '微信小程序开发者') return <BoyAvatar />
-  if (name === '美团生活助手') return <MeituanAvatar />
+  if (/设计|design/i.test(name)) return <BoyAvatar />
+  if (/文档|doc/i.test(name)) return <MeituanAvatar />
+  if (/搜索|调试|research/i.test(name)) return <BoyAvatar />
   return <BoyAvatar />
 }
 
@@ -135,6 +136,7 @@ export default function TaskComposer({
   const workspaceOptions = useMemo(() => workspaces.filter(workspace => !workspace.isArchived), [workspaces])
   const customModels = useAppStore(state => state.customModels)
   const saveCustomModels = useAppStore(state => state.saveCustomModels)
+  const recentExperts = useAppStore(state => state.recentExperts)
   const summonedExpert = useAppStore(state => state.summonedExpert)
   const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
   const defaultModelId = useMemo(
@@ -162,7 +164,6 @@ export default function TaskComposer({
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
   const [showRecentExperts, setShowRecentExperts] = useState(false)
-  const [expertSelected, setExpertSelected] = useState(false)
 
   // Search filter states
   const [skillSearch, setSkillSearch] = useState('')
@@ -197,15 +198,33 @@ export default function TaskComposer({
     }
   }, [customModels, defaultModelId, modelId])
 
-  useEffect(() => {
-    if (summonedExpert) {
+  const expertSelected = Boolean(summonedExpert)
+
+  function applyExpertSelection(expert: ExpertPreset | null) {
+    if (!expert) {
+      setSummonedExpert(null)
+      setSkills('')
       if (onCreate) {
-        setExpertSelected(true)
-      } else {
-        setExpertSelected(false)
+        if (summonedExpert && message.trim() === `帮我创建一个 ${summonedExpert.name}，擅长 ${summonedExpert.description}。`) {
+          setMessage('')
+        }
       }
+      return
     }
-  }, [summonedExpert, onCreate])
+
+    setSummonedExpert(expert)
+    setSkills(expert.skills.join(', '))
+    if (onCreate) {
+      setMessage(`帮我创建一个 ${expert.name}，擅长 ${expert.description}。`)
+    }
+  }
+
+  function closeExpertPopovers() {
+    setShowRecentExperts(false)
+    window.setTimeout(() => {
+      setShowModePopover(false)
+    }, 50)
+  }
 
   useEffect(() => {
     if (!draft) {
@@ -225,7 +244,7 @@ export default function TaskComposer({
     setMessage(draft.content)
     setSkills(nextSkills)
     setConnectors(nextConnectors)
-  }, [connectors, draft, message, skills])
+  }, [draft?.taskId, draft?.updatedAt])
 
   useEffect(() => {
     onDraftChangeRef.current?.({
@@ -351,14 +370,16 @@ export default function TaskComposer({
     const finalName = newModelName.trim() || selectedModelId.trim()
     const normalizedId = finalName.toLowerCase().replace(/[^a-z0-9-_]+/g, '-')
     const apiKeyRef = newModelKey.trim()
+    const normalizedEndpoint = newModelEndpoint.trim().replace(/\/+$/, '')
+    const inferredApiMode: ModelApiMode = /deepseek/i.test(normalizedEndpoint) ? 'chat_completions' : newModelApiMode
     const newModel: ModelConfig = {
       id: normalizedId,
       name: finalName,
       provider: 'openai_compatible',
-      baseUrl: newModelEndpoint.trim(),
+      baseUrl: normalizedEndpoint,
       apiKeyRef: apiKeyRef || undefined,
       modelName: selectedModelId.trim(),
-      apiMode: newModelApiMode,
+      apiMode: inferredApiMode,
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -567,7 +588,7 @@ export default function TaskComposer({
 
                 <Popover
                   placement="rightTop"
-                  trigger="hover"
+                  trigger="click"
                   open={showRecentExperts}
                   onOpenChange={setShowRecentExperts}
                   overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
@@ -578,54 +599,46 @@ export default function TaskComposer({
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         {(() => {
-                          const recentList = [
-                            { 
-                              name: '微信小程序开发者', 
-                              sub: '小程达', 
-                              avatar: <BoyAvatar />,
-                              skills: ['frontend-design', 'design-taste-frontend'],
-                              desc: '开发微信小程序'
-                            },
-                            { 
-                              name: '美团生活助手', 
-                              sub: '领券下单找我', 
-                              avatar: <MeituanAvatar />,
-                              skills: ['web-search', 'writing-plans'],
-                              desc: '美团领券和生活省钱助手'
-                            }
-                          ]
-                          if (summonedExpert && !['微信小程序开发者', '美团生活助手'].includes(summonedExpert.name)) {
-                            recentList.push({
-                              name: summonedExpert.name,
-                              sub: summonedExpert.description || summonedExpert.desc || '已召唤专家',
-                              avatar: <BoyAvatar />,
-                              skills: summonedExpert.skills || [],
-                              desc: summonedExpert.description || summonedExpert.desc || ''
-                            })
+                          const recentList = recentExperts.map(exp => ({
+                            id: exp.id,
+                            name: exp.name,
+                            sub: exp.description || '已召唤专家',
+                            avatar: getExpertAvatar(exp.name),
+                            skills: exp.skills || [],
+                            desc: exp.description || ''
+                          }))
+
+                          if (recentList.length === 0) {
+                            return (
+                              <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px' }}>
+                                暂无最近召唤专家
+                              </div>
+                            )
                           }
 
                           return recentList.map(exp => {
-                            const isExpSelected = expertSelected && summonedExpert?.name === exp.name
+                            const isExpSelected = summonedExpert?.id === exp.id
                             const isExpHovered = hoveredItem === exp.name
-                            return (
-                              <div
-                                key={exp.name}
-                                onClick={() => {
-                                  if (isExpSelected) {
-                                    setExpertSelected(false)
-                                    const expertSkills = exp.skills
-                                    const currentSkillsList = skills.split(',').map(s => s.trim()).filter(Boolean)
-                                    const updatedSkillsList = currentSkillsList.filter(s => !expertSkills.includes(s))
-                                    setSkills(updatedSkillsList.join(', '))
-                                  } else {
-                                    setSummonedExpert({ id: exp.name, name: exp.name, description: exp.desc, skills: exp.skills })
-                                    setExpertSelected(true)
-                                    setSkills(exp.skills.join(', '))
-                                    if (onCreate) {
-                                      setMessage(`帮我创建一个 ${exp.name}，擅长 ${exp.desc}。`)
-                                    }
-                                  }
-                                }}
+                              return (
+                               <div
+                                 key={exp.name}
+                                 onClick={(event) => {
+                                   event.stopPropagation()
+                                   event.nativeEvent.stopImmediatePropagation()
+                                   if (isExpSelected) {
+                                     applyExpertSelection(null)
+                                   } else {
+                                     applyExpertSelection({
+                                       id: exp.id,
+                                       name: exp.name,
+                                       description: exp.desc,
+                                       skills: exp.skills,
+                                       createdAt: new Date().toISOString(),
+                                       updatedAt: new Date().toISOString(),
+                                     })
+                                   }
+                                   closeExpertPopovers()
+                                 }}
                                 onMouseEnter={() => setHoveredItem(exp.name)}
                                 onMouseLeave={() => setHoveredItem(null)}
                                 style={{
@@ -660,8 +673,9 @@ export default function TaskComposer({
                       <Divider style={{ margin: '6px 0' }} />
 
                       <div
-                        onClick={() => {
-                          setShowModePopover(false)
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          closeExpertPopovers()
                           navigate('/experts')
                         }}
                         onMouseEnter={() => setHoveredItem('other_experts')}
@@ -706,7 +720,7 @@ export default function TaskComposer({
                             {summonedExpert.name}
                           </span>
                           <span style={{ fontSize: '11px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {summonedExpert.name === '微信小程序开发者' ? '小程达' : summonedExpert.name === '美团生活助手' ? '领券下单找我' : (summonedExpert.description || summonedExpert.desc || '')}
+                            {summonedExpert.description || ''}
                           </span>
                         </div>
                         <CheckIcon />

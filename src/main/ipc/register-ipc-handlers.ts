@@ -4,12 +4,14 @@ import type { IpcResult } from '../../shared/types.js'
 import { toIpcError } from './serialize-error.js'
 import type { AppService } from '../services/app-service.js'
 import { AgentRuntimeService } from '../services/agent-runtime-service.js'
+import { logProcessError } from '../runtime/error-logger.js'
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
 }
 
 function fail(error: unknown): IpcResult<never> {
+  logProcessError({ scope: 'ipc-handler' }, error)
   return { ok: false, error: toIpcError(error) }
 }
 
@@ -226,6 +228,31 @@ export function registerIpcHandlers(appService: AppService) {
   ipcMain.handle(IPC_CHANNELS.settingsUpdate, async (_event, input) => {
     try {
       return ok(await appService.updateSettings(input))
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.expertsList, async () => {
+    try {
+      return ok(appService.listExperts())
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.expertsCreate, async (_event, input) => {
+    try {
+      return ok(await appService.createExpert(input))
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.expertsDelete, async (_event, expertId: string) => {
+    try {
+      await appService.deleteExpert(expertId)
+      return ok(undefined)
     } catch (error) {
       return fail(error)
     }

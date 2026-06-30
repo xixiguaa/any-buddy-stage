@@ -4,10 +4,13 @@ import { AppEventBus } from './runtime/event-bus.js'
 import { AppStateRepository } from './repositories/app-state-repository.js'
 import { AppService } from './services/app-service.js'
 import { registerIpcHandlers } from './ipc/register-ipc-handlers.js'
+import { installGlobalErrorHandlers, logProcessError } from './runtime/error-logger.js'
 import { createMainWindow } from './window/create-main-window.js'
 
 const bus = new AppEventBus()
 let mainWindow: BrowserWindow | null = null
+
+installGlobalErrorHandlers()
 
 function openMainWindow() {
   mainWindow = createMainWindow()
@@ -53,6 +56,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch(error => {
-  console.error(error)
+  logProcessError({ scope: 'bootstrap' }, error)
   app.quit()
 })

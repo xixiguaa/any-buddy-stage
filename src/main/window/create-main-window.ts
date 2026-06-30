@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { logProcessError } from '../runtime/error-logger.js'
 
 export function createMainWindow() {
   const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -21,9 +22,14 @@ export function createMainWindow() {
 
   if (!app.isPackaged) {
     const devUrl = process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ?? 'http://localhost:5173'
-    win.loadURL(devUrl)
+    void win.loadURL(devUrl).catch(error => {
+      logProcessError({ scope: 'loadURL', detail: { devUrl } }, error)
+    })
   } else {
-    win.loadFile(join(app.getAppPath(), 'dist/renderer/index.html'))
+    const file = join(app.getAppPath(), 'dist/renderer/index.html')
+    void win.loadFile(file).catch(error => {
+      logProcessError({ scope: 'loadFile', detail: { file } }, error)
+    })
   }
 
   return win

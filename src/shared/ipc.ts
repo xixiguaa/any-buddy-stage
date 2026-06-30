@@ -4,6 +4,7 @@ import type {
   HumanApproval,
   AppSettings,
   ModelConfig,
+  ExpertPreset,
   CreateAgentRunInput,
   CreateMessageInput,
   CreateTaskInput,
@@ -27,6 +28,7 @@ export type {
   ApprovalDecision,
   AppSettings,
   ModelConfig,
+  ExpertPreset,
   CreateAgentRunInput,
   CreateMessageInput,
   CreateTaskInput,
@@ -73,6 +75,9 @@ export const IPC_CHANNELS = {
   workspacesSetDefault: 'workspace:set-default',
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
+  expertsList: 'experts:list',
+  expertsCreate: 'experts:create',
+  expertsDelete: 'experts:delete',
   agentRunsListActive: 'agent-run:list-active',
   agentRunsStart: 'agent-run:start',
   agentRunsPause: 'agent-run:pause',
@@ -129,6 +134,11 @@ export type AnybuddyApi = {
   settings: {
     get(): Promise<IpcResult<AppSettings>>
     update(input: Partial<AppSettings>): Promise<IpcResult<AppSettings>>
+  }
+  expert: {
+    list(): Promise<IpcResult<ExpertPreset[]>>
+    create(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<IpcResult<ExpertPreset>>
+    delete(expertId: string): Promise<IpcResult<void>>
   }
   agentRun: {
     listActive(): Promise<IpcResult<AgentRun[]>>

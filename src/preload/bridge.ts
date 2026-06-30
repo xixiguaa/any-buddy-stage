@@ -9,6 +9,7 @@ import type {
   CreateMessageInput,
   CreateTaskInput,
   CreateWorkspaceInput,
+  ExpertPreset,
   HumanApproval,
   IpcResult,
   Message,
@@ -62,6 +63,11 @@ const anybuddyApi: AnybuddyApi = {
   settings: {
     get: () => invoke<AppSettings>(IPC_CHANNELS.settingsGet),
     update: input => invoke<AppSettings>(IPC_CHANNELS.settingsUpdate, input),
+  },
+  expert: {
+    list: () => invoke<ExpertPreset[]>(IPC_CHANNELS.expertsList),
+    create: input => invoke<ExpertPreset>(IPC_CHANNELS.expertsCreate, input),
+    delete: expertId => invoke<void>(IPC_CHANNELS.expertsDelete, expertId),
   },
   agentRun: {
     listActive: () => invoke<AgentRun[]>(IPC_CHANNELS.agentRunsListActive),

@@ -120,6 +120,22 @@ class SettingsClient {
   }
 }
 
+class ExpertClient {
+  constructor(private readonly api: AnybuddyApi) {}
+
+  list() {
+    return this.api.expert.list()
+  }
+
+  create(input: Parameters<AnybuddyApi['expert']['create']>[0]) {
+    return this.api.expert.create(input)
+  }
+
+  delete(expertId: string) {
+    return this.api.expert.delete(expertId)
+  }
+}
+
 class AgentRunClient {
   constructor(private readonly api: AnybuddyApi) {}
 
@@ -206,6 +222,7 @@ export type AnybuddyClients = {
   message: MessageClient
   workspace: WorkspaceClient
   settings: SettingsClient
+  expert: ExpertClient
   agentRun: AgentRunClient
   config: ConfigClient
 }
@@ -217,6 +234,7 @@ export function createAnybuddyClients(api: AnybuddyApi): AnybuddyClients {
     message: new MessageClient(api),
     workspace: new WorkspaceClient(api),
     settings: new SettingsClient(api),
+    expert: new ExpertClient(api),
     agentRun: new AgentRunClient(api),
     config: new ConfigClient(api),
   }

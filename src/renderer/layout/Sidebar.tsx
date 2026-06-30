@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import type { ModelApiMode } from '../../shared/types.js'
 import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Button, Badge, Modal, Input, Popover, Avatar, Dropdown, Space, Tag, Tooltip, Switch, Divider, Form, Card } from 'antd'
 import {
@@ -98,6 +99,7 @@ export default function Sidebar() {
   const [newModelEndpoint, setNewModelEndpoint] = useState('')
   const [newModelKey, setNewModelKey] = useState('')
   const [newModelBase, setNewModelBase] = useState('')
+  const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
   // Global Assistant Setup Form States
   const [wechatWebhook, setWechatWebhook] = useState(settings?.wechatWebhook ?? '')
@@ -215,13 +217,16 @@ export default function Sidebar() {
       return
     }
     const now = new Date().toISOString()
+    const normalizedEndpoint = newModelEndpoint.trim().replace(/\/+$/, '')
+    const inferredApiMode: ModelApiMode = /deepseek/i.test(normalizedEndpoint) ? 'chat_completions' : newModelApiMode
     const newModel = {
       id: newModelName.toLowerCase().replace(/[^a-z0-9-_]+/g, '-'),
       name: newModelName,
       provider: 'openai_compatible' as const,
-      baseUrl: newModelEndpoint,
+      baseUrl: normalizedEndpoint,
       apiKeyRef: newModelKey || undefined,
       modelName: newModelBase.trim(),
+      apiMode: inferredApiMode,
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -232,6 +237,7 @@ export default function Sidebar() {
     setNewModelEndpoint('')
     setNewModelKey('')
     setNewModelBase('')
+    setNewModelApiMode('auto')
     Modal.success({ title: '保存成功', content: '自定义模型已保存写入' })
   }
 
@@ -1036,6 +1042,18 @@ export default function Sidebar() {
                         value={newModelEndpoint}
                         onChange={e => setNewModelEndpoint(e.target.value)}
                       />
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '12px', color: '#64748b', display: 'block', marginBottom: '4px' }}>API 模式：</span>
+                      <select
+                        value={newModelApiMode}
+                        onChange={e => setNewModelApiMode(e.target.value as ModelApiMode)}
+                        style={{ width: '100%', height: '36px', borderRadius: '8px', border: '1px solid #e2e8f0', padding: '0 8px' }}
+                      >
+                        <option value="auto">自动</option>
+                        <option value="responses">Responses API</option>
+                        <option value="chat_completions">Compatible Chat API</option>
+                      </select>
                     </div>
                     <div>
                       <span style={{ fontSize: '12px', color: '#64748b', display: 'block', marginBottom: '4px' }}>API Key (可选)：</span>

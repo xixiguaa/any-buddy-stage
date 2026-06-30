@@ -8,6 +8,17 @@ export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 export type ModelProvider = 'builtin' | 'openai_compatible' | 'custom'
 export type ModelApiMode = 'auto' | 'responses' | 'chat_completions'
 
+export type ExpertPreset = {
+  id: string
+  name: string
+  description: string
+  skills: string[]
+  isCustom?: boolean
+  systemPrompt?: string
+  createdAt: string
+  updatedAt: string
+}
+
 export type Workspace = {
   id: string
   name: string
@@ -161,6 +172,7 @@ export type AppState = {
   agentRuns: AgentRun[]
   agentEvents: AgentEvent[]
   approvals: HumanApproval[]
+  experts: ExpertPreset[]
   modelConfigs: ModelConfig[]
   mcpConfigRaw: string
   settings: AppSettings

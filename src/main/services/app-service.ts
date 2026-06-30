@@ -8,6 +8,7 @@ import os from 'node:os'
 import { AppEventBus } from '../runtime/event-bus.js'
 import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
+import { DEFAULT_EXPERTS } from '../../renderer/data/experts.js'
 import type {
   AgentEvent,
   AgentRun,
@@ -19,6 +20,7 @@ import type {
   CreateWorkspaceInput,
   HumanApproval,
   Message,
+  ExpertPreset,
   Task,
   TaskDraft,
   TaskFilter,
@@ -36,6 +38,24 @@ import { dialog } from 'electron'
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
+
+function sanitizeModelConfigs(models: ModelConfig[]) {
+  return models
+    .filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
+    .map(model => {
+      const normalizedBaseUrl = model.baseUrl?.trim().replace(/\/+$/, '')
+      const normalizedApiMode = model.apiMode ?? 'auto'
+      const shouldForceChatCompletions = typeof normalizedBaseUrl === 'string' && /deepseek/i.test(normalizedBaseUrl)
+
+      return {
+        ...model,
+        ...(normalizedBaseUrl ? { baseUrl: normalizedBaseUrl } : {}),
+        apiMode: shouldForceChatCompletions && normalizedApiMode !== 'chat_completions'
+          ? 'chat_completions'
+          : normalizedApiMode,
+      }
+    })
+}
 
 function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange']) {
   if (!timeRange || timeRange === 'all') {
@@ -71,6 +91,7 @@ export class AppService {
 
   async init() {
     this.state = await this.repository.load(createDefaultState())
+    await this.ensureDefaultExperts()
     await this.hydrateConfigStateFromFiles()
     
     // Cleanup stuck active tasks/runs on startup
@@ -93,6 +114,18 @@ export class AppService {
     if (changed) {
       await this.persist()
     }
+  }
+
+  private async ensureDefaultExperts() {
+    const existingIds = new Set(this.snapshot.experts.map(expert => expert.id))
+    const missingExperts = DEFAULT_EXPERTS.filter(expert => !existingIds.has(expert.id))
+    if (missingExperts.length === 0) {
+      return
+    }
+
+    await this.mutate(state => {
+      state.experts = [...state.experts, ...missingExperts]
+    })
   }
 
   private async persist() {
@@ -144,6 +177,7 @@ export class AppService {
   }
 
   private async syncConfigFilesFromState() {
+    this.snapshot.modelConfigs = sanitizeModelConfigs(this.snapshot.modelConfigs)
     await this.ensureConfigDir()
     await Promise.all([
       writeFile(this.getModelsConfigFile(), JSON.stringify(this.snapshot.modelConfigs, null, 2), 'utf8'),
@@ -159,7 +193,7 @@ export class AppService {
     try {
       const parsedModels = JSON.parse(fileModelsRaw) as ModelConfig[]
       if (Array.isArray(parsedModels) && parsedModels.length > 0) {
-        this.snapshot.modelConfigs = parsedModels
+        this.snapshot.modelConfigs = sanitizeModelConfigs(parsedModels)
         changed = true
       }
     } catch {
@@ -580,8 +614,35 @@ export class AppService {
     return this.listAgentRuns().filter(run => run.taskId === taskId)
   }
 
+  listExperts(): ExpertPreset[] {
+    return [...this.snapshot.experts].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  async createExpert(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<ExpertPreset> {
+    const now = nowIso()
+    const expert: ExpertPreset = {
+      ...input,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    return this.mutate(state => {
+      state.experts = [
+        ...state.experts.filter(item => item.id !== expert.id),
+        expert,
+      ]
+      return expert
+    })
+  }
+
+  async deleteExpert(expertId: string): Promise<void> {
+    await this.mutate(state => {
+      state.experts = state.experts.filter(expert => expert.id !== expertId)
+    })
+  }
+
   listModelConfigs(): ModelConfig[] {
-    return [...this.snapshot.modelConfigs]
+    return sanitizeModelConfigs(this.snapshot.modelConfigs)
   }
 
   private resolveTaskModelId(requestedModelId?: string) {
@@ -1040,7 +1101,7 @@ export class AppService {
   }
 
   async readModelsConfig(): Promise<string> {
-    return JSON.stringify(this.snapshot.modelConfigs, null, 2)
+    return JSON.stringify(sanitizeModelConfigs(this.snapshot.modelConfigs), null, 2)
   }
 
   async writeModelsConfig(content: string): Promise<void> {
@@ -1050,7 +1111,7 @@ export class AppService {
     }
 
     await this.mutate(state => {
-      state.modelConfigs = parsed
+      state.modelConfigs = sanitizeModelConfigs(parsed)
     })
     await this.syncConfigFilesFromState()
   }

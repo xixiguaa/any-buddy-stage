@@ -2,6 +2,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 import type { AppSettings, AppState } from '../../shared/types.js';
 import { createId, nowIso } from '../../shared/utils.js';
+import { DEFAULT_EXPERTS } from '../../renderer/data/experts.js';
 
 export function createDefaultSettings(): AppSettings {
   return {
@@ -62,6 +63,7 @@ export function createDefaultState(): AppState {
     agentRuns: [],
     agentEvents: [],
     approvals: [],
+    experts: DEFAULT_EXPERTS,
     modelConfigs: [],
     mcpConfigRaw: JSON.stringify({ mcpServers: {} }, null, 2),
     settings: {

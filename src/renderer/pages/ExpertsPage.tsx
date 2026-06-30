@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Tabs, Card, Tag, Button, Space, Modal, Input, Checkbox, Form, Row, Col, Empty, Tooltip } from 'antd'
-import { 
+import {
   SlidersOutlined, 
   LinkOutlined, 
   PlusOutlined, 
@@ -14,39 +14,7 @@ import {
   SaveOutlined
 } from '@ant-design/icons'
 import { useAppStore } from '../stores/app-store.js'
-
-interface Expert {
-  id: string
-  name: string
-  description: string
-  skills: string[]
-  isCustom?: boolean
-  systemPrompt?: string
-}
-
-const DEFAULT_EXPERTS: Expert[] = [
-  {
-    id: 'expert-design',
-    name: '设计专家 (Design Agent)',
-    description: '专注于应用结构布局、UI 交互语言、高保真组件形态及整体艺术风格重构。',
-    skills: ['frontend-design', 'ui-ux-pro-max', 'design-taste-frontend'],
-    systemPrompt: 'You are a principal designer expert. Guide the user in UI/UX and styling decisions.'
-  },
-  {
-    id: 'expert-doc',
-    name: '文档助手 (Doc Agent)',
-    description: '撰写各种详尽的产品规格说明书、设计提案草案、开发排期计划书及长期沉淀文档。',
-    skills: ['doc-coauthoring', 'writing-plans'],
-    systemPrompt: 'You are a technical writer. Focus on grammar, structure, clarity and concise specs.'
-  },
-  {
-    id: 'expert-research',
-    name: '搜索与调试 (Research Agent)',
-    description: '聚合多维网络搜索源，精准对比不同的系统架构方案，并辅助排除后台代码缺陷。',
-    skills: ['web-search', 'systematic-debugging'],
-    systemPrompt: 'You are a research engineer. Write shell commands, search the web and extract raw technical facts.'
-  },
-]
+import type { ExpertPreset } from '../../shared/types.js'
 
 const SKILLS_LIST = [
   { id: 'frontend-design', name: 'frontend-design', desc: '前端整体界面排版与视觉设计技能包' },
@@ -69,13 +37,14 @@ export default function ExpertsPage() {
   const navigate = useNavigate()
   const saveDraft = useAppStore(state => state.saveDraft)
   const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
+  const experts = useAppStore(state => state.experts)
+  const createExpert = useAppStore(state => state.createExpert)
+  const deleteExpert = useAppStore(state => state.deleteExpert)
   const mcpConfigRaw = useAppStore(state => state.mcpConfigRaw)
   const saveMcpConfig = useAppStore(state => state.saveMcpConfig)
   
   const [activeTab, setActiveTab] = useState('experts')
   const [skillSearch, setSkillSearch] = useState('')
-  const [customExperts, setCustomExperts] = useState<Expert[]>([])
-  
   // Custom expert modals
   const [isExpertModalOpen, setIsExpertModalOpen] = useState(false)
   const [expertName, setExpertName] = useState('')
@@ -92,7 +61,7 @@ export default function ExpertsPage() {
     setMcpConfigText(mcpConfigRaw)
   }, [mcpConfigRaw])
 
-  const allExperts = useMemo(() => [...DEFAULT_EXPERTS, ...customExperts], [customExperts])
+  const allExperts = useMemo(() => experts, [experts])
 
   const filteredSkills = useMemo(() => {
     if (!skillSearch.trim()) return SKILLS_LIST
@@ -102,8 +71,8 @@ export default function ExpertsPage() {
     )
   }, [skillSearch])
 
-  const handleStartTask = async (expert: Expert) => {
-    setSummonedExpert(expert)
+  const handleStartTask = async (expert: ExpertPreset) => {
+    setSummonedExpert(expert, { addToRecent: true })
     const defaultPrompt = `帮我创建一个 ${expert.name}，擅长 ${expert.description}。我的经验是：[请在此补充您的行业背景与相关经验]`
     await saveDraft('__new_task__', {
       content: defaultPrompt,
@@ -118,14 +87,18 @@ export default function ExpertsPage() {
       Modal.error({ title: '提示', content: '请填写专家名称和定位描述' })
       return
     }
-    const tempExpert = {
+    const tempExpert = await createExpert({
       id: `custom-${Date.now()}`,
       name: expertName,
       description: expertDesc,
       skills: ['writing-plans'],
       isCustom: true
+    })
+    if (!tempExpert) {
+      Modal.error({ title: '提示', content: '创建专家失败' })
+      return
     }
-    setSummonedExpert(tempExpert)
+    setSummonedExpert(tempExpert, { addToRecent: true })
     const prompt = `帮我创建一个 ${expertName}，擅长 ${expertDesc}。我的经验是：[请在此补充您的行业背景与相关经验]`
     await saveDraft('__new_task__', {
       content: prompt,
@@ -226,7 +199,7 @@ export default function ExpertsPage() {
                             type="text" 
                             size="small" 
                             icon={<DeleteOutlined />} 
-                            onClick={(e) => { e.stopPropagation(); setCustomExperts(customExperts.filter(ce => ce.id !== expert.id)) }} 
+                            onClick={(e) => { e.stopPropagation(); void deleteExpert(expert.id) }} 
                           />
                         </Space>
                       ) : (

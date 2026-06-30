@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig } from '../../shared/types.js'
+import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig, ExpertPreset } from '../../shared/types.js'
 
 export class AppStateRepository {
   private db: Database.Database | null = null
@@ -118,6 +118,17 @@ export class AppStateRepository {
         decision TEXT NOT NULL,
         decidedAt TEXT,
         createdAt TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS experts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        skills TEXT NOT NULL,
+        isCustom INTEGER NOT NULL DEFAULT 0,
+        systemPrompt TEXT,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS settings (
@@ -276,6 +287,18 @@ export class AppStateRepository {
       createdAt: row.createdAt,
     }))
 
+    const expertRows = db.prepare('SELECT * FROM experts').all() as any[]
+    const experts: ExpertPreset[] = expertRows.map(row => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      skills: JSON.parse(row.skills),
+      isCustom: Boolean(row.isCustom),
+      systemPrompt: row.systemPrompt || undefined,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }))
+
     // Load settings
     const settingsRows = db.prepare('SELECT * FROM settings').all() as { key: string, value: string }[]
     const settingsMap: Record<string, string> = {}
@@ -332,6 +355,7 @@ export class AppStateRepository {
       agentRuns,
       agentEvents,
       approvals,
+      experts: experts.length ? experts : initialState.experts,
       modelConfigs: modelConfigs.length ? modelConfigs : initialState.modelConfigs,
       mcpConfigRaw: appConfigMap.mcpConfigRaw || initialState.mcpConfigRaw,
       settings,
@@ -351,6 +375,7 @@ export class AppStateRepository {
       db.prepare('DELETE FROM agent_runs').run()
       db.prepare('DELETE FROM agent_events').run()
       db.prepare('DELETE FROM approvals').run()
+      db.prepare('DELETE FROM experts').run()
       db.prepare('DELETE FROM settings').run()
       db.prepare('DELETE FROM model_configs').run()
       db.prepare('DELETE FROM app_config').run()
@@ -506,6 +531,23 @@ export class AppStateRepository {
           a.decision,
           a.decidedAt || null,
           a.createdAt
+        )
+      }
+
+      const insertExpert = db.prepare(`
+        INSERT INTO experts (id, name, description, skills, isCustom, systemPrompt, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const expert of s.experts) {
+        insertExpert.run(
+          expert.id,
+          expert.name,
+          expert.description,
+          JSON.stringify(expert.skills),
+          expert.isCustom ? 1 : 0,
+          expert.systemPrompt || null,
+          expert.createdAt,
+          expert.updatedAt,
         )
       }
 

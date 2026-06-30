@@ -7,6 +7,7 @@ import type {
   CreateWorkspaceInput,
   HumanApproval,
   Message,
+  ExpertPreset,
   ModelConfig,
   Task,
   TaskDraft,
@@ -17,6 +18,10 @@ import type {
 import { createAnybuddyClients } from '../api/clients.js'
 import { useAnybuddyClients } from '../api/context.js'
 import { buildVisibleMessages } from './runtime-message-view.js'
+
+function sanitizeModelConfigs(models: ModelConfig[]) {
+  return models.filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
+}
 
 export type SidebarTimeRange = 'all' | 'today' | 'last_7_days' | 'last_30_days'
 
@@ -33,6 +38,7 @@ type AppStoreState = {
   agentRuns: AgentRun[]
   taskEvents: AgentEvent[]
   taskApprovals: HumanApproval[]
+  experts: ExpertPreset[]
   sidebarSearch: string
   sidebarStatusFilter: 'all' | 'active' | 'waiting_approval' | 'failed'
   sidebarTimeRange: SidebarTimeRange
@@ -63,14 +69,66 @@ type AppStoreState = {
   mcpConfigRaw: string
   loadCustomModels(): Promise<void>
   saveCustomModels(models: ModelConfig[]): Promise<void>
+  loadExperts(): Promise<void>
+  createExpert(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<ExpertPreset | undefined>
+  deleteExpert(expertId: string): Promise<void>
   loadMcpConfig(): Promise<void>
   saveMcpConfig(content: string): Promise<void>
-  summonedExpert: any | null
-  setSummonedExpert(expert: any): void
+  summonedExpert: ExpertPreset | null
+  recentExperts: ExpertPreset[]
+  setSummonedExpert(expert: ExpertPreset | null, options?: { addToRecent?: boolean }): void
+  clearRecentExperts(): void
 }
 
 let bootstrapSubscription: (() => void) | null = null
 let selectedTaskSubscription: (() => void) | null = null
+const RECENT_EXPERTS_STORAGE_KEY = 'anybuddy.recentExperts'
+const RECENT_EXPERTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000
+
+function parseRecentExpertsFromStorage(): ExpertPreset[] {
+  if (typeof window === 'undefined') {
+    return []
+  }
+
+  try {
+    const raw = window.localStorage.getItem(RECENT_EXPERTS_STORAGE_KEY)
+    if (!raw) {
+      return []
+    }
+
+    const parsed = JSON.parse(raw) as { updatedAt: number; experts: ExpertPreset[] }
+    if (!parsed || typeof parsed.updatedAt !== 'number' || !Array.isArray(parsed.experts)) {
+      window.localStorage.removeItem(RECENT_EXPERTS_STORAGE_KEY)
+      return []
+    }
+
+    if (Date.now() - parsed.updatedAt >= RECENT_EXPERTS_MAX_AGE_MS) {
+      window.localStorage.removeItem(RECENT_EXPERTS_STORAGE_KEY)
+      return []
+    }
+
+    return parsed.experts
+  } catch {
+    window.localStorage.removeItem(RECENT_EXPERTS_STORAGE_KEY)
+    return []
+  }
+}
+
+function saveRecentExpertsToStorage(experts: ExpertPreset[]) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  if (experts.length === 0) {
+    window.localStorage.removeItem(RECENT_EXPERTS_STORAGE_KEY)
+    return
+  }
+
+  window.localStorage.setItem(RECENT_EXPERTS_STORAGE_KEY, JSON.stringify({
+    updatedAt: Date.now(),
+    experts,
+  }))
+}
 
 export const useAppStore = create<AppStoreState>((set, get) => ({
   initialized: false,
@@ -83,14 +141,34 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   agentRuns: [],
   taskEvents: [],
   taskApprovals: [],
+  experts: [],
   sidebarSearch: '',
   sidebarStatusFilter: 'all',
   sidebarTimeRange: 'all',
   customModels: [],
   mcpConfigRaw: '{}',
+  recentExperts: parseRecentExpertsFromStorage(),
   summonedExpert: null,
-  setSummonedExpert(expert) {
-    set({ summonedExpert: expert })
+  setSummonedExpert(expert, options) {
+    set(state => {
+      const shouldAddToRecent = options?.addToRecent ?? false
+      const recentExperts = shouldAddToRecent && expert
+        ? [expert, ...state.recentExperts.filter(item => item.id !== expert.id)].slice(0, 10)
+        : state.recentExperts
+
+      if (shouldAddToRecent) {
+        saveRecentExpertsToStorage(recentExperts)
+      }
+
+      return {
+        summonedExpert: expert,
+        recentExperts,
+      }
+    })
+  },
+  clearRecentExperts() {
+    saveRecentExpertsToStorage([])
+    set({ recentExperts: [] })
   },
   async refreshTaskIndex() {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -137,6 +215,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
     await Promise.all([
       get().loadCustomModels(),
+      get().loadExperts(),
       get().loadMcpConfig(),
     ])
   },
@@ -156,10 +235,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       selectedTaskSubscription()
     }
     selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
-      console.log('[AppStore] subscribeTask payload events:', payload.events);
       set(state => {
-        const next = buildVisibleMessages(state.messages, payload.events);
-        console.log('[AppStore] computed visible messages (init):', next.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
+        const persistedMessages = state.messages.filter(message => !message.metadata?.streaming)
+        const next = buildVisibleMessages(persistedMessages, payload.events)
         return {
           agentRuns: [
             ...state.agentRuns.filter(run => run.taskId !== taskId),
@@ -168,29 +246,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           taskEvents: payload.events,
           taskApprovals: payload.approvals,
           messages: next,
-        };
-      });
-
-      void clients.message.list(taskId).then(messagesLiveResult => {
-        if (messagesLiveResult.ok) {
-          console.log('[AppStore] message list loaded:', messagesLiveResult.data.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
         }
-        set(state => {
-          const nextMessages = messagesLiveResult.ok
-            ? buildVisibleMessages(messagesLiveResult.data, payload.events)
-            : state.messages
-
-          console.log('[AppStore] computed visible messages (final):', nextMessages.map(m => ({ id: m.id, role: m.role, content: m.content.slice(0, 30) })));
-          return {
-            agentRuns: [
-              ...state.agentRuns.filter(run => run.taskId !== taskId),
-              ...payload.runs,
-            ],
-            taskEvents: payload.events,
-            taskApprovals: payload.approvals,
-            messages: nextMessages,
-          }
-        })
       })
       void get().refreshTaskIndex()
     })
@@ -413,18 +469,42 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (result.ok) {
       try {
         const list = JSON.parse(result.data) as ModelConfig[]
-        set({ customModels: Array.isArray(list) ? list : [] })
+        set({ customModels: Array.isArray(list) ? sanitizeModelConfigs(list) : [] })
       } catch {
         set({ customModels: [] })
       }
     }
   },
+  async loadExperts() {
+    const clients = createAnybuddyClients(window.anybuddy)
+    const result = await clients.expert.list()
+    if (result.ok) {
+      set({ experts: result.data })
+    }
+  },
+  async createExpert(input) {
+    const clients = createAnybuddyClients(window.anybuddy)
+    const result = await clients.expert.create(input)
+    if (result.ok) {
+      set(state => ({ experts: [...state.experts.filter(expert => expert.id !== result.data.id), result.data] }))
+      return result.data
+    }
+    return undefined
+  },
+  async deleteExpert(expertId) {
+    const clients = createAnybuddyClients(window.anybuddy)
+    const result = await clients.expert.delete(expertId)
+    if (result.ok) {
+      set(state => ({ experts: state.experts.filter(expert => expert.id !== expertId) }))
+    }
+  },
   async saveCustomModels(models) {
     const clients = createAnybuddyClients(window.anybuddy)
-    const content = JSON.stringify(models, null, 2)
+    const sanitized = sanitizeModelConfigs(models)
+    const content = JSON.stringify(sanitized, null, 2)
     const result = await clients.config.writeModels(content)
     if (result.ok) {
-      set({ customModels: models })
+      set({ customModels: sanitized })
     }
   },
   async loadMcpConfig() {

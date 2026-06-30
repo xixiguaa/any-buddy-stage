@@ -24,13 +24,17 @@ function normalizeApiMode(value?: ModelApiMode) {
   return value ?? 'auto';
 }
 
+function isKnownNonOpenAiEndpoint(baseUrl: string) {
+  return /deepseek|anthropic|cohere|gemini|google|vertex|mistral|groq|openrouter|together|ollama|lm-studio|localai|lms/i.test(baseUrl);
+}
+
 function shouldUseResponsesApi(model: ResolvedModelConfig) {
   if (model.apiMode === 'chat_completions') {
     return false;
   }
 
   const isOpenAiUrl = /(^https:\/\/api\.openai\.com(?:\/v1)?$)/i.test(model.baseUrl);
-  const isKnownNonOpenAi = /deepseek|anthropic|cohere|gemini|google|vertex|mistral|groq|openrouter|together|ollama|lm-studio|localai|lms/i.test(model.baseUrl);
+  const isKnownNonOpenAi = isKnownNonOpenAiEndpoint(model.baseUrl);
 
   if (model.apiMode === 'responses') {
     if (isKnownNonOpenAi) {
@@ -137,11 +141,17 @@ export class OpenAIModelService {
       return null;
     }
 
+    const normalizedBaseUrl = normalizeBaseUrl(model.baseUrl);
+    const normalizedApiMode = normalizeApiMode(model.apiMode);
+    const effectiveApiMode = normalizedApiMode === 'auto' && isKnownNonOpenAiEndpoint(normalizedBaseUrl)
+      ? 'chat_completions'
+      : normalizedApiMode;
+
     return {
       model,
-      baseUrl: normalizeBaseUrl(model.baseUrl),
+      baseUrl: normalizedBaseUrl,
       modelName: model.modelName,
-      apiMode: normalizeApiMode(model.apiMode),
+      apiMode: effectiveApiMode,
       apiKey: this.resolveApiKey(model),
     };
   }
