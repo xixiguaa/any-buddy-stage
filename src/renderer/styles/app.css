@@ -1244,4 +1244,57 @@ a {
   box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
 }
 
+/* Custom premium scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
 
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Dark mode scrollbars for pre blocks and dark code inputs */
+pre::-webkit-scrollbar-thumb,
+textarea::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+
+pre::-webkit-scrollbar-thumb:hover,
+textarea::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+/* Active Agent working animations */
+@keyframes pulsing-dot {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.2); opacity: 1; }
+}
+
+.pulsing-dot {
+  animation: pulsing-dot 0.8s infinite alternate;
+}
+
+@keyframes pulseBorder {
+  0% { border-color: #e2e8f0; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02); }
+  100% { border-color: #cbd5e1; box-shadow: 0 4px 16px rgba(99, 102, 241, 0.08); }
+}
+
+@keyframes loadingBar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+@keyframes pulseGlow {
+  0% { transform: scale(0.85); opacity: 0.5; box-shadow: 0 0 4px #3b82f6; }
+  100% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 12px #3b82f6; }
+}

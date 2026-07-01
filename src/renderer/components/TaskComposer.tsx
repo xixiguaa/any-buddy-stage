@@ -153,7 +153,7 @@ export default function TaskComposer({
   const [modelId, setModelId] = useState(defaultModelId)
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? workspaceOptions[0]?.id ?? '')
   const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
-  const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || 'frontend-design, ipc-design')
+  const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || '')
   const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
   const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0])
   const [permissionMode, setPermissionMode] = useState<'default' | 'full_access'>('default')
@@ -182,17 +182,54 @@ export default function TaskComposer({
   const [selectedModelId, setSelectedModelId] = useState('') // This is used to store manually entered Model ID
   const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
+  // Close both popovers when clicking outside either popover or the trigger button
+  useEffect(() => {
+    if (!showModePopover) return
+
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      
+      const insideMode = target.closest('.mode-popover-container')
+      const insideExperts = target.closest('.experts-popover-container')
+      const insideTrigger = target.closest('.mode-trigger-btn')
+      
+      if (!insideMode && !insideExperts && !insideTrigger) {
+        setShowRecentExperts(false)
+        setShowModePopover(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick, true)
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick, true)
+    }
+  }, [showModePopover])
+
   // Import custom skills locally - removed, now loaded from local .agents/skills directory
   // Load local skills from .agents/skills directory via IPC
   const [localSkills, setLocalSkills] = useState<string[]>([])
+  const [skillsLoaded, setSkillsLoaded] = useState(false)
   useEffect(() => {
     const clients = createAnybuddyClients(window.anybuddy)
     void clients.config.listSkills().then(result => {
       if (result.ok) {
         setLocalSkills(result.data)
       }
+      setSkillsLoaded(true)
     })
   }, [])
+
+  const selectedSkillsList = useMemo(() => {
+    const parsed = skills.split(',').map(s => s.trim()).filter(Boolean)
+    if (!skillsLoaded) return parsed
+    return parsed.filter(s => localSkills.includes(s))
+  }, [skills, localSkills, skillsLoaded])
+
+  const selectedConnectorsList = useMemo(() => {
+    const parsed = connectors.split(',').map(c => c.trim()).filter(Boolean)
+    const allowed = ['wechat', 'dingtalk', 'mcp', 'filesystem', 'web-search']
+    return parsed.filter(c => allowed.includes(c))
+  }, [connectors])
 
   const onDraftChangeRef = useRef(onDraftChange)
 
@@ -293,12 +330,12 @@ export default function TaskComposer({
   useEffect(() => {
     onDraftChangeRef.current?.({
       content: message,
-      selectedSkillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
-      selectedConnectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+      selectedSkillIds: selectedSkillsList,
+      selectedConnectorIds: selectedConnectorsList,
       selectedExpertIds: activeExpertId ? [activeExpertId] : [],
       selectedExpertId: activeExpertId,
     })
-  }, [activeExpertId, connectors, message, skills])
+  }, [activeExpertId, selectedConnectorsList, message, selectedSkillsList])
 
   async function handlePickWorkspace() {
     const workspace = await onPickWorkspace?.()
@@ -322,8 +359,8 @@ export default function TaskComposer({
         await onSend(initialMessage, {
           mode,
           modelId,
-          skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
-          connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+          skillIds: selectedSkillsList,
+          connectorIds: selectedConnectorsList,
           permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
           expertIds: activeExpertId ? [activeExpertId] : [],
           activeExpertId,
@@ -338,8 +375,8 @@ export default function TaskComposer({
             workspaceId: workspaceId || undefined,
             additionalWorkspaceIds: attachedWorkspaceIds,
             permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
-            connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
-            skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
+            connectorIds: selectedConnectorsList,
+            skillIds: selectedSkillsList,
             expertIds: activeExpertId ? [activeExpertId] : [],
             activeExpertId,
           },
@@ -364,9 +401,6 @@ export default function TaskComposer({
       void handleSubmit()
     }
   }
-
-  const selectedSkillsList = useMemo(() => skills.split(',').map(s => s.trim()).filter(Boolean), [skills])
-  const selectedConnectorsList = useMemo(() => connectors.split(',').map(c => c.trim()).filter(Boolean), [connectors])
 
   const allModels = useMemo(() => {
     return customModels.map(model => ({
@@ -551,7 +585,13 @@ export default function TaskComposer({
           {/* Mode Option */}
           <Popover
             open={showModePopover}
-            onOpenChange={setShowModePopover}
+            onOpenChange={(open) => {
+              setShowModePopover(open)
+              if (!open) {
+                setShowRecentExperts(false)
+              }
+            }}
+            overlayClassName="mode-popover-container"
             overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
             content={
               <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -610,6 +650,7 @@ export default function TaskComposer({
                   trigger="click"
                   open={showRecentExperts}
                   onOpenChange={setShowRecentExperts}
+                  overlayClassName="experts-popover-container"
                   overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
                   content={
                     <div style={{ width: '220px', padding: '4px' }}>
@@ -652,6 +693,7 @@ export default function TaskComposer({
                                       createdAt: new Date().toISOString(),
                                       updatedAt: new Date().toISOString(),
                                    })
+                                   closeExpertPopovers()
                                  }}
                                  onMouseEnter={() => setHoveredItem(exp.name)}
                                  onMouseLeave={() => setHoveredItem(null)}
@@ -757,7 +799,7 @@ export default function TaskComposer({
             trigger="click"
             placement="bottomLeft"
           >
-            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
+            <Button className="mode-trigger-btn" size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               ⚡ 模式: {mode.toUpperCase()}
             </Button>
           </Popover>

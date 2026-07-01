@@ -90,6 +90,7 @@ export const IPC_CHANNELS = {
   agentRunsSubscribeActive: 'agent-run:subscribe-active',
   agentRunsListEvents: 'agent-run:list-events',
   agentRunsListApprovals: 'agent-run:list-approvals',
+  agentRunsClearByTask: 'agent-run:clear-by-task',
   configReadModels: 'config:read-models',
   configWriteModels: 'config:write-models',
   configReadMcp: 'config:read-mcp',
@@ -150,6 +151,7 @@ export type AnybuddyApi = {
     resume(runId: string): Promise<IpcResult<AgentRun>>
     cancel(runId: string): Promise<IpcResult<AgentRun>>
     approve(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<IpcResult<void>>
+    clearByTask(taskId: string): Promise<IpcResult<void>>
     subscribeActive(listener: (runs: AgentRun[]) => void): () => void
     subscribeTask(taskId: string, listener: (payload: { runs: AgentRun[]; events: AgentEvent[]; approvals: HumanApproval[] }) => void): () => void
   }

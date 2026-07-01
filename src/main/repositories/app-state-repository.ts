@@ -172,10 +172,10 @@ export class AppStateRepository {
     const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
     if (!taskColumns.some(column => column.name === 'expertIds')) {
       if (taskColumns.some(column => column.name === 'expertId')) {
-        db.prepare('ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT "[]"').run()
-        db.prepare('UPDATE tasks SET expertIds = json_array(expertId) WHERE expertId IS NOT NULL AND expertId != ""').run()
+        db.prepare("ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT '[]'").run()
+        db.prepare("UPDATE tasks SET expertIds = json_array(expertId) WHERE expertId IS NOT NULL AND expertId != ''").run()
       } else {
-        db.prepare('ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT "[]"').run()
+        db.prepare("ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT '[]'").run()
       }
     }
     if (!taskColumns.some(column => column.name === 'activeExpertId')) {

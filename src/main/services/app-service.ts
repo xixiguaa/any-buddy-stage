@@ -371,6 +371,15 @@ export class AppService {
     })
   }
 
+  async clearTaskRuns(taskId: string): Promise<void> {
+    await this.mutate(state => {
+      state.agentRuns = state.agentRuns.filter(run => run.taskId !== taskId)
+      state.agentEvents = state.agentEvents.filter(event => event.taskId !== taskId)
+      state.approvals = state.approvals.filter(approval => approval.taskId !== taskId)
+    })
+    this.emitTaskRuntime(taskId)
+  }
+
   async attachWorkspace(taskId: string, workspaceId: string, accessMode: 'read_only' | 'read_write' = 'read_only'): Promise<TaskWorkspace> {
     return this.mutate(state => {
       const relation: TaskWorkspace = {
@@ -561,10 +570,17 @@ export class AppService {
   async openWorkspaceFolder(workspaceId: string): Promise<void> {
     const workspace = this.snapshot.workspaces.find(item => item.id === workspaceId)
     if (!workspace) {
-      throw new Error(`Workspace not found: ${workspaceId}`)
+      throw new Error(`找不到该工作空间记录：${workspaceId}`)
     }
-    if (workspace.path && existsSync(workspace.path)) {
-      await shell.openPath(workspace.path)
+    if (!workspace.path) {
+      throw new Error('未配置工作空间文件夹路径。')
+    }
+    if (!existsSync(workspace.path)) {
+      throw new Error(`文件夹路径不存在，可能已被移动或删除：${workspace.path}`)
+    }
+    const err = await shell.openPath(workspace.path)
+    if (err) {
+      throw new Error(`打开文件夹失败：${err}`)
     }
   }
 

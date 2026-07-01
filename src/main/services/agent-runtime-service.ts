@@ -262,6 +262,7 @@ export class AgentRuntimeService {
       `模型: ${context.model?.name ?? '未配置默认模型'}`,
       `网络开关: ${context.settings.networkEnabled ? '开启' : '关闭'}`,
       '说明: 当前为桌面 Agent runtime，会根据上下文持续规划、执行工具并写回事件流。',
+      '【重要要求】你在调用任何工具（如 list_workspace_files, read_workspace_file, web_search, run_shell_command 等）之前或期间，必须先向用户输出一句简短的中文规划或说明反馈（例如：“好的，收到任务，我现在调用 list_workspace_files 来查看文件目录...”、“已找到匹配，正在使用 read_workspace_file 读取内容...”），绝对不允许静默调用工具而不对用户进行反馈，从而提供友好、自然且有人情味的人机对话体验。',
     ].join('\n');
   }
 

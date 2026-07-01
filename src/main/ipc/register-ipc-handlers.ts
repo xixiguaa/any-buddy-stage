@@ -363,6 +363,15 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  ipcMain.handle(IPC_CHANNELS.agentRunsClearByTask, async (_event, taskId: string) => {
+    try {
+      await appService.clearTaskRuns(taskId)
+      return ok(undefined)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.configReadModels, async () => {
     try {
       return ok(await appService.readModelsConfig())

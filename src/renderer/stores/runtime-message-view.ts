@@ -54,33 +54,10 @@ function readToolName(payload: Record<string, unknown>) {
   return 'unknown';
 }
 
-function extractStreamingEvents(events: AgentEvent[]) {
-  return events.flatMap<StreamingEventSnapshot>(event => {
-    if (event.type !== 'agent_message') {
-      return [];
-    }
-
-    const role = typeof event.payload.role === 'string' ? event.payload.role : '';
-    const content = typeof event.payload.content === 'string' ? event.payload.content : '';
-    if (role !== 'assistant' || !content.trim()) {
-      return [];
-    }
-
-    return [{
-      eventId: event.id,
-      taskId: event.taskId,
-      runId: event.runId,
-      content,
-      metadata: event.payload,
-      createdAt: event.createdAt,
-    }];
-  });
-}
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
   const visibleMessages = [...baseMessages];
-  const streamingEvents = extractStreamingEvents(events);
   
-  // 1. 将其他的工具和系统日志等运行时事件作为 synthetic message 混入进来，参与排序并展示
+  // 1. 将所有的事件（包括工具调用、结果、中断等待、以及大模型的想法反馈）作为 synthetic message 混入进来
   for (const event of events) {
     const summary = summarizeRuntimeEvent(event);
     if (summary) {
@@ -92,50 +69,80 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
     }
   }
 
-  // Group streaming events by runId
-  const streamingEventsByRun = new Map<string, StreamingEventSnapshot[]>();
-  for (const event of streamingEvents) {
-    const list = streamingEventsByRun.get(event.runId) || [];
-    list.push(event);
-    streamingEventsByRun.set(event.runId, list);
+  // 2. 去重与流式状态管理
+  const persistedAssistantMessages = baseMessages.filter(m => m.role === 'assistant');
+  const persistedRuns = new Set(persistedAssistantMessages.map(m => m.runId));
+
+  // 找出每个 runId 下的最新一个 agent_message 事件 ID
+  const latestAgentMessageEventIdByRun = new Map<string, string>();
+  const agentMessageEvents = events.filter(e => e.type === 'agent_message');
+  for (const event of agentMessageEvents) {
+    latestAgentMessageEventIdByRun.set(event.runId, event.id);
   }
 
-  for (const [runId, list] of streamingEventsByRun.entries()) {
-    // If we already have a persisted assistant message for this run, ignore all streaming events of this run.
-    const hasPersisted = baseMessages.some(message =>
-      message.runId === runId &&
-      message.role === 'assistant',
-    );
-    if (hasPersisted) {
-      continue;
-    }
-
-    // Otherwise, only show the LATEST streaming event for this run.
-    const latestEvent = list.at(-1);
-    if (latestEvent) {
-      visibleMessages.push({
-        id: `live-${latestEvent.eventId}`,
-        taskId: latestEvent.taskId,
-        runId: latestEvent.runId,
-        role: 'assistant',
-        content: latestEvent.content,
-        metadata: {
-          synthetic: true,
-          sourceEventId: latestEvent.eventId,
-          streaming: true,
-          ...latestEvent.metadata,
-        },
-        createdAt: latestEvent.createdAt,
-      });
-    }
-  }
-
-  return visibleMessages.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  return visibleMessages
+    .filter(message => {
+      // 如果是 synthetic assistant message，且该 run 已经有持久化的助手消息
+      if (message.metadata?.synthetic && message.role === 'assistant') {
+        const pm = persistedAssistantMessages.find(m => m.runId === message.runId);
+        if (pm) {
+          // 如果内容跟最终持久化消息一致，说明是最终输出，去除重复
+          if (pm.content.trim() === message.content.trim()) {
+            return false;
+          }
+          // 或者如果它是该 run 中的最后一个 agent_message，且已经被持久化消息替代，我们也去除重复
+          const latestEventId = latestAgentMessageEventIdByRun.get(message.runId ?? '');
+          if (latestEventId && message.id === `event-${latestEventId}`) {
+            return false;
+          }
+        }
+      }
+      return true;
+    })
+    .map(message => {
+      // 动态更新流式输出状态：只有当该 run 没有持久化消息，且此消息是该 run 下的最新的一个 agent_message 时，才标记为 streaming
+      if (message.metadata?.synthetic && message.role === 'assistant') {
+        const isRunActive = !persistedRuns.has(message.runId ?? '');
+        const latestEventId = latestAgentMessageEventIdByRun.get(message.runId ?? '');
+        const isLatest = latestEventId && message.id === `event-${latestEventId}`;
+        
+        return {
+          ...message,
+          metadata: {
+            ...message.metadata,
+            streaming: Boolean(isRunActive && isLatest),
+          }
+        };
+      }
+      return message;
+    })
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
   const createdAt = event.createdAt;
 
   switch (event.type) {
+    case 'agent_message': {
+      const role = typeof event.payload.role === 'string' ? event.payload.role : 'assistant';
+      const content = typeof event.payload.content === 'string' ? event.payload.content : '';
+      if (!content.trim()) {
+        return null;
+      }
+      return {
+        id: `event-${event.id}`,
+        taskId: event.taskId,
+        runId: event.runId,
+        role: role as Message['role'],
+        content,
+        metadata: {
+          synthetic: true,
+          sourceEventId: event.id,
+          eventType: event.type,
+          ...event.payload,
+        },
+        createdAt,
+      };
+    }
     case 'tool_called':
       return {
         id: `event-${event.id}`,
@@ -173,6 +180,21 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         runId: event.runId,
         role: 'system',
         content: `等待恢复: ${String(event.payload.reason ?? '敏感操作需要确认参数')}`,
+        metadata: {
+          synthetic: true,
+          sourceEventId: event.id,
+          eventType: event.type,
+          payload: event.payload,
+        },
+        createdAt,
+      };
+    case 'run_failed':
+      return {
+        id: `event-${event.id}`,
+        taskId: event.taskId,
+        runId: event.runId,
+        role: 'system',
+        content: String(event.payload.message ?? 'Unknown runtime failure'),
         metadata: {
           synthetic: true,
           sourceEventId: event.id,

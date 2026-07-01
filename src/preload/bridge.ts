@@ -80,6 +80,7 @@ const anybuddyApi: AnybuddyApi = {
     resume: runId => invoke<AgentRun>(IPC_CHANNELS.agentRunsResume, runId),
     cancel: runId => invoke<AgentRun>(IPC_CHANNELS.agentRunsCancel, runId),
     approve: (approvalId, decision, editedArgs) => invoke<void>(IPC_CHANNELS.agentRunsApprove, approvalId, decision, editedArgs),
+    clearByTask: taskId => invoke<void>(IPC_CHANNELS.agentRunsClearByTask, taskId),
     subscribeActive: listener => {
       const channel = 'agent-run:active-changed'
       const handler = (_event: Electron.IpcRendererEvent, runs: AgentRun[]) => listener(runs)

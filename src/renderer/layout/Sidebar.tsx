@@ -80,6 +80,7 @@ export default function Sidebar() {
   const setSidebarTimeRange = useAppStore(state => state.setSidebarTimeRange)
   const saveCustomModels = useAppStore(state => state.saveCustomModels)
   const updateSettings = useAppStore(state => state.updateSettings)
+  const deleteTask = useAppStore(state => state.deleteTask)
 
   const [showSearchModal, setShowSearchModal] = useState(false)
   const [showFilterPopover, setShowFilterPopover] = useState(false)
@@ -89,6 +90,7 @@ export default function Sidebar() {
   const [tasksCollapsed, setTasksCollapsed] = useState(false)
   const [workspacesCollapsed, setWorkspacesCollapsed] = useState(false)
   const [hoveredWorkspaceId, setHoveredWorkspaceId] = useState<string | null>(null)
+  const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null)
 
   // Settings Modal States
   const [showSettingsModal, setShowSettingsModal] = useState(false)
@@ -188,6 +190,22 @@ export default function Sidebar() {
       { key: 'logout', label: '退出登录', icon: <InfoCircleOutlined /> },
     ],
     onClick: handleUserMenuClick,
+  }
+
+  const handleDeleteTask = (task: typeof tasks[number]) => {
+    Modal.confirm({
+      title: '删除任务',
+      content: `确定要删除任务 "${task.title}" 吗？此操作不可逆。`,
+      okText: '确定',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await deleteTask(task.id)
+        if (location.pathname.startsWith(`/tasks/${task.id}`)) {
+          navigate('/tasks/new')
+        }
+      }
+    })
   }
 
   const getStatusTag = (status: string) => {
@@ -526,6 +544,8 @@ export default function Sidebar() {
                       <NavLink
                         key={task.id}
                         to={`/tasks/${task.id}`}
+                        onMouseEnter={() => setHoveredTaskId(task.id)}
+                        onMouseLeave={() => setHoveredTaskId(null)}
                         style={({ isActive }) => ({
                           display: 'flex',
                           flexDirection: 'column',
@@ -542,11 +562,28 @@ export default function Sidebar() {
                             {task.title}
                           </span>
                           <span style={{ display: 'flex', alignItems: 'center' }}>
-                            {task.status === 'running' && <Badge status="processing" />}
-                            {task.status === 'waiting_approval' && <Badge status="warning" />}
-                            {task.status === 'failed' && <Badge status="error" />}
-                            {task.status === 'completed' && <Badge status="success" />}
-                            {task.status === 'paused' && <Badge status="warning" />}
+                            {hoveredTaskId === task.id ? (
+                              <DeleteOutlined
+                                style={{
+                                  color: '#ef4444',
+                                  cursor: 'pointer',
+                                  fontSize: '13px',
+                                }}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  handleDeleteTask(task)
+                                }}
+                              />
+                            ) : (
+                              <>
+                                {task.status === 'running' && <Badge status="processing" />}
+                                {task.status === 'waiting_approval' && <Badge status="warning" />}
+                                {task.status === 'failed' && <Badge status="error" />}
+                                {task.status === 'completed' && <Badge status="success" />}
+                                {task.status === 'paused' && <Badge status="warning" />}
+                              </>
+                            )}
                           </span>
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8' }}>
@@ -631,7 +668,14 @@ export default function Sidebar() {
                                         style={{ textAlign: 'left', fontSize: '12px' }}
                                         onClick={async () => {
                                           const clients = createAnybuddyClients(window.anybuddy)
-                                          await clients.workspace.openFolder(workspace.id)
+                                          const res = await clients.workspace.openFolder(workspace.id)
+                                          if (!res.ok) {
+                                            Modal.error({
+                                              title: '无法打开文件夹',
+                                              content: res.error.message || '文件夹可能已被删除或移动。',
+                                              okText: '好的'
+                                            })
+                                          }
                                         }}
                                       >
                                         打开文件夹
@@ -700,6 +744,8 @@ export default function Sidebar() {
                                 <NavLink
                                   key={task.id}
                                   to={`/tasks/${task.id}`}
+                                  onMouseEnter={() => setHoveredTaskId(task.id)}
+                                  onMouseLeave={() => setHoveredTaskId(null)}
                                   style={({ isActive }) => ({
                                     display: 'flex',
                                     alignItems: 'center',
@@ -715,7 +761,22 @@ export default function Sidebar() {
                                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '120px' }}>
                                     {task.title}
                                   </span>
-                                  {getStatusTag(task.status)}
+                                  {hoveredTaskId === task.id ? (
+                                    <DeleteOutlined
+                                      style={{
+                                        color: '#ef4444',
+                                        cursor: 'pointer',
+                                        fontSize: '13px',
+                                      }}
+                                      onClick={(e) => {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        handleDeleteTask(task)
+                                      }}
+                                    />
+                                  ) : (
+                                    getStatusTag(task.status)
+                                  )}
                                 </NavLink>
                               ))}
                               {!wsTasksList.length && (

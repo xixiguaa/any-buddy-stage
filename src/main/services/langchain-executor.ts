@@ -68,20 +68,26 @@ export class LangChainExecutor implements AgentExecutor {
         ...assistantMetadata,
         streaming: true,
       };
+      let turnIndex = 0;
       for await (const chunk of stream) {
         console.log('[Runtime] stream chunk received:', JSON.stringify(chunk).slice(0, 300));
 
-        const assistantMsgs = chunk.messages.filter(m => m.role === 'assistant');
+        const assistantMsgs = chunk.messages.filter((m: any) => m.role === 'assistant');
         for (const msg of assistantMsgs) {
           if (!msg.content) continue;
 
-          const msgId = msg.id || 'default-streaming';
+          const msgId = msg.id || `default-streaming-${turnIndex}`;
           const prevContent = accumulatedMessagesMap.get(msgId) || '';
           const newContent = prevContent + msg.content;
           accumulatedMessagesMap.set(msgId, newContent);
 
           const eventId = `msg-${msgId}`;
           await this.appService.upsertAgentMessageEvent(context.run.id, eventId, newContent, streamingPayloadPatch);
+        }
+
+        const hasToolCall = chunk.messages.some((m: any) => m.role === 'assistant' && (m as any).tool_calls?.length > 0);
+        if (hasToolCall) {
+          turnIndex += 1;
         }
       }
 

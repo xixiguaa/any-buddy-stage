@@ -70,6 +70,7 @@ type AppStoreState = {
   loadExperts(): Promise<void>
   createExpert(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<ExpertPreset | undefined>
   deleteExpert(expertId: string): Promise<void>
+  deleteTask(taskId: string): Promise<void>
   loadMcpConfig(): Promise<void>
   saveMcpConfig(content: string): Promise<void>
   summonedExpert: ExpertPreset | null
@@ -232,7 +233,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (selectedTaskSubscription) {
       selectedTaskSubscription()
     }
-    selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
+    selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, async payload => {
+      const taskResult = await clients.task.get(taskId)
       set(state => {
         const persistedMessages = state.messages.filter(message => !message.metadata?.streaming)
         const next = buildVisibleMessages(persistedMessages, payload.events)
@@ -244,6 +246,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           taskEvents: payload.events,
           taskApprovals: payload.approvals,
           messages: next,
+          taskDetail: taskResult.ok ? taskResult.data : state.taskDetail,
         }
       })
       void get().refreshTaskIndex()
@@ -504,6 +507,20 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const result = await clients.expert.delete(expertId)
     if (result.ok) {
       set(state => ({ experts: state.experts.filter(expert => expert.id !== expertId) }))
+    }
+  },
+  async deleteTask(taskId) {
+    const clients = createAnybuddyClients(window.anybuddy)
+    const result = await clients.task.delete(taskId)
+    if (result.ok) {
+      set(state => {
+        const nextSelected = state.selectedTaskId === taskId ? undefined : state.selectedTaskId
+        return {
+          tasks: state.tasks.filter(task => task.id !== taskId),
+          selectedTaskId: nextSelected,
+          taskDetail: state.selectedTaskId === taskId ? null : state.taskDetail,
+        }
+      })
     }
   },
   async saveCustomModels(models) {

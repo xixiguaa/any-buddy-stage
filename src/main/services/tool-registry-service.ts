@@ -278,7 +278,7 @@ export class ToolRegistryService {
       description: '列出任务主工作区下的目录内容。',
       requiresApproval: false,
       execute: async (context, args) => {
-        const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '.')
+        const targetPath = this.resolveWorkspacePath(context, args, '.');
         const entries = await fs.readdir(targetPath.absolutePath, { withFileTypes: true })
 
         return {
@@ -300,9 +300,9 @@ export class ToolRegistryService {
       description: '读取任务主工作区内的文件内容。',
       requiresApproval: false,
       execute: async (context, args) => {
-        const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '')
+        const targetPath = this.resolveWorkspacePath(context, args);
         if (!targetPath.relativePath) {
-          throw new Error('read_workspace_file requires a file path')
+          throw new Error('read_workspace_file requires a file path');
         }
 
         const content = await fs.readFile(targetPath.absolutePath, 'utf8')
@@ -350,10 +350,10 @@ export class ToolRegistryService {
       description: '写入任务主工作区内的文件。',
       requiresApproval: true,
       execute: async (context, args) => {
-        const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '')
-        const content = typeof args.content === 'string' ? args.content : ''
+        const targetPath = this.resolveWorkspacePath(context, args);
+        const content = typeof args.content === 'string' ? args.content : '';
         if (!targetPath.relativePath) {
-          throw new Error('write_workspace_file requires a file path')
+          throw new Error('write_workspace_file requires a file path');
         }
 
         return context.requestApproval({
@@ -374,9 +374,9 @@ export class ToolRegistryService {
       description: '按补丁修改任务主工作区内的文件。',
       requiresApproval: true,
       execute: async (context, args) => {
-        const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '')
+        const targetPath = this.resolveWorkspacePath(context, args);
         if (!targetPath.relativePath) {
-          throw new Error('edit_workspace_file requires a file path')
+          throw new Error('edit_workspace_file requires a file path');
         }
 
         return context.requestApproval({
@@ -628,21 +628,34 @@ export class ToolRegistryService {
     return workspace
   }
 
-  private resolveWorkspacePath(context: ToolExecutionContext, inputPath: string) {
-    const primaryWorkspace = this.getPrimaryWorkspace(context)
-    const safeInput = inputPath.trim().replace(/^[/\\]+/, '')
-    const absolutePath = normalize(join(primaryWorkspace.workspace.path, safeInput))
-    const relativePath = relative(primaryWorkspace.workspace.path, absolutePath)
+  private resolveWorkspacePath(
+    context: ToolExecutionContext,
+    inputPathOrArgs: string | Record<string, unknown>,
+    fallback = '',
+  ) {
+    let inputPath = '';
+    if (typeof inputPathOrArgs === 'string') {
+      inputPath = inputPathOrArgs;
+    } else if (inputPathOrArgs && typeof inputPathOrArgs === 'object') {
+      const args = inputPathOrArgs as Record<string, unknown>;
+      const pathVal = args.path ?? args.filePath ?? args.file_path ?? args.filename;
+      inputPath = typeof pathVal === 'string' ? pathVal : fallback;
+    }
+
+    const primaryWorkspace = this.getPrimaryWorkspace(context);
+    const safeInput = inputPath.trim().replace(/^[/\\]+/, '');
+    const absolutePath = normalize(join(primaryWorkspace.workspace.path, safeInput));
+    const relativePath = relative(primaryWorkspace.workspace.path, absolutePath);
 
     if (relativePath.startsWith('..') || normalize(relativePath).startsWith('..')) {
-      throw new Error('Path escapes the primary workspace')
+      throw new Error('Path escapes the primary workspace');
     }
 
     return {
       workspaceId: primaryWorkspace.workspaceId,
       absolutePath,
       relativePath,
-    }
+    };
   }
 
   private register(tool: ToolDefinition) {
@@ -650,10 +663,10 @@ export class ToolRegistryService {
   }
 
   private async writeWorkspaceFileDirect(context: ToolExecutionContext, args: Record<string, unknown>) {
-    const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '')
-    const content = typeof args.content === 'string' ? args.content : ''
+    const targetPath = this.resolveWorkspacePath(context, args);
+    const content = typeof args.content === 'string' ? args.content : '';
     if (!targetPath.relativePath) {
-      throw new Error('write_workspace_file requires a file path')
+      throw new Error('write_workspace_file requires a file path');
     }
 
     await fs.mkdir(dirname(targetPath.absolutePath), { recursive: true })
@@ -671,11 +684,11 @@ export class ToolRegistryService {
   }
 
   private async editWorkspaceFileDirect(context: ToolExecutionContext, args: Record<string, unknown>) {
-    const targetPath = this.resolveWorkspacePath(context, typeof args.path === 'string' ? args.path : '')
-    const content = typeof args.content === 'string' ? args.content : null
-    const patch = typeof args.patch === 'string' ? args.patch : null
+    const targetPath = this.resolveWorkspacePath(context, args);
+    const content = typeof args.content === 'string' ? args.content : null;
+    const patch = typeof args.patch === 'string' ? args.patch : null;
     if (!targetPath.relativePath) {
-      throw new Error('edit_workspace_file requires a file path')
+      throw new Error('edit_workspace_file requires a file path');
     }
 
     await fs.mkdir(dirname(targetPath.absolutePath), { recursive: true })

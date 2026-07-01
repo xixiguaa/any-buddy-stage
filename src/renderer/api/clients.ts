@@ -179,6 +179,10 @@ class AgentRunClient {
     return this.api.agentRun.approve(approvalId, decision, editedArgs)
   }
 
+  clearByTask(taskId: string) {
+    return this.api.agentRun.clearByTask(taskId)
+  }
+
   subscribeActive(listener: Parameters<AnybuddyApi['agentRun']['subscribeActive']>[0]) {
     return this.api.agentRun.subscribeActive(listener)
   }
