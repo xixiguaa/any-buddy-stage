@@ -13,9 +13,12 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.2.5",
+    "@langchain/core": "^1.2.1",
     "@langchain/openai": "^1.5.3",
+    "@langchain/tavily": "^1.2.0",
     "antd": "^6.4.5",
     "better-sqlite3": "^12.11.1",
+    "deepagents": "^1.10.5",
     "langchain": "^1.5.2",
     "lucide-react": "^0.542.0",
     "openai": "^6.45.0",

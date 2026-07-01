@@ -34,6 +34,8 @@ export function createDefaultState(): AppState {
     title: '开始使用 AnyBuddy',
     mode: 'ask' as const,
     modelId: '',
+    expertIds: [],
+    activeExpertId: undefined,
     primaryWorkspaceId: workspaceId,
     permissionMode: 'default' as const,
     connectorIds: [],

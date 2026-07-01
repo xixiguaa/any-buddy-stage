@@ -36,7 +36,8 @@ export type Task = {
   title: string
   mode: TaskMode
   modelId: string
-  expertId?: string
+  expertIds: string[]
+  activeExpertId?: string
   primaryWorkspaceId?: string
   permissionMode: PermissionMode
   connectorIds: string[]
@@ -77,6 +78,8 @@ export type TaskDraft = {
   content: string
   selectedSkillIds: string[]
   selectedConnectorIds: string[]
+  selectedExpertIds: string[]
+  selectedExpertId?: string
   updatedAt: string
 }
 
@@ -87,6 +90,7 @@ export type AgentRun = {
   parentRunId?: string
   agentId: string
   agentName: string
+  expertId?: string
   kind: 'main' | 'subagent'
   status: AgentRunStatus
   graphThreadId: string
@@ -186,6 +190,7 @@ export type TaskSummary = {
   unreadEventCount: number
   primaryWorkspaceId?: string
   primaryWorkspaceName?: string
+  expertIds: string[]
   updatedAt: string
 }
 
@@ -224,13 +229,14 @@ export type CreateTaskInput = {
   workspaceId?: string
   additionalWorkspaceIds?: string[]
   modelId: string
-  expertId?: string
+  expertIds: string[]
+  activeExpertId?: string
   permissionMode: PermissionMode
   connectorIds: string[]
   skillIds: string[]
 }
 
-export type UpdateTaskInput = Partial<Pick<Task, 'title' | 'mode' | 'modelId' | 'expertId' | 'permissionMode' | 'connectorIds' | 'skillIds' | 'status'>>
+export type UpdateTaskInput = Partial<Pick<Task, 'title' | 'mode' | 'modelId' | 'expertIds' | 'activeExpertId' | 'permissionMode' | 'connectorIds' | 'skillIds' | 'status'>>
 
 export type CreateWorkspaceInput = {
   name: string

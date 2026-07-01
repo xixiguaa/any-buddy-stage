@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { createAnybuddyClients } from '../api/clients.js'
 import { Input, Select, Button, Space, Divider, Popover, Checkbox, Tooltip, Modal, Tag } from 'antd'
 import {
   PlusOutlined,
@@ -122,6 +123,8 @@ export default function TaskComposer({
     skillIds: string[]
     connectorIds: string[]
     permissionMode: 'default' | 'full_access'
+    expertIds: string[]
+    activeExpertId?: string
   }) => Promise<void>
   defaultWorkspaceId?: string
   draft?: TaskDraft
@@ -139,6 +142,7 @@ export default function TaskComposer({
   const recentExperts = useAppStore(state => state.recentExperts)
   const summonedExpert = useAppStore(state => state.summonedExpert)
   const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
+  const experts = useAppStore(state => state.experts)
   const defaultModelId = useMemo(
     () => customModels.find(model => model.enabled)?.id ?? customModels[0]?.id ?? '',
     [customModels],
@@ -151,6 +155,7 @@ export default function TaskComposer({
   const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
   const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || 'frontend-design, ipc-design')
   const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
+  const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0])
   const [permissionMode, setPermissionMode] = useState<'default' | 'full_access'>('default')
   const [busy, setBusy] = useState(false)
 
@@ -177,8 +182,18 @@ export default function TaskComposer({
   const [selectedModelId, setSelectedModelId] = useState('') // This is used to store manually entered Model ID
   const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
-  // Import custom skills locally
-  const [customSkills, setCustomSkills] = useState<string[]>([])
+  // Import custom skills locally - removed, now loaded from local .agents/skills directory
+  // Load local skills from .agents/skills directory via IPC
+  const [localSkills, setLocalSkills] = useState<string[]>([])
+  useEffect(() => {
+    const clients = createAnybuddyClients(window.anybuddy)
+    void clients.config.listSkills().then(result => {
+      if (result.ok) {
+        setLocalSkills(result.data)
+      }
+    })
+  }, [])
+
   const onDraftChangeRef = useRef(onDraftChange)
 
   useEffect(() => {
@@ -198,11 +213,12 @@ export default function TaskComposer({
     }
   }, [customModels, defaultModelId, modelId])
 
-  const expertSelected = Boolean(summonedExpert)
+  const expertSelected = Boolean(activeExpertId) || Boolean(summonedExpert)
 
   function applyExpertSelection(expert: ExpertPreset | null) {
     if (!expert) {
       setSummonedExpert(null)
+      setActiveExpertId(undefined)
       setSkills('')
       if (onCreate) {
         if (summonedExpert && message.trim() === `帮我创建一个 ${summonedExpert.name}，擅长 ${summonedExpert.description}。`) {
@@ -213,10 +229,26 @@ export default function TaskComposer({
     }
 
     setSummonedExpert(expert)
+    setActiveExpertId(expert.id)
     setSkills(expert.skills.join(', '))
     if (onCreate) {
       setMessage(`帮我创建一个 ${expert.name}，擅长 ${expert.description}。`)
     }
+  }
+
+  function toggleExpertSelection(expert: ExpertPreset) {
+    setActiveExpertId(prev => {
+      const next = prev === expert.id ? undefined : expert.id
+      if (!next) {
+        setSummonedExpert(null)
+        setSkills('')
+        return undefined
+      }
+
+      setSummonedExpert(expert)
+      setSkills(expert.skills.join(', '))
+      return next
+    })
   }
 
   function closeExpertPopovers() {
@@ -233,10 +265,12 @@ export default function TaskComposer({
 
     const nextSkills = draft.selectedSkillIds.join(', ')
     const nextConnectors = draft.selectedConnectorIds.join(', ')
+    const nextExpertId = draft.selectedExpertId ?? draft.selectedExpertIds?.[0] ?? ''
     if (
       draft.content === message &&
       nextSkills === skills &&
-      nextConnectors === connectors
+      nextConnectors === connectors &&
+      nextExpertId === (activeExpertId ?? '')
     ) {
       return
     }
@@ -244,15 +278,27 @@ export default function TaskComposer({
     setMessage(draft.content)
     setSkills(nextSkills)
     setConnectors(nextConnectors)
-  }, [draft?.taskId, draft?.updatedAt])
+    setActiveExpertId(draft.selectedExpertId ?? draft.selectedExpertIds?.[0])
+
+    if (draft.selectedExpertId || draft.selectedExpertIds?.length) {
+      const firstExpert = experts.find(e => e.id === (draft.selectedExpertId ?? draft.selectedExpertIds?.[0]))
+      if (firstExpert) {
+        setSummonedExpert(firstExpert)
+      }
+    } else {
+      setSummonedExpert(null)
+    }
+  }, [draft?.taskId, draft?.updatedAt, experts])
 
   useEffect(() => {
     onDraftChangeRef.current?.({
       content: message,
       selectedSkillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
       selectedConnectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
+      selectedExpertIds: activeExpertId ? [activeExpertId] : [],
+      selectedExpertId: activeExpertId,
     })
-  }, [connectors, message, skills])
+  }, [activeExpertId, connectors, message, skills])
 
   async function handlePickWorkspace() {
     const workspace = await onPickWorkspace?.()
@@ -279,6 +325,8 @@ export default function TaskComposer({
           skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
           connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
           permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
+          expertIds: activeExpertId ? [activeExpertId] : [],
+          activeExpertId,
         })
       } else if (onCreate) {
         const taskTitle = title.trim() || initialMessage.split('\n')[0]?.slice(0, 80) || '未命名任务'
@@ -292,12 +340,19 @@ export default function TaskComposer({
             permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
             connectorIds: connectors.split(',').map(item => item.trim()).filter(Boolean),
             skillIds: skills.split(',').map(item => item.trim()).filter(Boolean),
+            expertIds: activeExpertId ? [activeExpertId] : [],
+            activeExpertId,
           },
           initialMessage,
         )
       }
       await onClearDraft?.()
       setMessage('')
+    } catch (error) {
+      Modal.error({
+        title: onSend ? '发送失败' : '创建任务失败',
+        content: error instanceof Error ? error.message : '发生未知错误，请查看控制台日志。',
+      })
     } finally {
       setBusy(false)
     }
@@ -325,19 +380,9 @@ export default function TaskComposer({
   }, [customModels])
 
   const availableSkills = useMemo(() => {
-    const base = [
-      'frontend-design',
-      'ui-ux-pro-max',
-      'design-taste-frontend',
-      'doc-coauthoring',
-      'writing-plans',
-      'systematic-debugging',
-      'web-search'
-    ]
-    const combined = Array.from(new Set([...base, ...customSkills]))
-    if (!skillSearch.trim()) return combined
-    return combined.filter(s => s.toLowerCase().includes(skillSearch.toLowerCase()))
-  }, [customSkills, skillSearch])
+    if (!skillSearch.trim()) return localSkills
+    return localSkills.filter(s => s.toLowerCase().includes(skillSearch.toLowerCase()))
+  }, [localSkills, skillSearch])
 
   const handleRemoveCustomModel = async (nameToRemove: string) => {
     Modal.confirm({
@@ -394,32 +439,6 @@ export default function TaskComposer({
     setNewModelApiMode('auto')
     setAddingModel(false)
     Modal.success({ title: '保存成功', content: '自定义模型已添加' })
-  }
-
-  const handleImportSkill = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json'
-    input.onchange = (e: any) => {
-      const file = e.target.files?.[0]
-      if (!file) return
-      const reader = new FileReader()
-      reader.onload = (evt) => {
-        try {
-          const json = JSON.parse(evt.target?.result as string)
-          const importedName = json.name || json.id || file.name.replace('.json', '')
-          setCustomSkills(prev => [...prev, importedName])
-          if (!selectedSkillsList.includes(importedName)) {
-            setSkills(prev => (prev ? `${prev}, ${importedName}` : importedName))
-          }
-          Modal.success({ title: '导入成功', content: `成功导入技能: ${importedName}` })
-        } catch (err) {
-          Modal.error({ title: '解析失败', content: '非法的 JSON 技能配置文件' })
-        }
-      }
-      reader.readAsText(file)
-    }
-    input.click()
   }
 
   const currentWorkspaceName = useMemo(() => {
@@ -595,76 +614,71 @@ export default function TaskComposer({
                   content={
                     <div style={{ width: '220px', padding: '4px' }}>
                       <div style={{ fontSize: '12px', color: '#94a3b8', padding: '4px 8px 8px 8px', fontWeight: 500 }}>
-                        最近召唤专家
+                         选择当前专家
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '200px', overflowY: 'auto' }}>
                         {(() => {
-                          const recentList = recentExperts.map(exp => ({
+                          const list = experts.map(exp => ({
                             id: exp.id,
                             name: exp.name,
-                            sub: exp.description || '已召唤专家',
+                            sub: exp.description || '已包含专家',
                             avatar: getExpertAvatar(exp.name),
                             skills: exp.skills || [],
                             desc: exp.description || ''
                           }))
 
-                          if (recentList.length === 0) {
+                          if (list.length === 0) {
                             return (
                               <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px' }}>
-                                暂无最近召唤专家
+                                暂无可用专家，请前往专家页添加
                               </div>
                             )
                           }
 
-                          return recentList.map(exp => {
-                            const isExpSelected = summonedExpert?.id === exp.id
+                          return list.map(exp => {
+                            const isExpSelected = activeExpertId === exp.id
                             const isExpHovered = hoveredItem === exp.name
-                              return (
+                            return (
                                <div
-                                 key={exp.name}
+                                 key={exp.id}
                                  onClick={(event) => {
                                    event.stopPropagation()
                                    event.nativeEvent.stopImmediatePropagation()
-                                   if (isExpSelected) {
-                                     applyExpertSelection(null)
-                                   } else {
-                                     applyExpertSelection({
-                                       id: exp.id,
-                                       name: exp.name,
-                                       description: exp.desc,
-                                       skills: exp.skills,
-                                       createdAt: new Date().toISOString(),
-                                       updatedAt: new Date().toISOString(),
-                                     })
-                                   }
-                                   closeExpertPopovers()
+                                   toggleExpertSelection({
+                                      id: exp.id,
+                                      name: exp.name,
+                                      description: exp.desc,
+                                      skills: exp.skills,
+                                      createdAt: new Date().toISOString(),
+                                      updatedAt: new Date().toISOString(),
+                                   })
                                  }}
-                                onMouseEnter={() => setHoveredItem(exp.name)}
-                                onMouseLeave={() => setHoveredItem(null)}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '10px',
-                                  padding: '8px',
-                                  borderRadius: '8px',
-                                  cursor: 'pointer',
-                                  background: isExpHovered ? '#f1f5f9' : 'transparent',
-                                  transition: 'background 0.2s'
-                                }}
-                              >
-                                <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
-                                  {exp.avatar}
-                                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-                                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      {exp.name}
-                                    </span>
-                                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                                      {exp.sub}
-                                    </span>
-                                  </div>
-                                </div>
-                                {isExpSelected && <CheckIcon />}
-                              </div>
+                                 onMouseEnter={() => setHoveredItem(exp.name)}
+                                 onMouseLeave={() => setHoveredItem(null)}
+                                 style={{
+                                   display: 'flex',
+                                   alignItems: 'center',
+                                   gap: '10px',
+                                   padding: '8px',
+                                   borderRadius: '8px',
+                                   cursor: 'pointer',
+                                   background: isExpHovered ? '#f1f5f9' : 'transparent',
+                                   transition: 'background 0.2s'
+                                 }}
+                               >
+                                 <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
+                                   {exp.avatar}
+                                   <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                       {exp.name}
+                                     </span>
+                                     <span style={{ fontSize: '11px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                       {exp.sub}
+                                     </span>
+                                   </div>
+                                 </div>
+                                  <Checkbox checked={isExpSelected} style={{ pointerEvents: 'none' }} />
+                               </div>
                             )
                           })
                         })()}
@@ -693,7 +707,7 @@ export default function TaskComposer({
                         }}
                       >
                         <ExpertIcon color="#4f46e5" />
-                        <span style={{ fontSize: '13px', fontWeight: 600 }}>召唤其它专家</span>
+                        <span style={{ fontSize: '13px', fontWeight: 600 }}>管理专家库</span>
                       </div>
                     </div>
                   }
@@ -731,7 +745,7 @@ export default function TaskComposer({
                           <ExpertIcon />
                         </span>
                         <span style={{ fontSize: '14px', fontWeight: 500, color: '#1e293b', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          召唤专家
+                          选择专家
                         </span>
                       </>
                     )}
@@ -983,20 +997,7 @@ export default function TaskComposer({
                     <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无匹配技能</div>
                   )}
                 </div>
-                <Divider style={{ margin: '8px 0' }} />
-                <div style={{ padding: '0 4px' }}>
-                  <Button
-                    type="dashed"
-                    block
-                    size="small"
-                    icon={<PlusOutlined />}
-                    onClick={handleImportSkill}
-                    style={{ borderRadius: '6px', fontSize: '11px' }}
-                  >
-                    导入本地技能 (.json)
-                  </Button>
                 </div>
-              </div>
             }
             trigger="click"
             placement="bottomLeft"

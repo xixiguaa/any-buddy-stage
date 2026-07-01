@@ -13,6 +13,7 @@ export type RuntimeContext = {
   run: AgentRun
   model: ModelConfig | null
   settings: AppSettings
+  taskExperts?: string[]
 }
 
 export type AgentToolName =
@@ -44,6 +45,9 @@ export type ToolExecutionResult = {
 
 export type ToolExecutionContext = RuntimeContext & {
   requestApproval(input: ToolApprovalRequest): Promise<ToolExecutionResult>
+}
+
+export type CompatSubagentToolExecutionContext = ToolExecutionContext & {
   spawnSubagent(input: CreateAgentRunInput & { reason?: string }): Promise<ToolExecutionResult>
   sendSubagentMessage(runId: string, content: string): Promise<ToolExecutionResult>
   stopSubagent(runId: string, reason?: string): Promise<ToolExecutionResult>

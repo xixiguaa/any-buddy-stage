@@ -243,6 +243,7 @@ export class AppService {
       unreadEventCount: task.unreadEventCount,
       primaryWorkspaceId: task.primaryWorkspaceId,
       primaryWorkspaceName: workspaceName,
+      expertIds: task.expertIds,
       updatedAt: task.updatedAt,
     }
   }
@@ -252,17 +253,18 @@ export class AppService {
     const summaries = tasks.map(task => {
       const primary = taskWorkspaces.find(item => item.taskId === task.id && item.role === 'primary')
       const workspaceName = primary ? workspaces.find(workspace => workspace.id === primary.workspaceId)?.name : undefined
-      return {
-        id: task.id,
-        title: task.title,
-        mode: task.mode,
-        status: task.status,
-        unreadEventCount: task.unreadEventCount,
-        primaryWorkspaceId: task.primaryWorkspaceId,
-        primaryWorkspaceName: workspaceName,
-        updatedAt: task.updatedAt,
-      }
-    })
+        return {
+          id: task.id,
+          title: task.title,
+          mode: task.mode,
+          status: task.status,
+          unreadEventCount: task.unreadEventCount,
+          primaryWorkspaceId: task.primaryWorkspaceId,
+          primaryWorkspaceName: workspaceName,
+          expertIds: task.expertIds,
+          updatedAt: task.updatedAt,
+        }
+      })
 
     return summaries.filter(task => {
       if (filter.keyword) {
@@ -305,7 +307,8 @@ export class AppService {
         title: input.title,
         mode: input.mode,
         modelId: resolvedModelId,
-        expertId: input.expertId,
+        expertIds: input.expertIds,
+        activeExpertId: input.activeExpertId ?? input.expertIds[0],
         primaryWorkspaceId: input.workspaceId,
         permissionMode: input.permissionMode,
         connectorIds: input.connectorIds,
@@ -489,6 +492,8 @@ export class AppService {
         content: draft.content,
         selectedSkillIds: draft.selectedSkillIds,
         selectedConnectorIds: draft.selectedConnectorIds,
+        selectedExpertIds: draft.selectedExpertIds ?? [],
+        selectedExpertId: draft.selectedExpertId ?? draft.selectedExpertIds?.[0],
         updatedAt: draft.updatedAt ?? nowIso(),
       }
       const index = state.drafts.findIndex(item => item.taskId === taskId)
@@ -736,6 +741,7 @@ export class AppService {
       agentId: randomUUID(),
       agentName: input.agentName,
       kind: input.kind ?? 'main',
+      expertId: input.expertId,
       status: 'queued',
       graphThreadId: createId('thread'),
       parentRunId: input.parentRunId,
@@ -750,6 +756,7 @@ export class AppService {
       state.agentEvents.push(this.createAgentEvent(run, 'run_started', {
         agentName: run.agentName,
         kind: run.kind,
+        expertId: run.expertId ?? null,
         currentNode: run.currentNode,
       }))
       const target = state.tasks.find(item => item.id === taskId)
@@ -812,7 +819,7 @@ export class AppService {
   /**
    * 正常结束 runtime run，并补一条最终助手消息。
    */
-  async completeRuntimeRun(runId: string, content: string): Promise<void> {
+  async completeRuntimeRun(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
     let taskId = ''
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -842,6 +849,7 @@ export class AppService {
         runId,
         role: 'assistant',
         content,
+        metadata,
         createdAt: nowIso(),
       })
     })
@@ -855,7 +863,7 @@ export class AppService {
   /**
    * 更新或追加运行时流式消息事件，供前端实时显示打字机效果。
    */
-  async upsertAgentMessageEvent(runId: string, eventId: string, content: string): Promise<void> {
+  async upsertAgentMessageEvent(runId: string, eventId: string, content: string, payloadPatch?: Record<string, unknown>): Promise<void> {
     let taskId = ''
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -869,6 +877,7 @@ export class AppService {
         existing.payload = {
           ...existing.payload,
           content,
+          ...(payloadPatch ?? {}),
         }
       } else {
         const event = {
@@ -881,6 +890,7 @@ export class AppService {
             role: 'assistant',
             content,
             source: 'langchain_agent_stream',
+            ...(payloadPatch ?? {}),
           },
           createdAt: nowIso(),
         }

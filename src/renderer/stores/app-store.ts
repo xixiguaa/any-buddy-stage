@@ -58,8 +58,6 @@ type AppStoreState = {
   cancelRun(runId: string): Promise<void>
   approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<void>
   resumeInterruptedRun(interruptId: string, action: 'resume' | 'cancel' | 'resume_with_edits', editedArgs?: Record<string, unknown>): Promise<void>
-  sendSubagentMessage(runId: string, content: string): Promise<void>
-  stopSubagent(runId: string, reason?: string): Promise<void>
   updateSettings(patch: Partial<AppSettings>): Promise<void>
   setSidebarSearch(value: string): void
   setSidebarStatusFilter(value: AppStoreState['sidebarStatusFilter']): void
@@ -294,8 +292,15 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const task = result.data
     set(state => ({ tasks: [awaitSummary(task, state.workspaces), ...state.tasks] }))
     if (initialMessage) {
-      await clients.message.create(task.id, { content: initialMessage, role: 'user' })
-      await clients.agentRun.start(task.id, { agentName: 'Main Agent', kind: 'main' })
+      const messageResult = await clients.message.create(task.id, { content: initialMessage, role: 'user' })
+      if (!messageResult.ok) {
+        throw new Error(messageResult.error.message)
+      }
+
+      const runResult = await clients.agentRun.start(task.id, { agentName: 'Main Agent', kind: 'main' })
+      if (!runResult.ok) {
+        throw new Error(runResult.error.message)
+      }
     }
     await get().refreshTaskIndex()
     return task
@@ -346,7 +351,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         result.data,
       ].sort((left, right) => left.createdAt.localeCompare(right.createdAt)),
     }))
-    await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
+    const runResult = await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
+    if (!runResult.ok) {
+      throw new Error(runResult.error.message)
+    }
     await get().selectTask(taskId)
     await get().refreshTaskIndex()
   },
@@ -396,28 +404,43 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   },
   async startRun(taskId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
+    const result = await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
+    if (!result.ok) {
+      throw new Error(result.error.message)
+    }
     await get().reloadTask(taskId)
     await get().refreshTaskIndex()
   },
   async pauseRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.pause(runId)
+    const result = await clients.agentRun.pause(runId)
+    if (!result.ok) {
+      throw new Error(result.error.message)
+    }
     await get().refreshTaskIndex()
   },
   async resumeRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.resume(runId)
+    const result = await clients.agentRun.resume(runId)
+    if (!result.ok) {
+      throw new Error(result.error.message)
+    }
     await get().refreshTaskIndex()
   },
   async cancelRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.cancel(runId)
+    const result = await clients.agentRun.cancel(runId)
+    if (!result.ok) {
+      throw new Error(result.error.message)
+    }
     await get().refreshTaskIndex()
   },
   async approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>) {
     const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.approve(approvalId, decision, editedArgs)
+    const result = await clients.agentRun.approve(approvalId, decision, editedArgs)
+    if (!result.ok) {
+      throw new Error(result.error.message)
+    }
     if (get().selectedTaskId) {
       await get().reloadTask(get().selectedTaskId!)
     }
@@ -431,21 +454,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         : 'approved'
 
     await get().approveTask(interruptId, decision, editedArgs)
-  },
-  async sendSubagentMessage(runId: string, content: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.sendSubagentMessage(runId, content)
-    if (get().selectedTaskId) {
-      await get().reloadTask(get().selectedTaskId!)
-    }
-  },
-  async stopSubagent(runId: string, reason?: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
-    await clients.agentRun.stopSubagent(runId, reason)
-    if (get().selectedTaskId) {
-      await get().reloadTask(get().selectedTaskId!)
-    }
-    await get().refreshTaskIndex()
   },
   async updateSettings(patch: Partial<AppSettings>) {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -532,6 +540,7 @@ function awaitSummary(task: Task, workspaces: WorkspaceSummary[]): TaskSummary {
     unreadEventCount: task.unreadEventCount,
     primaryWorkspaceId: task.primaryWorkspaceId,
     primaryWorkspaceName: workspaces.find(workspace => workspace.id === task.primaryWorkspaceId)?.name,
+    expertIds: task.expertIds,
     updatedAt: task.updatedAt,
   }
 }

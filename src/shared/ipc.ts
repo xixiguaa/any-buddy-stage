@@ -84,8 +84,6 @@ export const IPC_CHANNELS = {
   agentRunsResume: 'agent-run:resume',
   agentRunsCancel: 'agent-run:cancel',
   agentRunsApprove: 'agent-run:approve',
-  agentRunsSendSubagentMessage: 'agent-run:send-subagent-message',
-  agentRunsStopSubagent: 'agent-run:stop-subagent',
   agentRunsGet: 'agent-run:get',
   agentRunsListByTask: 'agent-run:list-by-task',
   agentRunsSubscribeTask: 'agent-run:subscribe-task',
@@ -96,6 +94,7 @@ export const IPC_CHANNELS = {
   configWriteModels: 'config:write-models',
   configReadMcp: 'config:read-mcp',
   configWriteMcp: 'config:write-mcp',
+  configListSkills: 'config:list-skills',
 } as const
 
 export type AnybuddyApi = {
@@ -151,8 +150,6 @@ export type AnybuddyApi = {
     resume(runId: string): Promise<IpcResult<AgentRun>>
     cancel(runId: string): Promise<IpcResult<AgentRun>>
     approve(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<IpcResult<void>>
-    sendSubagentMessage(runId: string, content: string): Promise<IpcResult<void>>
-    stopSubagent(runId: string, reason?: string): Promise<IpcResult<void>>
     subscribeActive(listener: (runs: AgentRun[]) => void): () => void
     subscribeTask(taskId: string, listener: (payload: { runs: AgentRun[]; events: AgentEvent[]; approvals: HumanApproval[] }) => void): () => void
   }
@@ -161,6 +158,7 @@ export type AnybuddyApi = {
     writeModels(content: string): Promise<IpcResult<void>>
     readMcp(): Promise<IpcResult<string>>
     writeMcp(content: string): Promise<IpcResult<void>>
+    listSkills(): Promise<IpcResult<string[]>>
   }
 }
 

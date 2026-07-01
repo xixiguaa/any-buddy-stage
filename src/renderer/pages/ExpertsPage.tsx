@@ -1,12 +1,10 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tabs, Card, Tag, Button, Space, Modal, Input, Checkbox, Form, Row, Col, Empty, Tooltip } from 'antd'
+import { Tabs, Card, Tag, Button, Space, Modal, Input, Row, Col, Empty, Tooltip } from 'antd'
 import {
-  SlidersOutlined, 
-  LinkOutlined, 
-  PlusOutlined, 
-  SendOutlined, 
-  EditOutlined, 
+  LinkOutlined,
+  PlusOutlined,
+  EditOutlined,
   DeleteOutlined,
   ThunderboltOutlined,
   SearchOutlined,
@@ -14,16 +12,17 @@ import {
   SaveOutlined
 } from '@ant-design/icons'
 import { useAppStore } from '../stores/app-store.js'
+import { createAnybuddyClients } from '../api/clients.js'
 import type { ExpertPreset } from '../../shared/types.js'
 
-const SKILLS_LIST = [
-  { id: 'frontend-design', name: 'frontend-design', desc: '前端整体界面排版与视觉设计技能包' },
-  { id: 'design-taste-frontend', name: 'design-taste-frontend', desc: '反模版化、高审美视觉重构高级技能包' },
-  { id: 'doc-coauthoring', name: 'doc-coauthoring', desc: '多人联合文档与文本自动润色校对技能包' },
-  { id: 'writing-plans', name: 'writing-plans', desc: '系统架构分解、步骤计划排期输出技能包' },
-  { id: 'systematic-debugging', name: 'systematic-debugging', desc: '复杂代码报错精准定位与底层调试技能包' },
-  { id: 'web-search', name: 'web-search', desc: '聚合网络多渠道精准搜集与总结要点技能包' }
-]
+const SKILL_DESCRIPTIONS: Record<string, string> = {
+  'frontend-design': '前端整体界面排版与视觉设计技能包',
+  'design-taste-frontend': '反模版化、高审美视觉重构高级技能包',
+  'doc-coauthoring': '多人联合文档与文本自动润色校对技能包',
+  'writing-plans': '系统架构分解、步骤计划排期输出技能包',
+  'systematic-debugging': '复杂代码报错精准定位与底层调试技能包',
+  'web-search': '聚合网络多渠道精准搜集与总结要点技能包'
+}
 
 const CONNECTORS_LIST = [
   { id: 'wechat', name: '微信助手连接器', desc: '用于将 Agent 推送通知或在微信端执行异步响应' },
@@ -42,17 +41,15 @@ export default function ExpertsPage() {
   const deleteExpert = useAppStore(state => state.deleteExpert)
   const mcpConfigRaw = useAppStore(state => state.mcpConfigRaw)
   const saveMcpConfig = useAppStore(state => state.saveMcpConfig)
-  
+
   const [activeTab, setActiveTab] = useState('experts')
   const [skillSearch, setSkillSearch] = useState('')
-  // Custom expert modals
+  const [localSkills, setLocalSkills] = useState<string[]>([])
+
+  // Custom expert modal
   const [isExpertModalOpen, setIsExpertModalOpen] = useState(false)
   const [expertName, setExpertName] = useState('')
   const [expertDesc, setExpertDesc] = useState('')
-
-  // Custom skill modals
-  const [isSkillModalOpen, setIsSkillModalOpen] = useState(false)
-  const [skillDesc, setSkillDesc] = useState('')
 
   // MCP Configuration text
   const [mcpConfigText, setMcpConfigText] = useState(mcpConfigRaw)
@@ -61,15 +58,25 @@ export default function ExpertsPage() {
     setMcpConfigText(mcpConfigRaw)
   }, [mcpConfigRaw])
 
+  useEffect(() => {
+    const clients = createAnybuddyClients(window.anybuddy)
+    void clients.config.listSkills().then(result => {
+      if (result.ok) {
+        setLocalSkills(result.data)
+      }
+    })
+  }, [])
+
   const allExperts = useMemo(() => experts, [experts])
 
   const filteredSkills = useMemo(() => {
-    if (!skillSearch.trim()) return SKILLS_LIST
-    return SKILLS_LIST.filter(s => 
-      s.name.toLowerCase().includes(skillSearch.toLowerCase()) || 
-      s.desc.toLowerCase().includes(skillSearch.toLowerCase())
-    )
-  }, [skillSearch])
+    if (!skillSearch.trim()) return localSkills
+    const query = skillSearch.toLowerCase()
+    return localSkills.filter(name => {
+      const description = SKILL_DESCRIPTIONS[name] ?? ''
+      return name.toLowerCase().includes(query) || description.toLowerCase().includes(query)
+    })
+  }, [localSkills, skillSearch])
 
   const handleStartTask = async (expert: ExpertPreset) => {
     setSummonedExpert(expert, { addToRecent: true })
@@ -78,6 +85,8 @@ export default function ExpertsPage() {
       content: defaultPrompt,
       selectedSkillIds: expert.skills,
       selectedConnectorIds: ['mcp'],
+      selectedExpertIds: [expert.id],
+      selectedExpertId: expert.id,
     })
     navigate('/tasks/new')
   }
@@ -104,49 +113,13 @@ export default function ExpertsPage() {
       content: prompt,
       selectedSkillIds: ['writing-plans'],
       selectedConnectorIds: ['mcp'],
+      selectedExpertIds: [tempExpert.id],
+      selectedExpertId: tempExpert.id,
     })
     setIsExpertModalOpen(false)
     setExpertName('')
     setExpertDesc('')
     navigate('/tasks/new')
-  }
-
-  const handleCreateSkillPrompt = async () => {
-    if (!skillDesc.trim()) {
-      Modal.error({ title: '提示', content: '请填写技能需求描述' })
-      return
-    }
-    const prompt = `帮我编写一个技能包，该技能包用于：${skillDesc}`
-    await saveDraft('__new_task__', {
-      content: prompt,
-      selectedSkillIds: ['doc-coauthoring'],
-      selectedConnectorIds: ['mcp'],
-    })
-    setIsSkillModalOpen(false)
-    setSkillDesc('')
-    navigate('/tasks/new')
-  }
-
-  const handleLocalImportSkill = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json'
-    input.onchange = (e: any) => {
-      const file = e.target.files?.[0]
-      if (!file) return
-      const reader = new FileReader()
-      reader.onload = (evt) => {
-        try {
-          const json = JSON.parse(evt.target?.result as string)
-          const importedName = json.name || json.id || file.name.replace('.json', '')
-          Modal.success({ title: '导入成功', content: `本地技能 [${importedName}] 已解析并准备就绪` })
-        } catch (err) {
-          Modal.error({ title: '解析失败', content: '非法的 JSON 配置文件' })
-        }
-      }
-      reader.readAsText(file)
-    }
-    input.click()
   }
 
   const handleSaveMcp = async () => {
@@ -179,11 +152,11 @@ export default function ExpertsPage() {
               添加自定义专家
             </Button>
           </div>
-          
+
           <Row gutter={[16, 16]}>
             {allExperts.map(expert => (
               <Col xs={24} sm={12} md={8} key={expert.id}>
-                <Card 
+                <Card
                   hoverable
                   style={{ height: '100%', borderRadius: 12, border: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column' }}
                   styles={{ body: { padding: 18, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
@@ -194,12 +167,12 @@ export default function ExpertsPage() {
                       {expert.isCustom ? (
                         <Space>
                           <Tag color="orange">自定义</Tag>
-                          <Button 
-                            danger 
-                            type="text" 
-                            size="small" 
-                            icon={<DeleteOutlined />} 
-                            onClick={(e) => { e.stopPropagation(); void deleteExpert(expert.id) }} 
+                          <Button
+                            danger
+                            type="text"
+                            size="small"
+                            icon={<DeleteOutlined />}
+                            onClick={(e) => { e.stopPropagation(); void deleteExpert(expert.id) }}
                           />
                         </Space>
                       ) : (
@@ -216,10 +189,10 @@ export default function ExpertsPage() {
                         <Tag key={skill} style={{ margin: 0, fontSize: '10px' }}>{skill}</Tag>
                       ))}
                     </div>
-                    <Button 
-                      type="default" 
-                      icon={<ThunderboltOutlined />} 
-                      block 
+                    <Button
+                      type="default"
+                      icon={<ThunderboltOutlined />}
+                      block
                       onClick={() => handleStartTask(expert)}
                       style={{ borderRadius: 6, fontWeight: 500 }}
                     >
@@ -237,7 +210,7 @@ export default function ExpertsPage() {
       key: 'skills',
       label: (
         <span>
-          <SlidersOutlined style={{ marginRight: 6 }} />
+          <EditOutlined style={{ marginRight: 6 }} />
           技能
         </span>
       ),
@@ -245,34 +218,26 @@ export default function ExpertsPage() {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
-              <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>系统技能包</div>
-              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能是可以注入到任务上下文的能力配置包，引导 Agent 调用特定工具集。</div>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>本地技能包</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 .agents/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
             </div>
-            <Space>
-              <Input
-                prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-                placeholder="搜索技能..."
-                value={skillSearch}
-                onChange={e => setSkillSearch(e.target.value)}
-                style={{ width: '200px', borderRadius: '6px' }}
-              />
-              <Button type="default" icon={<PlusOutlined />} onClick={handleLocalImportSkill}>
-                本地添加
-              </Button>
-              <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => setIsSkillModalOpen(true)} style={{ background: '#0f172a', border: 'none' }}>
-                对话创建
-              </Button>
-            </Space>
+            <Input
+              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+              placeholder="搜索技能..."
+              value={skillSearch}
+              onChange={e => setSkillSearch(e.target.value)}
+              style={{ width: '200px', borderRadius: '6px' }}
+            />
           </div>
           <Row gutter={[16, 16]}>
-            {filteredSkills.map(skill => (
-              <Col xs={24} sm={12} key={skill.id}>
+            {filteredSkills.map(name => (
+              <Col xs={24} sm={12} key={name}>
                 <Card style={{ borderRadius: 10, border: '1px solid #f1f5f9' }} styles={{ body: { padding: 16 } }}>
                   <strong style={{ fontSize: '14px', color: '#0f172a', display: 'block', marginBottom: 8 }}>
-                    {skill.name}
+                    {name}
                   </strong>
                   <p style={{ fontSize: '12px', color: '#64748b', margin: 0, lineHeight: '1.5' }}>
-                    {skill.desc}
+                    {SKILL_DESCRIPTIONS[name] ?? '本地技能包，目录名即为技能名。'}
                   </p>
                 </Card>
               </Col>
@@ -364,13 +329,13 @@ export default function ExpertsPage() {
     <div style={{ padding: '24px', background: '#ffffff', minHeight: '100%', overflowY: 'auto' }}>
       <div style={{ borderBottom: '1px solid #f1f5f9', paddingBottom: 16, marginBottom: 24 }}>
         <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#0f172a' }}>专家与技能配置</h2>
-        <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: 4 }}>配置专家预设或编辑 Composable 技能来拓展 Agent 的自主执行上限。</div>
+        <div style={{ fontSize: '13px', color: '#94a3b8', marginTop: 4 }}>配置专家预设或加载本地技能来拓展 Agent 的自主执行上限。</div>
       </div>
 
-      <Tabs 
-        activeKey={activeTab} 
-        onChange={setActiveTab} 
-        items={items} 
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={items}
         type="line"
       />
 
@@ -386,41 +351,21 @@ export default function ExpertsPage() {
         <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div>
             <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '4px' }}>专家名称</div>
-            <Input 
-              placeholder="例如：SQL调优大师, UI动效顾问..." 
-              value={expertName} 
-              onChange={e => setExpertName(e.target.value)} 
+            <Input
+              placeholder="例如：SQL调优大师, UI动效顾问..."
+              value={expertName}
+              onChange={e => setExpertName(e.target.value)}
             />
           </div>
           <div>
             <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '4px' }}>擅长描述 / 定位</div>
-            <Input.TextArea 
-              rows={3} 
-              placeholder="描述该专家的核心特长与解决痛点..." 
-              value={expertDesc} 
-              onChange={e => setExpertDesc(e.target.value)} 
+            <Input.TextArea
+              rows={3}
+              placeholder="描述该专家的核心特长与解决痛点..."
+              value={expertDesc}
+              onChange={e => setExpertDesc(e.target.value)}
             />
           </div>
-        </div>
-      </Modal>
-
-      {/* Skill Creation Modal */}
-      <Modal
-        open={isSkillModalOpen}
-        onCancel={() => setIsSkillModalOpen(false)}
-        onOk={handleCreateSkillPrompt}
-        title="对话创建技能包"
-        okText="前往对话创建"
-        cancelText="取消"
-      >
-        <div style={{ padding: '8px 0' }}>
-          <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '4px' }}>技能需求描述</div>
-          <Input.TextArea
-            rows={4}
-            placeholder="描述你需要 Agent 编写什么技能包。如：编写一个自动生成接口测试报告的技能..."
-            value={skillDesc}
-            onChange={e => setSkillDesc(e.target.value)}
-          />
         </div>
       </Modal>
     </div>

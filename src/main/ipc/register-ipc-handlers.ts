@@ -1,4 +1,6 @@
 import { ipcMain, dialog } from 'electron'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc.js'
 import type { IpcResult } from '../../shared/types.js'
 import { toIpcError } from './serialize-error.js'
@@ -13,6 +15,28 @@ function ok<T>(data: T): IpcResult<T> {
 function fail(error: unknown): IpcResult<never> {
   logProcessError({ scope: 'ipc-handler' }, error)
   return { ok: false, error: toIpcError(error) }
+}
+
+async function listLocalSkills() {
+  const skillsRoot = path.resolve(process.cwd(), '.agents', 'skills')
+  try {
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true })
+    const names = await Promise.all(entries
+      .filter(entry => entry.isDirectory())
+      .map(async entry => {
+        const skillFile = path.join(skillsRoot, entry.name, 'SKILL.md')
+        try {
+          await fs.access(skillFile)
+          return entry.name
+        } catch {
+          return null
+        }
+      }))
+
+    return names.filter((name): name is string => Boolean(name)).sort((left, right) => left.localeCompare(right))
+  } catch {
+    return []
+  }
 }
 
 export function registerIpcHandlers(appService: AppService) {
@@ -176,8 +200,8 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.workspacesPickFolder, async () => {
     try {
-      const path = await appService.pickWorkspaceFolder()
-      return ok(path)
+      const pathValue = await appService.pickWorkspaceFolder()
+      return ok(pathValue)
     } catch (error) {
       return fail(error)
     }
@@ -339,32 +363,6 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
-  ipcMain.handle(IPC_CHANNELS.agentRunsSendSubagentMessage, async (_event, runId: string, content: string) => {
-    try {
-      const run = appService.getAgentRun(runId)
-      if (!run) {
-        throw new Error(`Agent run not found: ${runId}`)
-      }
-      await agentRuntime.sendSubagentMessage(run.taskId, runId, content)
-      return ok(undefined)
-    } catch (error) {
-      return fail(error)
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.agentRunsStopSubagent, async (_event, runId: string, reason?: string) => {
-    try {
-      const run = appService.getAgentRun(runId)
-      if (!run) {
-        throw new Error(`Agent run not found: ${runId}`)
-      }
-      await agentRuntime.stopSubagentRun(run.taskId, runId, reason)
-      return ok(undefined)
-    } catch (error) {
-      return fail(error)
-    }
-  })
-
   ipcMain.handle(IPC_CHANNELS.configReadModels, async () => {
     try {
       return ok(await appService.readModelsConfig())
@@ -394,6 +392,14 @@ export function registerIpcHandlers(appService: AppService) {
     try {
       await appService.writeMcpConfig(content)
       return ok(undefined)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.configListSkills, async () => {
+    try {
+      return ok(await listLocalSkills())
     } catch (error) {
       return fail(error)
     }

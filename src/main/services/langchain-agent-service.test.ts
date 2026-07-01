@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LangChainAgentService } from './langchain-agent-service.js';
 import type {
+  CompatSubagentToolExecutionContext,
   ModelMessage,
   ResolvedModelConfig,
   ToolDefinition,
@@ -37,7 +38,7 @@ function createResolvedModel(): ResolvedModelConfig {
   };
 }
 
-function createToolContext(): ToolExecutionContext {
+function createToolContext(): CompatSubagentToolExecutionContext {
   const now = new Date().toISOString();
   return {
     task: {
@@ -45,6 +46,7 @@ function createToolContext(): ToolExecutionContext {
       title: 'LangChain runtime',
       mode: 'ask',
       modelId: 'model-1',
+      expertIds: [],
       permissionMode: 'default',
       connectorIds: [],
       skillIds: [],

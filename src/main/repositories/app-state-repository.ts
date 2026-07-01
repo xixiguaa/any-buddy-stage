@@ -39,7 +39,8 @@ export class AppStateRepository {
         title TEXT NOT NULL,
         mode TEXT NOT NULL,
         modelId TEXT NOT NULL,
-        expertId TEXT,
+        expertIds TEXT NOT NULL,
+        activeExpertId TEXT,
         primaryWorkspaceId TEXT,
         permissionMode TEXT NOT NULL,
         connectorIds TEXT NOT NULL,
@@ -76,6 +77,8 @@ export class AppStateRepository {
         content TEXT NOT NULL,
         selectedSkillIds TEXT NOT NULL,
         selectedConnectorIds TEXT NOT NULL,
+        selectedExpertIds TEXT NOT NULL DEFAULT '[]',
+        selectedExpertId TEXT,
         updatedAt TEXT NOT NULL
       );
 
@@ -166,6 +169,33 @@ export class AppStateRepository {
       db.prepare('ALTER TABLE model_configs ADD COLUMN apiMode TEXT').run()
     }
 
+    const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    if (!taskColumns.some(column => column.name === 'expertIds')) {
+      if (taskColumns.some(column => column.name === 'expertId')) {
+        db.prepare('ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT "[]"').run()
+        db.prepare('UPDATE tasks SET expertIds = json_array(expertId) WHERE expertId IS NOT NULL AND expertId != ""').run()
+      } else {
+        db.prepare('ALTER TABLE tasks ADD COLUMN expertIds TEXT NOT NULL DEFAULT "[]"').run()
+      }
+    }
+    if (!taskColumns.some(column => column.name === 'activeExpertId')) {
+      db.prepare('ALTER TABLE tasks ADD COLUMN activeExpertId TEXT').run()
+      db.prepare("UPDATE tasks SET activeExpertId = json_extract(expertIds, '$[0]') WHERE activeExpertId IS NULL AND expertIds IS NOT NULL AND expertIds != '[]'").run()
+    }
+    const agentRunColumns = db.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
+    if (!agentRunColumns.some(column => column.name === 'expertId')) {
+      db.prepare('ALTER TABLE agent_runs ADD COLUMN expertId TEXT').run()
+    }
+
+    const draftColumns = db.prepare('PRAGMA table_info(drafts)').all() as Array<{ name: string }>
+    if (!draftColumns.some(column => column.name === 'selectedExpertIds')) {
+      db.prepare("ALTER TABLE drafts ADD COLUMN selectedExpertIds TEXT NOT NULL DEFAULT '[]'").run()
+    }
+    if (!draftColumns.some(column => column.name === 'selectedExpertId')) {
+      db.prepare('ALTER TABLE drafts ADD COLUMN selectedExpertId TEXT').run()
+      db.prepare("UPDATE drafts SET selectedExpertId = json_extract(selectedExpertIds, '$[0]') WHERE selectedExpertId IS NULL AND selectedExpertIds IS NOT NULL AND selectedExpertIds != '[]'").run()
+    }
+
     // Check if the database has any tasks or workspaces, if not, seed with initial state
     const workspaceCount = (db.prepare('SELECT count(*) as count FROM workspaces').get() as { count: number }).count
     if (workspaceCount === 0) {
@@ -194,7 +224,8 @@ export class AppStateRepository {
       title: row.title,
       mode: row.mode as any,
       modelId: row.modelId,
-      expertId: row.expertId || undefined,
+      expertIds: row.expertIds ? JSON.parse(row.expertIds) : row.expertId ? [row.expertId] : [],
+      activeExpertId: row.activeExpertId || (row.expertIds ? JSON.parse(row.expertIds)?.[0] : row.expertId || undefined),
       primaryWorkspaceId: row.primaryWorkspaceId || undefined,
       permissionMode: row.permissionMode as any,
       connectorIds: JSON.parse(row.connectorIds),
@@ -237,6 +268,8 @@ export class AppStateRepository {
       content: row.content,
       selectedSkillIds: JSON.parse(row.selectedSkillIds),
       selectedConnectorIds: JSON.parse(row.selectedConnectorIds),
+      selectedExpertIds: row.selectedExpertIds ? JSON.parse(row.selectedExpertIds) : [],
+      selectedExpertId: row.selectedExpertId || (row.selectedExpertIds ? JSON.parse(row.selectedExpertIds)?.[0] : undefined),
       updatedAt: row.updatedAt,
     }))
 
@@ -401,8 +434,8 @@ export class AppStateRepository {
 
       // Insert tasks
       const insertTask = db.prepare(`
-        INSERT INTO tasks (id, title, mode, modelId, expertId, primaryWorkspaceId, permissionMode, connectorIds, skillIds, status, unreadEventCount, lastRunId, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tasks (id, title, mode, modelId, expertIds, activeExpertId, primaryWorkspaceId, permissionMode, connectorIds, skillIds, status, unreadEventCount, lastRunId, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const t of s.tasks) {
         insertTask.run(
@@ -410,7 +443,8 @@ export class AppStateRepository {
           t.title,
           t.mode,
           t.modelId,
-          t.expertId || null,
+          JSON.stringify(t.expertIds ?? []),
+          t.activeExpertId || null,
           t.primaryWorkspaceId || null,
           t.permissionMode,
           JSON.stringify(t.connectorIds),
@@ -459,8 +493,8 @@ export class AppStateRepository {
 
       // Insert drafts
       const insertDraft = db.prepare(`
-        INSERT INTO drafts (taskId, content, selectedSkillIds, selectedConnectorIds, updatedAt)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO drafts (taskId, content, selectedSkillIds, selectedConnectorIds, selectedExpertIds, selectedExpertId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
       for (const d of s.drafts) {
         insertDraft.run(
@@ -468,6 +502,8 @@ export class AppStateRepository {
           d.content,
           JSON.stringify(d.selectedSkillIds),
           JSON.stringify(d.selectedConnectorIds),
+          JSON.stringify(d.selectedExpertIds ?? []),
+          d.selectedExpertId || null,
           d.updatedAt
         )
       }

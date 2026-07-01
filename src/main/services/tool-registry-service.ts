@@ -6,6 +6,7 @@ import type { AppService } from './app-service.js'
 import type {
   AgentToolCall,
   AllowedShellCommand,
+  CompatSubagentToolExecutionContext,
   ToolDefinition,
   ToolExecutionContext,
 } from './agent-runtime-types.js'
@@ -52,6 +53,10 @@ type DuckDuckGoResponse = {
   AbstractText?: string
   AbstractURL?: string
   RelatedTopics?: DuckDuckGoTopic[]
+}
+
+type ToolRegistryOptions = {
+  enableCompatSubagentTools?: boolean
 }
 
 function splitLines(value: string) {
@@ -163,8 +168,14 @@ function matchesDomainFilter(url: string, domains: string[]) {
 export class ToolRegistryService {
   private readonly tools = new Map<ToolDefinition['name'], ToolDefinition>()
 
-  constructor(private readonly appService: AppService) {
+  constructor(
+    private readonly appService: AppService,
+    options: ToolRegistryOptions = {},
+  ) {
     this.registerBuiltins()
+    if (options.enableCompatSubagentTools) {
+      this.registerCompatSubagentTools()
+    }
   }
 
   getTool(name: AgentToolCall['name']) {
@@ -400,53 +411,6 @@ export class ToolRegistryService {
     })
 
     this.register({
-      name: 'consult_subagent',
-      description: '召唤子专家协作。',
-      requiresApproval: false,
-      execute: async (context, args) => {
-        const expertId = typeof args.expertId === 'string' ? args.expertId : context.task.expertId ?? 'default-expert'
-        const reason = typeof args.reason === 'string' ? args.reason : '补充子任务分析'
-        return context.spawnSubagent({
-          agentName: `${expertId}-subagent`,
-          kind: 'subagent',
-          parentRunId: context.run.id,
-          expertId,
-          reason,
-        })
-      },
-    })
-
-    this.register({
-      name: 'send_subagent_message',
-      description: '给指定子 Agent 追加一条消息。',
-      requiresApproval: false,
-      execute: async (context, args) => {
-        const runId = typeof args.runId === 'string' ? args.runId : ''
-        const content = typeof args.content === 'string' ? args.content.trim() : ''
-        if (!runId || !content) {
-          throw new Error('send_subagent_message requires runId and content')
-        }
-
-        return context.sendSubagentMessage(runId, content)
-      },
-    })
-
-    this.register({
-      name: 'stop_subagent',
-      description: '停止指定子 Agent。',
-      requiresApproval: false,
-      execute: async (context, args) => {
-        const runId = typeof args.runId === 'string' ? args.runId : ''
-        const reason = typeof args.reason === 'string' ? args.reason : 'stopped by parent agent'
-        if (!runId) {
-          throw new Error('stop_subagent requires runId')
-        }
-
-        return context.stopSubagent(runId, reason)
-      },
-    })
-
-    this.register({
       name: 'list_agent_runs',
       description: '列出当前任务下主 Agent 与子 Agent 的运行情况。',
       requiresApproval: false,
@@ -586,6 +550,70 @@ export class ToolRegistryService {
         }
       },
     })
+  }
+
+  private registerCompatSubagentTools() {
+    this.register({
+      name: 'consult_subagent',
+      description: '召唤子专家协作。',
+      requiresApproval: false,
+      execute: async (context, args) => {
+        const compatContext = this.requireCompatSubagentContext(context)
+        const expertId = typeof args.expertId === 'string' ? args.expertId : context.task.expertIds[0] ?? 'default-expert'
+        const reason = typeof args.reason === 'string' ? args.reason : '补充子任务分析'
+        return compatContext.spawnSubagent({
+          agentName: `${expertId}-subagent`,
+          kind: 'subagent',
+          parentRunId: context.run.id,
+          expertId,
+          reason,
+        })
+      },
+    })
+
+    this.register({
+      name: 'send_subagent_message',
+      description: '给指定子 Agent 追加一条消息。',
+      requiresApproval: false,
+      execute: async (context, args) => {
+        const compatContext = this.requireCompatSubagentContext(context)
+        const runId = typeof args.runId === 'string' ? args.runId : ''
+        const content = typeof args.content === 'string' ? args.content.trim() : ''
+        if (!runId || !content) {
+          throw new Error('send_subagent_message requires runId and content')
+        }
+
+        return compatContext.sendSubagentMessage(runId, content)
+      },
+    })
+
+    this.register({
+      name: 'stop_subagent',
+      description: '停止指定子 Agent。',
+      requiresApproval: false,
+      execute: async (context, args) => {
+        const compatContext = this.requireCompatSubagentContext(context)
+        const runId = typeof args.runId === 'string' ? args.runId : ''
+        const reason = typeof args.reason === 'string' ? args.reason : 'stopped by parent agent'
+        if (!runId) {
+          throw new Error('stop_subagent requires runId')
+        }
+
+        return compatContext.stopSubagent(runId, reason)
+      },
+    })
+  }
+
+  private requireCompatSubagentContext(context: ToolExecutionContext): CompatSubagentToolExecutionContext {
+    if (
+      typeof (context as Partial<CompatSubagentToolExecutionContext>).spawnSubagent !== 'function' ||
+      typeof (context as Partial<CompatSubagentToolExecutionContext>).sendSubagentMessage !== 'function' ||
+      typeof (context as Partial<CompatSubagentToolExecutionContext>).stopSubagent !== 'function'
+    ) {
+      throw new Error('Compat subagent tools require a compat subagent execution context')
+    }
+
+    return context as CompatSubagentToolExecutionContext
   }
 
   private getPrimaryWorkspace(context: ToolExecutionContext) {

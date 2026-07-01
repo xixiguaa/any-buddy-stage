@@ -179,14 +179,6 @@ class AgentRunClient {
     return this.api.agentRun.approve(approvalId, decision, editedArgs)
   }
 
-  sendSubagentMessage(runId: string, content: string) {
-    return this.api.agentRun.sendSubagentMessage(runId, content)
-  }
-
-  stopSubagent(runId: string, reason?: string) {
-    return this.api.agentRun.stopSubagent(runId, reason)
-  }
-
   subscribeActive(listener: Parameters<AnybuddyApi['agentRun']['subscribeActive']>[0]) {
     return this.api.agentRun.subscribeActive(listener)
   }
@@ -213,6 +205,10 @@ class ConfigClient {
 
   writeMcp(content: string) {
     return this.api.config.writeMcp(content)
+  }
+
+  listSkills() {
+    return this.api.config.listSkills()
   }
 }
 

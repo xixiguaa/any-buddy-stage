@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ToolRegistryService } from './tool-registry-service.js';
+import type { CompatSubagentToolExecutionContext } from './agent-runtime-types.js';
 
 function createToolRegistry() {
   const appService = {
@@ -67,6 +68,7 @@ test('web_search 会映射真实搜索结果并执行域名过滤与数量限制
         title: 'search',
         mode: 'ask',
         modelId: 'model-1',
+        expertIds: [],
         permissionMode: 'default',
         connectorIds: [],
         skillIds: [],
@@ -105,7 +107,7 @@ test('web_search 会映射真实搜索结果并执行域名过滤与数量限制
       stopSubagent: async () => {
         throw new Error('not used');
       },
-    }, {
+    } as CompatSubagentToolExecutionContext, {
       query: 'openai',
       domains: ['openai.com', 'platform.openai.com'],
       maxResults: 2,
@@ -179,6 +181,7 @@ test('list_agent_runs 返回当前任务的主子 agent 运行摘要', async () 
       title: 'subagent task',
       mode: 'ask',
       modelId: 'model-1',
+      expertIds: [],
       permissionMode: 'default',
       connectorIds: [],
       skillIds: [],
@@ -217,7 +220,7 @@ test('list_agent_runs 返回当前任务的主子 agent 运行摘要', async () 
     stopSubagent: async () => {
       throw new Error('not used');
     },
-  }, {});
+  } as CompatSubagentToolExecutionContext, {});
 
   assert.equal((result.data.runs as Array<unknown>).length, 2);
 });

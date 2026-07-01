@@ -5,6 +5,7 @@ type StreamingEventSnapshot = {
   taskId: string
   runId: string
   content: string
+  metadata?: Record<string, unknown>
   createdAt: string
 };
 
@@ -70,6 +71,7 @@ function extractStreamingEvents(events: AgentEvent[]) {
       taskId: event.taskId,
       runId: event.runId,
       content,
+      metadata: event.payload,
       createdAt: event.createdAt,
     }];
   });
@@ -121,6 +123,7 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
           synthetic: true,
           sourceEventId: latestEvent.eventId,
           streaming: true,
+          ...latestEvent.metadata,
         },
         createdAt: latestEvent.createdAt,
       });
@@ -155,36 +158,6 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         runId: event.runId,
         role: 'tool',
         content: `工具结果: ${String(event.payload.toolName ?? 'unknown')}`,
-        metadata: {
-          synthetic: true,
-          sourceEventId: event.id,
-          eventType: event.type,
-          payload: event.payload,
-        },
-        createdAt,
-      };
-    case 'subagent_started':
-      return {
-        id: `event-${event.id}`,
-        taskId: event.taskId,
-        runId: event.runId,
-        role: 'system',
-        content: `子 Agent 已启动 ${String(event.payload.expertId ?? 'default-expert')}`,
-        metadata: {
-          synthetic: true,
-          sourceEventId: event.id,
-          eventType: event.type,
-          payload: event.payload,
-        },
-        createdAt,
-      };
-    case 'subagent_completed':
-      return {
-        id: `event-${event.id}`,
-        taskId: event.taskId,
-        runId: event.runId,
-        role: 'system',
-        content: `子 Agent 已结束 ${String(event.payload.expertId ?? 'default-expert')}`,
         metadata: {
           synthetic: true,
           sourceEventId: event.id,

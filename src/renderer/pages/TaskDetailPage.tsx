@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { CheckOutlined, CloseOutlined, EditOutlined, MessageOutlined, StopOutlined } from '@ant-design/icons';
+import { CheckOutlined, CloseOutlined, EditOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Input, Modal, Tag } from 'antd';
-import type { AgentRun, Message } from '../../shared/types.js';
+import type { AgentRun, ExpertPreset, Message } from '../../shared/types.js';
 import { createAnybuddyClients } from '../api/clients.js';
 import TaskComposer from '../components/TaskComposer.js';
 import { useAppStore } from '../stores/app-store.js';
-import { buildRuntimeEventCard, buildRuntimeToolCards, summarizeRuntimeEvent } from '../stores/runtime-message-view.js';
+import { buildRuntimeToolCards, summarizeRuntimeEvent } from '../stores/runtime-message-view.js';
 
 function formatAccessMode(value: 'read_only' | 'read_write') {
   return value === 'read_only' ? '只读' : '读写';
@@ -26,9 +26,7 @@ function formatTimestamp(value?: string) {
   }
 }
 
-function getRunThreadMessages(messages: Message[], run: AgentRun) {
-  return messages.filter((message) => message.runId === run.id || message.metadata?.subagentRunId === run.id);
-}
+
 
 function CollapsibleToolMessage({ message }: { message: Message }) {
   const [collapsed, setCollapsed] = useState(true);
@@ -120,19 +118,16 @@ export default function TaskDetailPage() {
   const allAgentRuns = useAppStore((state) => state.agentRuns);
   const taskEvents = useAppStore((state) => state.taskEvents);
   const taskApprovals = useAppStore((state) => state.taskApprovals);
+  const experts = useAppStore((state) => state.experts);
   const selectTask = useAppStore((state) => state.selectTask);
   const sendMessage = useAppStore((state) => state.sendMessage);
   const saveDraft = useAppStore((state) => state.saveDraft);
   const clearDraft = useAppStore((state) => state.clearDraft);
   const resumeInterruptedRun = useAppStore((state) => state.resumeInterruptedRun);
-  const sendSubagentMessage = useAppStore((state) => state.sendSubagentMessage);
-  const stopSubagent = useAppStore((state) => state.stopSubagent);
   const workspaces = useAppStore((state) => state.workspaces);
 
   const [editApprovalId, setEditApprovalId] = useState<string | null>(null);
   const [editedArgsText, setEditedArgsText] = useState('');
-  const [activeSubagentId, setActiveSubagentId] = useState<string | null>(null);
-  const [subagentMessageText, setSubagentMessageText] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -156,34 +151,16 @@ export default function TaskDetailPage() {
   }, [task?.primaryWorkspaceId, workspaces]);
 
   const currentRun = agentRuns[0];
-  const subagentRuns = useMemo(() => agentRuns.filter((run) => run.kind === 'subagent'), [agentRuns]);
+  const activeExpert = useMemo(() => experts.find((expert) => expert.id === task?.activeExpertId), [experts, task?.activeExpertId]);
+  const availableExperts = useMemo(() => experts.filter((expert) => task?.expertIds.includes(expert.id)), [experts, task?.expertIds]);
 
-  useEffect(() => {
-    if (!subagentRuns.length) {
-      setActiveSubagentId(null);
-      return;
-    }
-    setActiveSubagentId((current) => {
-      if (current && subagentRuns.some((run) => run.id === current)) {
-        return current;
-      }
-      return subagentRuns[0]?.id ?? null;
-    });
-  }, [subagentRuns]);
+
 
   const attachedWorkspaces = useMemo(() => taskWorkspaces.filter((workspace) => workspace.role === 'attached'), [taskWorkspaces]);
 
   const pendingInterrupts = useMemo(() => taskApprovals.filter((appr) => appr.decision === 'pending'), [taskApprovals]);
 
-  const toolCards = useMemo(() => buildRuntimeToolCards(taskEvents), [taskEvents]);
 
-  const timelineCards = useMemo(() => taskEvents.slice().reverse().slice(0, 16).map(buildRuntimeEventCard), [taskEvents]);
-
-  const runtimeEventMessages = useMemo(() => taskEvents.map(summarizeRuntimeEvent).filter((message): message is Message => Boolean(message)), [taskEvents]);
-
-  const activeSubagentRun = useMemo(() => subagentRuns.find((run) => run.id === activeSubagentId) ?? null, [activeSubagentId, subagentRuns]);
-
-  const activeSubagentMessages = useMemo(() => (activeSubagentRun ? getRunThreadMessages(messages, activeSubagentRun) : []), [activeSubagentRun, messages]);
 
   if (!task) {
     return (
@@ -233,11 +210,33 @@ export default function TaskDetailPage() {
     }
   };
 
-  const handleSendSubagentMessage = async () => {
-    if (!activeSubagentId || !subagentMessageText.trim()) return;
-    await sendSubagentMessage(activeSubagentId, subagentMessageText.trim());
-    setSubagentMessageText('');
+  const handleSwitchExpert = async (expert: ExpertPreset) => {
+    if (!taskId) return;
+    if (expert.id === task?.activeExpertId) return;
+    const clients = createAnybuddyClients(window.anybuddy);
+    const updateResult = await clients.task.update(taskId, {
+      activeExpertId: expert.id,
+      expertIds: task?.expertIds.includes(expert.id) ? task.expertIds : [...(task?.expertIds ?? []), expert.id],
+    });
+    if (!updateResult.ok) {
+      throw new Error(updateResult.error.message);
+    }
+    const messageResult = await clients.message.create(taskId, {
+      role: 'system',
+      content: `已切换到 ${expert.name}`,
+      metadata: {
+        eventType: 'expert_switched',
+        expertId: expert.id,
+        expertName: expert.name,
+      },
+    });
+    if (!messageResult.ok) {
+      throw new Error(messageResult.error.message);
+    }
+    await selectTask(taskId);
   };
+
+
 
   return (
     <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: '#ffffff', width: '100%' }}>
@@ -301,7 +300,15 @@ export default function TaskDetailPage() {
 
             return (
               <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
-                <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>{isUser ? '用户' : isAssistant ? (isStreamingAssistant ? 'AnyBuddy 正在输出' : 'AnyBuddy') : '工具调用'}</div>
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
+                  {isUser
+                    ? '用户'
+                    : isAssistant
+                      ? (isStreamingAssistant
+                          ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
+                          : String(message.metadata?.expertName ?? 'AnyBuddy'))
+                      : '工具调用'}
+                </div>
                 <div
                   style={{
                     maxWidth: '85%',
@@ -337,18 +344,25 @@ export default function TaskDetailPage() {
                 content: draft.content,
                 selectedSkillIds: draft.selectedSkillIds,
                 selectedConnectorIds: draft.selectedConnectorIds,
+                selectedExpertIds: draft.selectedExpertIds,
+                selectedExpertId: draft.selectedExpertId,
               });
             }}
             onClearDraft={() => clearDraft(taskId ?? '')}
             onSend={async (content, options) => {
               const clients = createAnybuddyClients(window.anybuddy);
-              await clients.task.update(taskId ?? '', {
+              const updateResult = await clients.task.update(taskId ?? '', {
                 mode: options.mode,
                 modelId: options.modelId,
                 skillIds: options.skillIds,
                 connectorIds: options.connectorIds,
+                expertIds: options.expertIds ?? [],
+                activeExpertId: options.activeExpertId,
                 permissionMode: options.permissionMode,
               });
+              if (!updateResult.ok) {
+                throw new Error(updateResult.error.message);
+              }
               await sendMessage(taskId ?? '', content);
               await clearDraft(taskId ?? '');
             }}
@@ -364,6 +378,34 @@ export default function TaskDetailPage() {
         </div>
 
         <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>当前专家</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{activeExpert?.name ?? '通用助手'}</div>
+              <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px', lineHeight: 1.6 }}>{activeExpert?.description ?? '当前未指定专家，使用默认 AnyBuddy persona。'}</div>
+            </div>
+            {availableExperts.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {availableExperts.map((expert) => {
+                  const isActive = expert.id === task.activeExpertId;
+                  return (
+                    <Button
+                      key={expert.id}
+                      size="small"
+                      type={isActive ? 'primary' : 'default'}
+                      onClick={() => void handleSwitchExpert(expert)}
+                      style={isActive ? { background: '#0f172a', borderColor: '#0f172a' } : undefined}
+                    >
+                      {expert.name}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
           <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>运行摘要</div>
           <div style={{ display: 'grid', gap: '10px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
@@ -371,8 +413,8 @@ export default function TaskDetailPage() {
               <Tag color={getStatusLabelAndColor(currentRun?.status ?? task.status).color}>{getStatusLabelAndColor(currentRun?.status ?? task.status).label}</Tag>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-              <span style={{ color: '#64748b' }}>子 Agent 数量</span>
-              <span style={{ color: '#0f172a', fontWeight: 600 }}>{subagentRuns.length}</span>
+              <span style={{ color: '#64748b' }}>已注册专家</span>
+              <span style={{ color: '#0f172a', fontWeight: 600 }}>{availableExperts.length}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
               <span style={{ color: '#64748b' }}>待恢复中断</span>
@@ -420,116 +462,33 @@ export default function TaskDetailPage() {
         </div>
 
         <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>Agent Runs</div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>运行记录</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {agentRuns.map((run) => (
+            {agentRuns.filter((run) => run.kind === 'main').map((run) => (
               <div
                 key={run.id}
                 style={{
-                  border: activeSubagentId === run.id ? '1px solid #93c5fd' : '1px solid #f1f5f9',
+                  border: '1px solid #f1f5f9',
                   borderRadius: '12px',
                   padding: '10px 12px',
-                  background: run.kind === 'main' ? '#f8fafc' : activeSubagentId === run.id ? '#eff6ff' : '#ffffff',
-                  cursor: run.kind === 'subagent' ? 'pointer' : 'default',
-                }}
-                onClick={() => {
-                  if (run.kind === 'subagent') {
-                    setActiveSubagentId(run.id);
-                  }
+                  background: run.kind === 'main' ? '#f8fafc' : '#ffffff',
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                   <div>
                     <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>{run.agentName}</div>
                     <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                      {run.kind === 'main' ? '主 Agent' : '子 Agent'} · {run.currentNode ?? 'idle'}
+                      主运行 · {run.currentNode ?? 'idle'}
                     </div>
                   </div>
                   <Tag color={getStatusLabelAndColor(run.status).color}>{getStatusLabelAndColor(run.status).label}</Tag>
                 </div>
-                {run.kind === 'subagent' && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>线程消息数 {getRunThreadMessages(messages, run).length}</div>}
               </div>
             ))}
           </div>
         </div>
 
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '8px' }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a' }}>Subagent Threads</div>
-            {activeSubagentRun && <Tag color={getStatusLabelAndColor(activeSubagentRun.status).color}>{getStatusLabelAndColor(activeSubagentRun.status).label}</Tag>}
-          </div>
 
-          {!activeSubagentRun && <div style={{ fontSize: '12px', color: '#94a3b8' }}>当前还没有子 Agent 线程。</div>}
-
-          {activeSubagentRun && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                <div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>{activeSubagentRun.agentName}</div>
-                  <div style={{ fontSize: '11px', color: '#64748b' }}>
-                    节点: {activeSubagentRun.currentNode ?? 'idle'} · 创建于 {formatTimestamp(activeSubagentRun.createdAt)}
-                  </div>
-                </div>
-                {activeSubagentRun.status !== 'cancelled' && activeSubagentRun.status !== 'completed' && activeSubagentRun.status !== 'failed' && (
-                  <Button size="small" danger icon={<StopOutlined />} onClick={() => void stopSubagent(activeSubagentRun.id, 'stopped from task detail panel')}>
-                    停止
-                  </Button>
-                )}
-              </div>
-
-              <div style={{ maxHeight: '320px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
-                {activeSubagentMessages.map((message) => {
-                  const isUser = message.role === 'user';
-                  const isAssistant = message.role === 'assistant';
-                  const isTool = message.role === 'tool';
-                  const label = isUser ? '你发给子 Agent 的追加消息' : isAssistant ? '子 Agent' : isTool ? '工具' : '系统';
-
-                  return (
-                    <div key={message.id} style={{ border: '1px solid #e2e8f0', borderRadius: '10px', padding: '10px', background: isUser ? '#eff6ff' : '#f8fafc' }}>
-                      <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
-                        {label} · {formatTimestamp(message.createdAt)}
-                      </div>
-                      <div style={{ fontSize: '12px', color: '#0f172a', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit' }}>{message.content}</div>
-                    </div>
-                  );
-                })}
-                {activeSubagentMessages.length === 0 && <div style={{ fontSize: '12px', color: '#94a3b8' }}>这个子 Agent 线程还没有可展示的消息。</div>}
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>继续这个线程</div>
-                <Input.TextArea rows={4} value={subagentMessageText} onChange={(event) => setSubagentMessageText(event.target.value)} placeholder="补充上下文、调整策略，或者要求子 Agent 继续追查。" />
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <Button type="primary" icon={<MessageOutlined />} disabled={!subagentMessageText.trim()} onClick={() => void handleSendSubagentMessage()}>
-                    发送到线程
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>运行时间线</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {timelineCards.map((card) => (
-              <div key={card.id} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '10px', borderRadius: '10px', background: '#f8fafc', border: '1px solid #eef2f7' }}>
-                <div style={{ width: '8px', height: '8px', borderRadius: '999px', background: card.tone === 'warning' ? '#f59e0b' : card.tone === 'error' ? '#ef4444' : card.tone === 'success' ? '#10b981' : card.tone === 'info' ? '#0ea5e9' : '#94a3b8', marginTop: '6px', flexShrink: 0 }} />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: '12px', fontWeight: 600, color: '#0f172a' }}>{card.title}</div>
-                  {card.description && <div style={{ fontSize: '12px', color: '#475569', marginTop: '3px', whiteSpace: 'pre-wrap' }}>{card.description}</div>}
-                  {card.detail && (
-                    <pre style={{ margin: '8px 0 0 0', padding: '8px 10px', borderRadius: '8px', background: '#ffffff', border: '1px solid #e2e8f0', color: '#334155', fontSize: '11px', whiteSpace: 'pre-wrap', overflow: 'auto', maxHeight: '140px', fontFamily: 'Consolas, Courier New, monospace' }}>
-                      {card.detail}
-                    </pre>
-                  )}
-                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>{card.createdAt}</div>
-                </div>
-              </div>
-            ))}
-            {timelineCards.length === 0 && <div style={{ fontSize: '12px', color: '#94a3b8' }}>暂无运行事件</div>}
-          </div>
-        </div>
 
         {attachedWorkspaces.length > 0 && (
           <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>

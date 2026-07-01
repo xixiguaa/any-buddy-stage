@@ -1,10 +1,14 @@
-import type { AgentRun, CreateAgentRunInput } from '../../shared/types.js';
+import type { AgentRun, CreateAgentRunInput, ExpertPreset } from '../../shared/types.js';
 import type { AppService } from './app-service.js';
-import { LangChainAgentService, AgentApprovalPendingError } from './langchain-agent-service.js';
+import type { AgentExecutor } from './agent-executor.js';
+import { DeepAgentExecutor } from './deepagent-executor.js';
+import { LangChainExecutor } from './langchain-executor.js';
+import { LangChainAgentService } from './langchain-agent-service.js';
 import { OpenAIModelService } from './openai-model-service.js';
 import { ToolRegistryService } from './tool-registry-service.js';
 import type {
   AgentToolCall,
+  CompatSubagentToolExecutionContext,
   ModelMessage,
   ModelToolPlan,
   RuntimeContext,
@@ -22,6 +26,8 @@ type RuntimeDependencies = {
   modelService?: OpenAIModelService
   toolRegistry?: ToolRegistryService
   langChainAgentService?: LangChainAgentService
+  deepAgentExecutor?: AgentExecutor
+  langChainExecutor?: AgentExecutor
   maxPlanningRounds?: number
   continueAfterApproval?: boolean
 };
@@ -29,7 +35,8 @@ type RuntimeDependencies = {
 export class AgentRuntimeService {
   private readonly modelService: OpenAIModelService;
   private readonly toolRegistry: ToolRegistryService;
-  private readonly langChainAgentService: LangChainAgentService;
+  private readonly deepAgentExecutor: AgentExecutor;
+  private readonly langChainExecutor: AgentExecutor;
   private readonly maxPlanningRounds: number;
   private readonly continueAfterApproval: boolean;
 
@@ -39,7 +46,13 @@ export class AgentRuntimeService {
   ) {
     this.modelService = dependencies.modelService ?? new OpenAIModelService();
     this.toolRegistry = dependencies.toolRegistry ?? new ToolRegistryService(appService);
-    this.langChainAgentService = dependencies.langChainAgentService ?? new LangChainAgentService();
+    this.deepAgentExecutor = dependencies.deepAgentExecutor ?? new DeepAgentExecutor(appService, {
+      modelService: this.modelService,
+    });
+    this.langChainExecutor = dependencies.langChainExecutor ?? new LangChainExecutor(appService, {
+      modelService: this.modelService,
+      langChainAgentService: dependencies.langChainAgentService,
+    });
     this.maxPlanningRounds = dependencies.maxPlanningRounds ?? defaultMaxPlanningRounds;
     this.continueAfterApproval = dependencies.continueAfterApproval ?? true;
   }
@@ -184,102 +197,22 @@ export class AgentRuntimeService {
       await this.appService.appendRuntimeMessage(context.task.id, context.run.id, 'system', systemPrompt);
     }
 
-    // 优先走 LangChain agent。若当前没有可用模型，或 LangChain 调用异常，则回退旧规划循环。
-    const handledByLangChain = await this.tryExecuteWithLangChain(context, systemPrompt);
-    if (handledByLangChain) {
+    const activeExpert = this.resolveActiveExpert(context, this.appService.listExperts());
+    const executeParams = {
+      context,
+      systemPrompt,
+      activeExpert,
+      tools: this.buildLangChainTools(context),
+      toolExecutionContext: this.createToolExecutionContext(context),
+      assistantMetadata: this.buildAssistantMetadata(context, activeExpert),
+    };
+
+    const handledByDeepAgent = await this.deepAgentExecutor.execute(executeParams);
+    if (handledByDeepAgent) {
       return;
     }
 
     await this.executeLegacyPlannerLoop(context);
-  }
-
-  private async tryExecuteWithLangChain(context: RuntimeContext, systemPrompt: string): Promise<boolean> {
-    console.log('[Runtime] tryExecuteWithLangChain entered');
-    const resolvedModel = this.modelService.resolveModelConfig(
-      this.appService.listModelConfigs(),
-      context.task.modelId,
-    );
-
-    if (!resolvedModel?.apiKey) {
-      console.log('[Runtime] no resolved model apiKey, falling back to legacy planner');
-      return false;
-    }
-
-    try {
-      const taskContext = this.appService.getTaskContext(context.task.id);
-      const runtimeAgent = await this.langChainAgentService.createRuntimeAgent({
-        model: resolvedModel,
-        tools: this.buildLangChainTools(context),
-        context: this.createToolExecutionContext(context),
-        systemPrompt,
-      });
-
-      const runtimeMessages = (taskContext?.messages ?? []).map<ModelMessage>(message => ({
-        role: message.role,
-        content: message.content,
-      }));
-      console.log('[Runtime] invoking stream with messages count:', runtimeMessages.length);
-      const stream = await runtimeAgent.stream({
-        messages: runtimeMessages,
-      }, {
-        streamMode: 'messages',
-      });
-
-      const accumulatedMessagesMap = new Map<string, string>();
-      for await (const chunk of stream) {
-        console.log('[Runtime] stream chunk received:', JSON.stringify(chunk).slice(0, 300));
-        
-        const assistantMsgs = chunk.messages.filter(m => m.role === 'assistant');
-        for (const msg of assistantMsgs) {
-          if (!msg.content) continue;
-          
-          const msgId = msg.id || 'default-streaming';
-          const prevContent = accumulatedMessagesMap.get(msgId) || '';
-          const newContent = prevContent + msg.content;
-          accumulatedMessagesMap.set(msgId, newContent);
-
-          const eventId = `msg-${msgId}`;
-          await this.appService.upsertAgentMessageEvent(context.run.id, eventId, newContent);
-        }
-      }
-
-      let finalMessage: string | undefined = undefined;
-      const keys = Array.from(accumulatedMessagesMap.keys());
-      if (keys.length > 0) {
-        finalMessage = accumulatedMessagesMap.get(keys[keys.length - 1]);
-      }
-
-      console.log('[Runtime] finalMessage:', finalMessage);
-      if (finalMessage) {
-        await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
-          status: 'running',
-          currentNode: 'stream_completed',
-        });
-      }
-
-      await this.appService.completeRuntimeRun(
-        context.run.id,
-        finalMessage ?? 'Agent 已完成当前任务，但没有返回额外的最终说明。',
-      );
-      return true;
-    } catch (error) {
-      console.error('[Runtime] tryExecuteWithLangChain error:', error);
-      if (error instanceof AgentApprovalPendingError) {
-        // 中断事件和 tool message 已经在工具执行阶段写入，这里只需停止当前轮次。
-        return true;
-      }
-      if (error instanceof ModelApiModeMismatchError) {
-        throw error;
-      }
-
-      await this.appService.appendRuntimeMessage(
-        context.task.id,
-        context.run.id,
-        'system',
-        `LangChain agent 执行失败，已回退到内置规划循环：${error instanceof Error ? error.message : 'unknown error'}`,
-      );
-      return false;
-    }
   }
 
   private async executeLegacyPlannerLoop(context: RuntimeContext) {
@@ -411,16 +344,6 @@ export class AgentRuntimeService {
       },
     ];
 
-    if (context.task.expertId && context.run.kind === 'main') {
-      tools.push({
-        name: 'consult_subagent',
-        arguments: {
-          expertId: context.task.expertId,
-          reason: '请子专家补充分析结论',
-        },
-      });
-    }
-
     if (context.settings.networkEnabled && context.settings.webSearchEnabled) {
       tools.push({
         name: 'web_search',
@@ -448,7 +371,7 @@ export class AgentRuntimeService {
       name: tool.name,
       description: tool.description,
       requiresApproval: tool.requiresApproval,
-      execute: async (_toolContext, args) => this.handleToolCall(context, {
+      execute: async (_toolContext: ToolExecutionContext, args: Record<string, unknown>) => this.handleToolCall(context, {
         name: tool.name,
         arguments: args,
       }),
@@ -482,11 +405,11 @@ export class AgentRuntimeService {
     return result;
   }
 
-  private createToolExecutionContext(context: RuntimeContext): ToolExecutionContext {
+  private createToolExecutionContext(context: RuntimeContext): CompatSubagentToolExecutionContext {
     return {
       ...context,
-      requestApproval: input => this.requestApproval(context, input),
-      spawnSubagent: input => this.spawnSubagent(context, input),
+      requestApproval: (input: ToolApprovalRequest) => this.requestApproval(context, input),
+      spawnSubagent: (input) => this.spawnSubagent(context, input),
       sendSubagentMessage: (runId, content) => this.sendSubagentMessageInternal(context, runId, content),
       stopSubagent: (runId, reason) => this.stopSubagent(context, runId, reason),
     };
@@ -532,7 +455,10 @@ export class AgentRuntimeService {
       };
     }
 
-    const expertId = input.expertId ?? 'default-expert';
+    const expertId = input.expertId ?? context.task.expertIds[0] ?? 'default-expert';
+    if (context.task.expertIds.length > 0 && !context.task.expertIds.includes(expertId)) {
+      throw new Error(`Expert is not in current roster: ${expertId}`);
+    }
     const reason = input.reason ?? '补充子任务分析';
     const subRun = await this.appService.createRuntimeRun(context.task.id, {
       agentName: input.agentName,
@@ -553,7 +479,7 @@ export class AgentRuntimeService {
       context.task.id,
       subRun.id,
       'system',
-      `Subagent brief\nexpertId: ${expertId}\nreason: ${reason}\nparentTask: ${context.task.title}`,
+      `Subagent brief\nexpertId: ${expertId}\nreason: ${reason}\nparentTask: ${context.task.title}\nroster: ${(context.task.expertIds || []).join(', ')}`,
       {
         expertId,
         parentRunId: context.run.id,
@@ -566,6 +492,7 @@ export class AgentRuntimeService {
         run: subRun,
         model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), context.task.modelId)?.model ?? null,
         settings: this.appService.getSettings(),
+        taskExperts: context.task.expertIds,
       });
 
       const completedRun = this.appService.getAgentRun(subRun.id);
@@ -592,13 +519,29 @@ export class AgentRuntimeService {
         },
       };
     } catch (error) {
+      await this.appService.failRuntimeRun(subRun.id, error);
       await this.appService.appendRuntimeEvent(context.run.id, 'subagent_completed', {
         subagentRunId: subRun.id,
         expertId,
         status: 'failed',
         error: error instanceof Error ? error.message : 'unknown error',
       });
-      throw error;
+      const errMsg = `[专家协作执行失败] 专家 ${expertId} 在执行时发生错误:\n${error instanceof Error ? error.message : String(error)}`;
+      await this.appService.appendRuntimeMessage(
+        context.task.id,
+        context.run.id,
+        'user',
+        errMsg
+      );
+      return {
+        summary: errMsg,
+        data: {
+          subagentRunId: subRun.id,
+          expertId,
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
     }
   }
 
@@ -660,5 +603,34 @@ export class AgentRuntimeService {
   private pickFinalAssistantMessage(messages: ModelMessage[]) {
     const assistantMessages = messages.filter(message => message.role === 'assistant' && message.content.trim().length > 0);
     return assistantMessages.at(-1)?.content ?? null;
+  }
+
+  private resolveActiveExpert(context: RuntimeContext, allExperts: ExpertPreset[]) {
+    const expertId = context.run.expertId ?? context.task.activeExpertId;
+    if (!expertId) {
+      return null;
+    }
+
+    return allExperts.find(expert => expert.id === expertId) ?? null;
+  }
+
+  private buildAssistantMetadata(context: RuntimeContext, expert: ExpertPreset | null) {
+    return {
+      runtimeEngine: 'langchain',
+      personaSource: expert ? 'task_active_expert' : 'default',
+      ...(expert
+        ? {
+            expertId: expert.id,
+            expertName: expert.name,
+          }
+        : {}),
+      ...(context.run.kind === 'subagent' && context.run.expertId
+        ? {
+            runKind: 'subagent',
+          }
+        : {
+            runKind: context.run.kind,
+          }),
+    };
   }
 }
