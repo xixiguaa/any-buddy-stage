@@ -141,6 +141,26 @@ export type AgentEvent = {
   createdAt: string
 }
 
+export type TaskRuntimeSnapshotPayload = {
+  kind: 'snapshot'
+  taskId: string
+  runs: AgentRun[]
+  events: AgentEvent[]
+  approvals: HumanApproval[]
+  messages: Message[]
+}
+
+export type TaskRuntimePatchPayload = {
+  kind: 'patch'
+  taskId: string
+  run?: AgentRun
+  event?: AgentEvent
+  approval?: HumanApproval
+  message?: Message
+}
+
+export type TaskRuntimePayload = TaskRuntimeSnapshotPayload | TaskRuntimePatchPayload
+
 export type AppSettings = {
   networkEnabled: boolean
   webSearchEnabled: boolean

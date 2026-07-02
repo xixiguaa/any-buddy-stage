@@ -248,12 +248,13 @@ export default function TaskDetailPage() {
   const [editedArgsText, setEditedArgsText] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const lastMessage = messages[messages.length - 1];
 
   useEffect(() => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
     }
-  }, [messages, taskEvents, taskId]);
+  }, [lastMessage?.id, lastMessage?.content, taskId]);
 
   useEffect(() => {
     if (taskId && selectedTaskId !== taskId) {
@@ -300,14 +301,6 @@ export default function TaskDetailPage() {
   };
 
 
-
-  if (!task) {
-    return (
-      <div style={{ display: 'grid', placeItems: 'center', height: '100%', padding: '48px' }}>
-        <Empty description="选择一个任务查看对话和运行状态。" />
-      </div>
-    );
-  }
 
   const getStatusLabelAndColor = (status: string) => {
     switch (status) {
@@ -374,6 +367,99 @@ export default function TaskDetailPage() {
     }
     await selectTask(taskId);
   };
+
+  const renderedMessages = useMemo(() => {
+    return messages.map((message) => {
+      const isUser = message.role === 'user';
+      const isAssistant = message.role === 'assistant';
+      const isSystem = message.role === 'system';
+      const isTool = message.role === 'tool';
+      const isStreamingAssistant = isAssistant && Boolean(message.metadata?.streaming);
+
+      if (isSystem) {
+        const isError = message.metadata?.eventType === 'run_failed';
+        if (isError) {
+          return (
+            <div key={message.id} style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              margin: '12px 0',
+              padding: '16px',
+              background: 'linear-gradient(180deg, #fef2f2 0%, #fff1f1 100%)',
+              border: '1px solid #fca5a5',
+              borderRadius: '12px',
+              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.05)',
+              width: '100%',
+              boxSizing: 'border-box'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', fontWeight: 700, fontSize: '13px' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', background: '#fee2e2', fontSize: '12px' }}>
+                  ❌
+                </span>
+                运行失败
+              </div>
+              <div style={{ fontSize: '12px', color: '#991b1b', lineHeight: 1.6, fontFamily: `Consolas, 'Fira Code', monospace`, background: 'rgba(239, 68, 68, 0.03)', padding: '10px 12px', borderRadius: '6px', border: '1px dashed #fca5a5', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {message.content}
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
+            <div style={{ background: '#f1f5f9', color: '#64748b', padding: '6px 16px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, border: '1px solid #e2e8f0' }}>{message.content}</div>
+          </div>
+        );
+      }
+
+      if (isTool) {
+        return <CollapsibleToolMessage key={message.id} message={message} />;
+      }
+
+      return (
+        <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
+            {isUser
+              ? '用户'
+              : isAssistant
+                ? (isStreamingAssistant
+                    ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
+                    : String(message.metadata?.expertName ?? 'AnyBuddy'))
+                : '工具调用'}
+          </div>
+          <div
+            style={{
+              maxWidth: '85%',
+              padding: '12px 16px',
+              background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
+              color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+              border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
+              fontSize: '14px',
+              lineHeight: '1.6',
+              fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit',
+            }}
+          >
+            {isUser || isTool ? (
+              <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {renderMarkdown(message.content)}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    });
+  }, [messages]);
+
+  if (!task) {
+    return (
+      <div style={{ display: 'grid', placeItems: 'center', height: '100%', padding: '48px' }}>
+        <Empty description="选择一个任务查看对话和运行状态。" />
+      </div>
+    );
+  }
 
 
 
@@ -454,88 +540,7 @@ export default function TaskDetailPage() {
         )}
 
         <div ref={scrollContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {messages.map((message) => {
-            const isUser = message.role === 'user';
-            const isAssistant = message.role === 'assistant';
-            const isSystem = message.role === 'system';
-            const isTool = message.role === 'tool';
-            const isStreamingAssistant = isAssistant && Boolean(message.metadata?.streaming);
-
-            if (isSystem) {
-              const isError = message.metadata?.eventType === 'run_failed';
-              if (isError) {
-                return (
-                  <div key={message.id} style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px',
-                    margin: '12px 0',
-                    padding: '16px',
-                    background: 'linear-gradient(180deg, #fef2f2 0%, #fff1f1 100%)',
-                    border: '1px solid #fca5a5',
-                    borderRadius: '12px',
-                    boxShadow: '0 4px 12px rgba(239, 68, 68, 0.05)',
-                    width: '100%',
-                    boxSizing: 'border-box'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', fontWeight: 700, fontSize: '13px' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', background: '#fee2e2', fontSize: '12px' }}>
-                        ❌
-                      </span>
-                      运行失败
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#991b1b', lineHeight: 1.6, fontFamily: `Consolas, 'Fira Code', monospace`, background: 'rgba(239, 68, 68, 0.03)', padding: '10px 12px', borderRadius: '6px', border: '1px dashed #fca5a5', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                      {message.content}
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
-                  <div style={{ background: '#f1f5f9', color: '#64748b', padding: '6px 16px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, border: '1px solid #e2e8f0' }}>{message.content}</div>
-                </div>
-              );
-            }
-
-            if (isTool) {
-              return <CollapsibleToolMessage key={message.id} message={message} />;
-            }
-
-            return (
-              <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
-                <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
-                  {isUser
-                    ? '用户'
-                    : isAssistant
-                      ? (isStreamingAssistant
-                          ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
-                          : String(message.metadata?.expertName ?? 'AnyBuddy'))
-                      : '工具调用'}
-                </div>
-                <div
-                  style={{
-                    maxWidth: '85%',
-                    padding: '12px 16px',
-                    background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
-                    color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
-                    border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
-                    fontSize: '14px',
-                    lineHeight: '1.6',
-                    fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit',
-                  }}
-                >
-                  {isUser || isTool ? (
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      {renderMarkdown(message.content)}
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {renderedMessages}
 
           {isAgentWorking && (
             <div style={{

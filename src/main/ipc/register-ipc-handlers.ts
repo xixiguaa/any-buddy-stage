@@ -1,5 +1,6 @@
 import { ipcMain, dialog } from 'electron'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { IPC_CHANNELS } from '../../shared/ipc.js'
 import type { IpcResult } from '../../shared/types.js'
@@ -18,25 +19,38 @@ function fail(error: unknown): IpcResult<never> {
 }
 
 async function listLocalSkills() {
-  const skillsRoot = path.resolve(process.cwd(), '.agents', 'skills')
-  try {
-    const entries = await fs.readdir(skillsRoot, { withFileTypes: true })
-    const names = await Promise.all(entries
-      .filter(entry => entry.isDirectory())
-      .map(async entry => {
-        const skillFile = path.join(skillsRoot, entry.name, 'SKILL.md')
-        try {
-          await fs.access(skillFile)
-          return entry.name
-        } catch {
-          return null
-        }
-      }))
+  const skillRoots = [
+    path.resolve(process.cwd(), '.agents', 'skills'),
+    path.join(os.homedir(), '.agents', 'skills'),
+  ]
+  const names = new Set<string>()
 
-    return names.filter((name): name is string => Boolean(name)).sort((left, right) => left.localeCompare(right))
-  } catch {
-    return []
+  for (const skillsRoot of skillRoots) {
+    try {
+      const entries = await fs.readdir(skillsRoot, { withFileTypes: true })
+      const rootNames = await Promise.all(entries
+        .filter(entry => entry.isDirectory())
+        .map(async entry => {
+          const skillFile = path.join(skillsRoot, entry.name, 'SKILL.md')
+          try {
+            await fs.access(skillFile)
+            return entry.name
+          } catch {
+            return null
+          }
+        }))
+
+      for (const name of rootNames) {
+        if (name) {
+          names.add(name)
+        }
+      }
+    } catch {
+      continue
+    }
   }
+
+  return Array.from(names).sort((left, right) => left.localeCompare(right))
 }
 
 export function registerIpcHandlers(appService: AppService) {

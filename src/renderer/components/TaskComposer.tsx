@@ -182,20 +182,31 @@ export default function TaskComposer({
   const [selectedModelId, setSelectedModelId] = useState('') // This is used to store manually entered Model ID
   const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
+  const closeModeAndExpertPopovers = useCallback(() => {
+    setShowModePopover(false)
+    setShowRecentExperts(false)
+  }, [])
+
+  const scheduleCloseModeAndExpertPopovers = useCallback(() => {
+    window.setTimeout(() => {
+      closeModeAndExpertPopovers()
+    }, 0)
+  }, [closeModeAndExpertPopovers])
+
   // Close both popovers when clicking outside either popover or the trigger button
   useEffect(() => {
-    if (!showModePopover) return
+    if (!showModePopover && !showRecentExperts) return
 
     const handleOutsideClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement
-      
+
       const insideMode = target.closest('.mode-popover-container')
       const insideExperts = target.closest('.experts-popover-container')
       const insideTrigger = target.closest('.mode-trigger-btn')
-      
-      if (!insideMode && !insideExperts && !insideTrigger) {
-        setShowRecentExperts(false)
-        setShowModePopover(false)
+      const insideExpertTrigger = target.closest('.expert-trigger-btn')
+
+      if (!insideMode && !insideExperts && !insideTrigger && !insideExpertTrigger) {
+        scheduleCloseModeAndExpertPopovers()
       }
     }
 
@@ -203,7 +214,7 @@ export default function TaskComposer({
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick, true)
     }
-  }, [showModePopover])
+  }, [scheduleCloseModeAndExpertPopovers, showModePopover, showRecentExperts])
 
   // Import custom skills locally - removed, now loaded from local .agents/skills directory
   // Load local skills from .agents/skills directory via IPC
@@ -290,9 +301,7 @@ export default function TaskComposer({
 
   function closeExpertPopovers() {
     setShowRecentExperts(false)
-    window.setTimeout(() => {
-      setShowModePopover(false)
-    }, 50)
+    setShowModePopover(false)
   }
 
   useEffect(() => {
@@ -583,18 +592,18 @@ export default function TaskComposer({
         {/* Configuration Selectors */}
         <Space wrap size={6}>
           {/* Mode Option */}
-          <Popover
-            open={showModePopover}
-            onOpenChange={(open) => {
-              setShowModePopover(open)
-              if (!open) {
-                setShowRecentExperts(false)
-              }
-            }}
-            overlayClassName="mode-popover-container"
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
+            <Popover
+              open={showModePopover}
+              onOpenChange={(open) => {
+                setShowModePopover(open)
+                if (!open) {
+                  setShowRecentExperts(false)
+                }
+              }}
+              classNames={{ root: 'mode-popover-container' }}
+              styles={{ content: { padding: '6px 8px', borderRadius: '12px' } }}
             content={
-              <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px', position: 'relative' }}>
                 {[
                   { value: 'craft', label: 'Craft', icon: <CraftIcon />, desc: 'CRAFT (执行模式): 完全自主的代码改写与写入' },
                   { value: 'ask', label: 'Ask', icon: <AskIcon />, desc: 'ASK (问答模式): 快速问答与检索，不改动代码' },
@@ -645,116 +654,13 @@ export default function TaskComposer({
 
                 <Divider style={{ margin: '6px 0' }} />
 
-                <Popover
-                  placement="rightTop"
-                  trigger="click"
-                  open={showRecentExperts}
-                  onOpenChange={setShowRecentExperts}
-                  overlayClassName="experts-popover-container"
-                  overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
-                  content={
-                    <div style={{ width: '220px', padding: '4px' }}>
-                      <div style={{ fontSize: '12px', color: '#94a3b8', padding: '4px 8px 8px 8px', fontWeight: 500 }}>
-                         选择当前专家
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '200px', overflowY: 'auto' }}>
-                        {(() => {
-                          const list = experts.map(exp => ({
-                            id: exp.id,
-                            name: exp.name,
-                            sub: exp.description || '已包含专家',
-                            avatar: getExpertAvatar(exp.name),
-                            skills: exp.skills || [],
-                            desc: exp.description || ''
-                          }))
-
-                          if (list.length === 0) {
-                            return (
-                              <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px' }}>
-                                暂无可用专家，请前往专家页添加
-                              </div>
-                            )
-                          }
-
-                          return list.map(exp => {
-                            const isExpSelected = activeExpertId === exp.id
-                            const isExpHovered = hoveredItem === exp.name
-                            return (
-                               <div
-                                 key={exp.id}
-                                 onClick={(event) => {
-                                   event.stopPropagation()
-                                   event.nativeEvent.stopImmediatePropagation()
-                                   toggleExpertSelection({
-                                      id: exp.id,
-                                      name: exp.name,
-                                      description: exp.desc,
-                                      skills: exp.skills,
-                                      createdAt: new Date().toISOString(),
-                                      updatedAt: new Date().toISOString(),
-                                   })
-                                   closeExpertPopovers()
-                                 }}
-                                 onMouseEnter={() => setHoveredItem(exp.name)}
-                                 onMouseLeave={() => setHoveredItem(null)}
-                                 style={{
-                                   display: 'flex',
-                                   alignItems: 'center',
-                                   gap: '10px',
-                                   padding: '8px',
-                                   borderRadius: '8px',
-                                   cursor: 'pointer',
-                                   background: isExpHovered ? '#f1f5f9' : 'transparent',
-                                   transition: 'background 0.2s'
-                                 }}
-                               >
-                                 <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
-                                   {exp.avatar}
-                                   <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-                                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                       {exp.name}
-                                     </span>
-                                     <span style={{ fontSize: '11px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                       {exp.sub}
-                                     </span>
-                                   </div>
-                                 </div>
-                                  <Checkbox checked={isExpSelected} style={{ pointerEvents: 'none' }} />
-                               </div>
-                            )
-                          })
-                        })()}
-                      </div>
-
-                      <Divider style={{ margin: '6px 0' }} />
-
-                      <div
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          closeExpertPopovers()
-                          navigate('/experts')
-                        }}
-                        onMouseEnter={() => setHoveredItem('other_experts')}
-                        onMouseLeave={() => setHoveredItem(null)}
-                        style={{
-                          padding: '8px 10px',
-                          borderRadius: '8px',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px',
-                          color: '#4f46e5',
-                          background: hoveredItem === 'other_experts' ? '#f1f5f9' : 'transparent',
-                          transition: 'background 0.2s'
-                        }}
-                      >
-                        <ExpertIcon color="#4f46e5" />
-                        <span style={{ fontSize: '13px', fontWeight: 600 }}>管理专家库</span>
-                      </div>
-                    </div>
-                  }
-                >
+                <div style={{ position: 'relative' }}>
                   <div
+                    className="expert-trigger-btn"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setShowRecentExperts(prev => !prev)
+                    }}
                     onMouseEnter={() => setHoveredItem('expert')}
                     onMouseLeave={() => setHoveredItem(null)}
                     style={{
@@ -793,7 +699,121 @@ export default function TaskComposer({
                     )}
                     <RightOutlined style={{ fontSize: '11px', color: '#94a3b8' }} />
                   </div>
-                </Popover>
+
+                  {showRecentExperts && (
+                    <div
+                      className="experts-popover-container"
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 'calc(100% + 8px)',
+                        width: '220px',
+                        padding: '10px 12px',
+                        borderRadius: '12px',
+                        background: '#ffffff',
+                        boxShadow: '0 8px 24px rgba(15, 23, 42, 0.12)',
+                        border: '1px solid #e2e8f0',
+                        zIndex: 1000
+                      }}
+                    >
+                      <div style={{ fontSize: '12px', color: '#94a3b8', padding: '4px 8px 8px 8px', fontWeight: 500 }}>
+                        选择当前专家
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '200px', overflowY: 'auto' }}>
+                        {(() => {
+                          const list = experts.map(exp => ({
+                            id: exp.id,
+                            name: exp.name,
+                            sub: exp.description || '已包含专家',
+                            avatar: getExpertAvatar(exp.name),
+                            skills: exp.skills || [],
+                            desc: exp.description || ''
+                          }))
+
+                          if (list.length === 0) {
+                            return (
+                              <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px' }}>
+                                暂无可用专家，请前往专家页添加
+                              </div>
+                            )
+                          }
+
+                          return list.map(exp => {
+                            const isExpSelected = activeExpertId === exp.id
+                            const isExpHovered = hoveredItem === exp.name
+                            return (
+                              <div
+                                key={exp.id}
+                                onClick={() => {
+                                  toggleExpertSelection({
+                                    id: exp.id,
+                                    name: exp.name,
+                                    description: exp.desc,
+                                    skills: exp.skills,
+                                    createdAt: new Date().toISOString(),
+                                    updatedAt: new Date().toISOString(),
+                                  })
+                                  setShowRecentExperts(false)
+                                }}
+                                onMouseEnter={() => setHoveredItem(exp.name)}
+                                onMouseLeave={() => setHoveredItem(null)}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  padding: '8px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  background: isExpHovered ? '#f1f5f9' : 'transparent',
+                                  transition: 'background 0.2s'
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0, gap: '10px' }}>
+                                  {exp.avatar}
+                                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {exp.name}
+                                    </span>
+                                    <span style={{ fontSize: '11px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {exp.sub}
+                                    </span>
+                                  </div>
+                                </div>
+                                <Checkbox checked={isExpSelected} style={{ pointerEvents: 'none' }} />
+                              </div>
+                            )
+                          })
+                        })()}
+                      </div>
+
+                      <Divider style={{ margin: '6px 0' }} />
+
+                      <div
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setShowRecentExperts(false)
+                          navigate('/experts')
+                        }}
+                        onMouseEnter={() => setHoveredItem('other_experts')}
+                        onMouseLeave={() => setHoveredItem(null)}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          color: '#4f46e5',
+                          background: hoveredItem === 'other_experts' ? '#f1f5f9' : 'transparent',
+                          transition: 'background 0.2s'
+                        }}
+                      >
+                        <ExpertIcon color="#4f46e5" />
+                        <span style={{ fontSize: '13px', fontWeight: 600 }}>管理专家库</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             }
             trigger="click"
@@ -808,7 +828,7 @@ export default function TaskComposer({
           <Popover
             open={showModelPopover}
             onOpenChange={setShowModelPopover}
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '12px' }}
+            styles={{ content: { padding: '6px 8px', borderRadius: '12px' } }}
             content={
               <div style={{ width: '260px', padding: '2px 0' }}>
                 {!addingModel ? (
@@ -985,7 +1005,7 @@ export default function TaskComposer({
           <Popover
             open={showSkillsPopover}
             onOpenChange={setShowSkillsPopover}
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1053,7 +1073,7 @@ export default function TaskComposer({
           <Popover
             open={showConnectorPopover}
             onOpenChange={setShowConnectorPopover}
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1118,7 +1138,7 @@ export default function TaskComposer({
           <Popover
             open={showAttachPopover}
             onOpenChange={setShowAttachPopover}
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1176,7 +1196,7 @@ export default function TaskComposer({
           <Popover
             open={showPermissionPopover}
             onOpenChange={setShowPermissionPopover}
-            overlayInnerStyle={{ padding: '6px 8px', borderRadius: '10px' }}
+            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>

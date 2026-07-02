@@ -11,6 +11,7 @@ import type {
   CreateWorkspaceInput,
   IpcResult,
   Message,
+  TaskRuntimePayload,
   Task,
   TaskDraft,
   TaskFilter,
@@ -37,6 +38,7 @@ export type {
   IpcResult,
   Message,
   HumanApproval,
+  TaskRuntimePayload,
   Task,
   TaskDraft,
   TaskFilter,
@@ -153,7 +155,7 @@ export type AnybuddyApi = {
     approve(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<IpcResult<void>>
     clearByTask(taskId: string): Promise<IpcResult<void>>
     subscribeActive(listener: (runs: AgentRun[]) => void): () => void
-    subscribeTask(taskId: string, listener: (payload: { runs: AgentRun[]; events: AgentEvent[]; approvals: HumanApproval[] }) => void): () => void
+    subscribeTask(taskId: string, listener: (payload: TaskRuntimePayload) => void): () => void
   }
   config: {
     readModels(): Promise<IpcResult<string>>

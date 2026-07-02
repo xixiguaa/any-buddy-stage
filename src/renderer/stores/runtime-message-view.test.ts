@@ -171,6 +171,42 @@ test('summarizeRuntimeEvent converts tool and interrupt events into readable syn
   assert.equal(summarizeRuntimeEvent(interruptEvent)?.content, '等待恢复: 请求写入文件');
 });
 
+test('buildVisibleMessages keeps assistant progress text and tool events together in order', () => {
+  const visibleMessages = buildVisibleMessages([], [
+    createEvent({
+      id: 'progress-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'agent_message',
+      payload: {
+        role: 'assistant',
+        content: '你是想看“agent 为什么没有中间反馈”这件事，我先顺着这个方向检查一下，我先把 src/app.ts 读一遍，看看里面现在是怎么处理的。',
+        source: 'runtime_tool_progress',
+      },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    }),
+    createEvent({
+      id: 'tool-1',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'tool_called',
+      payload: {
+        toolName: 'read_workspace_file',
+        arguments: {
+          path: 'src/app.ts',
+        },
+      },
+      createdAt: '2026-01-01T00:00:02.000Z',
+    }),
+  ]);
+
+  assert.equal(visibleMessages.length, 2);
+  assert.equal(visibleMessages[0]?.role, 'assistant');
+  assert.match(visibleMessages[0]?.content ?? '', /先顺着这个方向检查一下/);
+  assert.equal(visibleMessages[1]?.role, 'tool');
+  assert.equal(visibleMessages[1]?.content, '调用工具: read_workspace_file');
+});
+
 test('buildRuntimeEventCard exposes structured tool result details for runtime timeline cards', () => {
   const toolResultEvent = createEvent({
     id: 'event-result',

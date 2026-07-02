@@ -11,6 +11,7 @@ import type {
   ModelConfig,
   Task,
   TaskDraft,
+  TaskRuntimePayload,
   TaskSummary,
   TaskWorkspaceContext,
   WorkspaceSummary,
@@ -81,8 +82,12 @@ type AppStoreState = {
 
 let bootstrapSubscription: (() => void) | null = null
 let selectedTaskSubscription: (() => void) | null = null
+let selectedTaskPatchTimer: ReturnType<typeof window.setTimeout> | null = null
+let selectedTaskPatchQueue: TaskRuntimePayload[] = []
+let selectedTaskPatchTaskId: string | null = null
 const RECENT_EXPERTS_STORAGE_KEY = 'anybuddy.recentExperts'
 const RECENT_EXPERTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000
+const TASK_RUNTIME_PATCH_FLUSH_MS = 50
 
 function parseRecentExpertsFromStorage(): ExpertPreset[] {
   if (typeof window === 'undefined') {
@@ -127,6 +132,175 @@ function saveRecentExpertsToStorage(experts: ExpertPreset[]) {
     updatedAt: Date.now(),
     experts,
   }))
+}
+
+function upsertById<T extends { id: string }>(items: T[], nextItem: T) {
+  return [...items.filter(item => item.id !== nextItem.id), nextItem]
+}
+
+function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: TaskRuntimePayload) {
+  if (payload.kind === 'snapshot') {
+    const messages = buildVisibleMessages(payload.messages, payload.events)
+    const activeRun = payload.runs.find(run => run.id === state.taskDetail?.lastRunId) ?? payload.runs[0]
+    return {
+      agentRuns: [
+        ...state.agentRuns.filter(run => run.taskId !== taskId),
+        ...payload.runs,
+      ],
+      taskEvents: payload.events,
+      taskApprovals: payload.approvals,
+      messages,
+      taskDetail: state.taskDetail && state.taskDetail.id === taskId
+        ? {
+            ...state.taskDetail,
+            status: activeRun?.status ?? state.taskDetail.status,
+            updatedAt: activeRun?.updatedAt ?? state.taskDetail.updatedAt,
+            lastRunId: activeRun?.id ?? state.taskDetail.lastRunId,
+          }
+        : state.taskDetail,
+    }
+  }
+
+  const nextRuns = payload.run
+    ? [
+        ...state.agentRuns.filter(run => !(run.taskId === taskId && run.id === payload.run?.id)),
+        payload.run,
+      ]
+    : state.agentRuns
+
+  const nextEvents = payload.event
+    ? upsertById(state.taskEvents, payload.event)
+    : state.taskEvents
+
+  const nextApprovals = payload.approval
+    ? upsertById(state.taskApprovals, payload.approval)
+    : state.taskApprovals
+
+  const persistedMessages = payload.message
+    ? upsertById(state.messages.filter(message => !message.metadata?.synthetic), payload.message)
+    : state.messages.filter(message => !message.metadata?.synthetic)
+
+  const nextMessages = buildVisibleMessages(persistedMessages, nextEvents)
+  const taskRuns = nextRuns.filter(run => run.taskId === taskId)
+  const activeRun = taskRuns.find(run => run.id === state.taskDetail?.lastRunId) ?? taskRuns[0]
+
+  return {
+    agentRuns: nextRuns,
+    taskEvents: nextEvents,
+    taskApprovals: nextApprovals,
+    messages: nextMessages,
+    taskDetail: state.taskDetail && state.taskDetail.id === taskId
+      ? {
+          ...state.taskDetail,
+          status: activeRun?.status ?? state.taskDetail.status,
+          updatedAt: activeRun?.updatedAt ?? state.taskDetail.updatedAt,
+          lastRunId: activeRun?.id ?? state.taskDetail.lastRunId,
+        }
+      : state.taskDetail,
+  }
+}
+
+function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads: TaskRuntimePayload[]) {
+  let nextRuns = state.agentRuns
+  let nextEvents = state.taskEvents
+  let nextApprovals = state.taskApprovals
+  let persistedMessages = state.messages.filter(message => !message.metadata?.synthetic)
+  let taskDetail = state.taskDetail
+
+  for (const payload of payloads) {
+    if (payload.kind === 'snapshot') {
+      return mergeTaskRuntimePayload(state, taskId, payload)
+    }
+
+    if (payload.run) {
+      nextRuns = [
+        ...nextRuns.filter(run => !(run.taskId === taskId && run.id === payload.run?.id)),
+        payload.run,
+      ]
+    }
+
+    if (payload.event) {
+      nextEvents = upsertById(nextEvents, payload.event)
+    }
+
+    if (payload.approval) {
+      nextApprovals = upsertById(nextApprovals, payload.approval)
+    }
+
+    if (payload.message) {
+      persistedMessages = upsertById(persistedMessages, payload.message)
+    }
+  }
+
+  const lastStreamingEvent = [...nextEvents].reverse().find(event => event.type === 'agent_message')
+  if (lastStreamingEvent) {
+    const content = typeof lastStreamingEvent.payload.content === 'string'
+      ? lastStreamingEvent.payload.content
+      : ''
+    console.debug('[StreamDebug] batched flush', {
+      eventsInBatch: payloads.filter(p => p.kind === 'patch' && p.event?.type === 'agent_message').length,
+      eventId: lastStreamingEvent.id,
+      length: content.length,
+      preview: content.slice(0, 60),
+      tail: content.slice(-60),
+    })
+  }
+
+  const nextMessages = buildVisibleMessages(persistedMessages, nextEvents)
+  const taskRuns = nextRuns.filter(run => run.taskId === taskId)
+  const activeRun = taskRuns.find(run => run.id === taskDetail?.lastRunId) ?? taskRuns[0]
+
+  if (taskDetail && taskDetail.id === taskId) {
+    taskDetail = {
+      ...taskDetail,
+      status: activeRun?.status ?? taskDetail.status,
+      updatedAt: activeRun?.updatedAt ?? taskDetail.updatedAt,
+      lastRunId: activeRun?.id ?? taskDetail.lastRunId,
+    }
+  }
+
+  return {
+    agentRuns: nextRuns,
+    taskEvents: nextEvents,
+    taskApprovals: nextApprovals,
+    messages: nextMessages,
+    taskDetail,
+  }
+}
+
+function clearTaskRuntimePatchQueue() {
+  selectedTaskPatchQueue = []
+  selectedTaskPatchTaskId = null
+  if (selectedTaskPatchTimer) {
+    window.clearTimeout(selectedTaskPatchTimer)
+    selectedTaskPatchTimer = null
+  }
+}
+
+function enqueueTaskRuntimePayload(taskId: string, payload: TaskRuntimePayload, apply: (taskId: string, payloads: TaskRuntimePayload[]) => void) {
+  if (payload.kind === 'snapshot') {
+    clearTaskRuntimePatchQueue()
+    apply(taskId, [payload])
+    return
+  }
+
+  selectedTaskPatchTaskId = taskId
+  selectedTaskPatchQueue.push(payload)
+  if (selectedTaskPatchTimer) {
+    return
+  }
+
+  selectedTaskPatchTimer = window.setTimeout(() => {
+    const queuedTaskId = selectedTaskPatchTaskId
+    const queuedPayloads = selectedTaskPatchQueue
+    selectedTaskPatchQueue = []
+    selectedTaskPatchTaskId = null
+    selectedTaskPatchTimer = null
+
+    if (queuedTaskId && queuedPayloads.length > 0) {
+      apply(queuedTaskId, queuedPayloads)
+    }
+  }, TASK_RUNTIME_PATCH_FLUSH_MS)
 }
 
 export const useAppStore = create<AppStoreState>((set, get) => ({
@@ -232,24 +406,12 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
     if (selectedTaskSubscription) {
       selectedTaskSubscription()
+      clearTaskRuntimePatchQueue()
     }
-    selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, async payload => {
-      const taskResult = await clients.task.get(taskId)
-      set(state => {
-        const persistedMessages = state.messages.filter(message => !message.metadata?.streaming)
-        const next = buildVisibleMessages(persistedMessages, payload.events)
-        return {
-          agentRuns: [
-            ...state.agentRuns.filter(run => run.taskId !== taskId),
-            ...payload.runs,
-          ],
-          taskEvents: payload.events,
-          taskApprovals: payload.approvals,
-          messages: next,
-          taskDetail: taskResult.ok ? taskResult.data : state.taskDetail,
-        }
+    selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
+      enqueueTaskRuntimePayload(taskId, payload, (queuedTaskId, payloads) => {
+        set(state => mergeTaskRuntimePayloads(state, queuedTaskId, payloads))
       })
-      void get().refreshTaskIndex()
     })
 
     set(state => ({
@@ -358,7 +520,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!runResult.ok) {
       throw new Error(runResult.error.message)
     }
-    await get().selectTask(taskId)
     await get().refreshTaskIndex()
   },
   async loadDraft(taskId: string) {

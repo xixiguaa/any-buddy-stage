@@ -2,6 +2,8 @@ import { tool } from 'langchain';
 import { ChatOpenAI } from '@langchain/openai';
 import { createDeepAgent, FilesystemBackend, LocalShellBackend } from 'deepagents/node';
 import { existsSync } from 'node:fs';
+import { cp, mkdir, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import type { AppService } from './app-service.js';
@@ -117,6 +119,68 @@ function normalizeRole(role: string): ModelMessage['role'] | null {
   }
 }
 
+function getDriveLetter(absolutePath: string): string {
+  const normalized = path.resolve(absolutePath);
+  const parsed = path.parse(normalized);
+  if (parsed.root) {
+    const drive = parsed.root.replace(/[/\\]+$/, '').charAt(0);
+    if (drive) return drive.toLowerCase();
+  }
+  return '';
+}
+
+function isSameDrive(a: string, b: string): boolean {
+  const driveA = getDriveLetter(a);
+  const driveB = getDriveLetter(b);
+  if (!driveA || !driveB) return false;
+  return driveA === driveB;
+}
+
+const SYSTEM_SKILL_CACHE_DIRNAME = '.system-skill-cache';
+
+async function mirrorSkillIntoBackend(backendRootDir: string, sourceSkillDir: string, skillId: string): Promise<string | null> {
+  const cacheRoot = path.join(backendRootDir, SYSTEM_SKILL_CACHE_DIRNAME);
+  const cacheDir = path.join(cacheRoot, skillId);
+
+  try {
+    const sourceStat = await stat(sourceSkillDir);
+    if (!sourceStat.isDirectory()) return null;
+
+    let needsCopy = true;
+    try {
+      const cacheStat = await stat(cacheDir);
+      if (cacheStat.isDirectory()) {
+        const sourceSkillFile = path.join(sourceSkillDir, 'SKILL.md');
+        const cachedSkillFile = path.join(cacheDir, 'SKILL.md');
+        const [sourceMeta, cachedMeta] = await Promise.all([
+          stat(sourceSkillFile).catch(() => null),
+          stat(cachedSkillFile).catch(() => null),
+        ]);
+        if (sourceMeta && cachedMeta && sourceMeta.mtimeMs <= cachedMeta.mtimeMs) {
+          needsCopy = false;
+        }
+      }
+    } catch {
+      // cache dir not present
+    }
+
+    if (needsCopy) {
+      await mkdir(cacheRoot, { recursive: true });
+      await cp(sourceSkillDir, cacheDir, { recursive: true });
+    }
+
+    return cacheDir;
+  } catch (error) {
+    console.debug('[DeepAgentSkills] mirror failed', {
+      skillId,
+      source: sourceSkillDir,
+      backendRootDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
 function extractMessages(result: unknown): ModelMessage[] {
   if (!result || typeof result !== 'object') {
     return [];
@@ -144,6 +208,72 @@ function extractMessage(message: unknown): ModelMessage[] {
   return [{ role, content }];
 }
 
+function readChunkText(message: unknown): string {
+  if (!message || typeof message !== 'object') {
+    return '';
+  }
+
+  const directText = (message as { text?: unknown }).text;
+  if (typeof directText === 'string') {
+    return directText;
+  }
+
+  const content = normalizeMessageContent((message as { content?: unknown }).content);
+  return content ?? '';
+}
+
+function readToolCallChunks(message: unknown): Array<{ id?: string; name?: string; args?: string }> {
+  if (!message || typeof message !== 'object') {
+    return [];
+  }
+
+  const chunks = (message as { tool_call_chunks?: unknown }).tool_call_chunks;
+  if (!Array.isArray(chunks)) {
+    return [];
+  }
+
+  return chunks.map(chunk => {
+    if (!chunk || typeof chunk !== 'object') {
+      return {};
+    }
+    return {
+      id: typeof (chunk as { id?: unknown }).id === 'string' ? (chunk as { id?: string }).id : undefined,
+      name: typeof (chunk as { name?: unknown }).name === 'string' ? (chunk as { name?: string }).name : undefined,
+      args: typeof (chunk as { args?: unknown }).args === 'string' ? (chunk as { args?: string }).args : undefined,
+    };
+  });
+}
+
+function isToolResultMessage(message: unknown): message is { name?: string; text?: string; content?: unknown; tool_call_id?: string } {
+  if (!message || typeof message !== 'object') {
+    return false;
+  }
+
+  const type = (message as { type?: unknown }).type;
+  return type === 'tool';
+}
+
+function readNamespaceSource(namespace: string[]) {
+  const subagentNamespace = namespace.find(segment => segment.startsWith('tools:'));
+  return subagentNamespace ?? 'main';
+}
+
+function readUpdateNodeNames(data: unknown): string[] {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return [];
+  }
+  return Object.keys(data as Record<string, unknown>);
+}
+
+function readMessageId(message: unknown): string | undefined {
+  if (!message || typeof message !== 'object') {
+    return undefined;
+  }
+
+  const id = (message as { id?: unknown }).id;
+  return typeof id === 'string' && id ? id : undefined;
+}
+
 export class DeepAgentExecutor implements AgentExecutor {
   constructor(
     private readonly appService: AppService,
@@ -164,8 +294,13 @@ export class DeepAgentExecutor implements AgentExecutor {
       const taskWorkspaces = this.appService.listTaskWorkspaces(context.task.id);
       const primaryWorkspace = taskWorkspaces.find(workspace => workspace.role === 'primary')?.workspace;
 
-    const backendRootDir = primaryWorkspace?.path ?? process.cwd();
+      const backendRootDir = primaryWorkspace?.path ?? process.cwd();
     const backend = await this.createBackend(context, backendRootDir);
+
+    console.debug('[DeepAgentSkills] createDeepAgent context', {
+      taskSkillIds: context.task.skillIds,
+      backendRootDir,
+    });
 
     try {
       const model = new ChatOpenAI({
@@ -188,7 +323,7 @@ export class DeepAgentExecutor implements AgentExecutor {
         // approvals through its own AppService/approval tables.
         tools: tools.map(toolDefinition => this.toDeepAgentTool(toolDefinition, toolExecutionContext)),
         memory: this.resolveMemoryFiles(backendRootDir),
-        skills: this.resolveSkillSources(context.task.skillIds, backendRootDir),
+        skills: await this.resolveSkillSources(context.task.skillIds, backendRootDir),
         systemPrompt: activeExpert
           ? [
               `你当前以专家 ${activeExpert.name} (专家 ID: ${activeExpert.id}) 的身份工作。`,
@@ -202,71 +337,120 @@ export class DeepAgentExecutor implements AgentExecutor {
           : systemPrompt,
       });
 
-      const run = await agent.streamEvents({
+      const run = await agent.stream({
         messages: (taskContext?.messages ?? []).map(message => ({
           role: message.role === 'tool' ? 'user' : message.role,
           content: message.role === 'tool' ? `Tool result:\n${message.content}` : message.content,
         })),
       }, {
-        version: 'v3',
+        streamMode: ['messages', 'updates'],
+        subgraphs: true,
       });
 
       const accumulatedMessagesMap = new Map<string, string>();
+      const toolCallArgsMap = new Map<string, string>();
+      const toolCallNameMap = new Map<string, string>();
+      const updateNodeSeen = new Set<string>();
       let streamIndex = 0;
+      let toolIndex = 0;
       const streamingPayloadPatch = {
         ...assistantMetadata,
         runtimeEngine: 'deepagents',
         streaming: true,
       };
-      const consumeMessages = async () => {
-        for await (const messageRun of run.messages) {
-          const msgId = `deepagent-${streamIndex++}`;
-          let content = '';
-          for await (const token of messageRun.text) {
-            content += token;
-            accumulatedMessagesMap.set(msgId, content);
-            await this.appService.upsertAgentMessageEvent(context.run.id, `msg-${msgId}`, content, streamingPayloadPatch);
+
+      for await (const item of run as AsyncIterable<[string[], string, unknown]>) {
+        const [namespace, mode, data] = item;
+        const source = readNamespaceSource(namespace);
+
+        if (mode === 'messages') {
+          const chunks = Array.isArray(data) ? data : [data];
+          for (const message of chunks) {
+            const toolCallChunks = readToolCallChunks(message);
+            if (toolCallChunks.length > 0) {
+              for (const chunk of toolCallChunks) {
+                const toolCallId = chunk.id ?? `${source}-${toolIndex}`;
+                if (chunk.name) {
+                  toolCallNameMap.set(toolCallId, chunk.name);
+                }
+                if (chunk.args) {
+                  const nextArgs = `${toolCallArgsMap.get(toolCallId) ?? ''}${chunk.args}`;
+                  toolCallArgsMap.set(toolCallId, nextArgs);
+                }
+
+                const toolName = toolCallNameMap.get(toolCallId);
+                if (toolName) {
+                  const rawArgs = toolCallArgsMap.get(toolCallId) ?? '';
+                  let parsedArgs: Record<string, unknown> = {};
+                  if (rawArgs.trim()) {
+                    try {
+                      parsedArgs = JSON.parse(rawArgs) as Record<string, unknown>;
+                    } catch {
+                      parsedArgs = { rawArgs };
+                    }
+                  }
+
+                  await this.appService.appendRuntimeEvent(context.run.id, 'tool_called', {
+                    toolName,
+                    arguments: parsedArgs,
+                    runtimeEngine: 'deepagents',
+                    namespace: source,
+                    toolCallId,
+                  });
+                  toolIndex += 1;
+                  toolCallNameMap.delete(toolCallId);
+                  toolCallArgsMap.delete(toolCallId);
+                }
+              }
+            }
+
+            if (isToolResultMessage(message)) {
+              const toolName = typeof message.name === 'string' ? message.name : 'unknown';
+              const content = typeof message.text === 'string'
+                ? message.text
+                : normalizeMessageContent(message.content) ?? '';
+              await this.appService.appendRuntimeEvent(context.run.id, 'tool_result', {
+                toolName,
+                result: { text: content },
+                summary: content,
+                runtimeEngine: 'deepagents',
+                namespace: source,
+              });
+            }
+
+            const tokenText = readChunkText(message);
+            if (tokenText && toolCallChunks.length === 0 && !isToolResultMessage(message)) {
+              const chunkMessageId = readMessageId(message);
+              const msgId = chunkMessageId
+                ? `chunk-${chunkMessageId}`
+                : `stream-${source}-${streamIndex++}`;
+              const nextContent = `${accumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
+              accumulatedMessagesMap.set(msgId, nextContent);
+              await this.appService.upsertAgentMessageEvent(context.run.id, `msg-${msgId}`, nextContent, {
+                ...streamingPayloadPatch,
+                namespace: source,
+              });
+            }
           }
         }
-      };
 
-      const consumeToolCalls = async () => {
-        let toolIndex = 0;
-        for await (const call of run.toolCalls) {
-          const toolEventId = `deepagent-tool-${toolIndex++}`;
-          await this.appService.appendRuntimeEvent(context.run.id, 'tool_called', {
-            toolName: call.name,
-            arguments: call.input && typeof call.input === 'object' ? call.input as Record<string, unknown> : {},
-            runtimeEngine: 'deepagents',
-          });
-
-          try {
-            const output = await call.output;
-            const parsed = deserializeToolResult(output);
-            await this.appService.appendRuntimeEvent(context.run.id, 'tool_result', {
-              toolName: call.name,
-              result: 'result' in parsed ? parsed.result : parsed,
-              summary: parsed.summary,
+        if (mode === 'updates') {
+          const nodeNames = readUpdateNodeNames(data);
+          for (const nodeName of nodeNames) {
+            const key = `${source}:${nodeName}`;
+            if (updateNodeSeen.has(key)) {
+              continue;
+            }
+            updateNodeSeen.add(key);
+            await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
+              status: 'running',
+              currentNode: nodeName,
               runtimeEngine: 'deepagents',
-              toolEventId,
-            });
-          } catch (error) {
-            await this.appService.appendRuntimeEvent(context.run.id, 'tool_result', {
-              toolName: call.name,
-              result: {
-                error: error instanceof Error ? error.message : String(error),
-              },
-              runtimeEngine: 'deepagents',
-              toolEventId,
+              namespace: source,
             });
           }
         }
-      };
-
-      await Promise.all([
-        consumeMessages(),
-        consumeToolCalls(),
-      ]);
+      }
 
       const finalMessage = Array.from(accumulatedMessagesMap.values()).at(-1);
       if (!finalMessage) {
@@ -332,24 +516,82 @@ export class DeepAgentExecutor implements AgentExecutor {
     return virtualPath ? [virtualPath] : [];
   }
 
-  private resolveSkillSources(skillIds: string[], rootDir: string) {
+  private async resolveSkillSources(skillIds: string[], rootDir: string) {
     const uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
-    return uniqueSkillIds
-      .map(skillId => {
-        const skillDir = path.resolve(process.cwd(), '.agents', 'skills', skillId);
-        const skillFile = path.join(skillDir, 'SKILL.md')
+    const skillRoots = [
+      path.resolve(process.cwd(), '.agents', 'skills'),
+      path.join(os.homedir(), '.agents', 'skills'),
+    ];
+
+    const resolved: Array<{
+      skillId: string
+      source: string
+      via: 'same-volume' | 'cross-volume-mirror'
+      virtualPath: string
+    }> = [];
+
+    for (const skillId of uniqueSkillIds) {
+      let picked: { source: string; via: 'same-volume' | 'cross-volume-mirror'; virtualPath: string } | null = null;
+
+      for (const baseDir of skillRoots) {
+        const skillDir = path.join(baseDir, skillId);
+        const skillFile = path.join(skillDir, 'SKILL.md');
         if (!existsSync(skillFile)) {
-          return null
+          continue;
         }
 
-        return this.toBackendVirtualPath(rootDir, skillDir)
-      })
-      .filter((item): item is string => Boolean(item));
+        const virtualPath = this.toBackendVirtualPath(rootDir, skillDir);
+        if (virtualPath) {
+          picked = { source: skillDir, via: 'same-volume', virtualPath };
+          break;
+        }
+
+        const mirroredDir = await mirrorSkillIntoBackend(rootDir, skillDir, skillId);
+        if (mirroredDir) {
+          const mirroredVirtualPath = this.toBackendVirtualPath(rootDir, mirroredDir);
+          if (mirroredVirtualPath) {
+            console.debug('[DeepAgentSkills] cross-volume mirrored', {
+              skillId,
+              source: skillDir,
+              backendRootDir: rootDir,
+              mirroredDir,
+              virtualPath: mirroredVirtualPath,
+            });
+            picked = { source: skillDir, via: 'cross-volume-mirror', virtualPath: mirroredVirtualPath };
+            break;
+          }
+        }
+      }
+
+      if (picked) {
+        console.debug('[DeepAgentSkills] resolve hit', picked);
+        resolved.push({ ...picked, skillId });
+      } else {
+        console.debug('[DeepAgentSkills] resolve miss', {
+          skillId,
+          rootDir,
+          tried: skillRoots,
+        });
+      }
+    }
+
+    const virtualPaths = resolved.map(item => item.virtualPath);
+    console.debug('[DeepAgentSkills] resolve summary', {
+      requested: skillIds,
+      unique: uniqueSkillIds,
+      resolved: virtualPaths,
+    });
+    return virtualPaths;
   }
 
   private toBackendVirtualPath(rootDir: string, absolutePath: string) {
     const normalizedRoot = path.resolve(rootDir)
     const normalizedTarget = path.resolve(absolutePath)
+
+    if (!isSameDrive(normalizedRoot, normalizedTarget)) {
+      return null
+    }
+
     const relativePath = path.relative(normalizedRoot, normalizedTarget)
     if (!relativePath || relativePath === '') {
       return '/'

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tabs, Card, Tag, Button, Space, Modal, Input, Row, Col, Empty, Tooltip } from 'antd'
+import { Tabs, Card, Tag, Button, Space, Modal, Input, Row, Col, Empty, Tooltip, Select } from 'antd'
 import {
   LinkOutlined,
   PlusOutlined,
@@ -50,6 +50,8 @@ export default function ExpertsPage() {
   const [isExpertModalOpen, setIsExpertModalOpen] = useState(false)
   const [expertName, setExpertName] = useState('')
   const [expertDesc, setExpertDesc] = useState('')
+  const [expertSkills, setExpertSkills] = useState<string[]>([])
+  const [editingExpertId, setEditingExpertId] = useState<string | null>(null)
 
   // MCP Configuration text
   const [mcpConfigText, setMcpConfigText] = useState(mcpConfigRaw)
@@ -91,34 +93,66 @@ export default function ExpertsPage() {
     navigate('/tasks/new')
   }
 
+  const resetExpertModal = () => {
+    setIsExpertModalOpen(false)
+    setEditingExpertId(null)
+    setExpertName('')
+    setExpertDesc('')
+    setExpertSkills([])
+  }
+
+  const openCreateExpertModal = () => {
+    setEditingExpertId(null)
+    setExpertName('')
+    setExpertDesc('')
+    setExpertSkills([])
+    setIsExpertModalOpen(true)
+  }
+
+  const openEditExpertModal = (expert: ExpertPreset) => {
+    setEditingExpertId(expert.id)
+    setExpertName(expert.name)
+    setExpertDesc(expert.description)
+    setExpertSkills(expert.skills)
+    setIsExpertModalOpen(true)
+  }
+
   const handleCreateExpertPrompt = async () => {
     if (!expertName.trim() || !expertDesc.trim()) {
       Modal.error({ title: '提示', content: '请填写专家名称和定位描述' })
       return
     }
+    if (expertSkills.length === 0) {
+      Modal.error({ title: '提示', content: '请至少选择一个技能' })
+      return
+    }
+    const isEditing = Boolean(editingExpertId)
     const tempExpert = await createExpert({
-      id: `custom-${Date.now()}`,
+      id: editingExpertId ?? `custom-${Date.now()}`,
       name: expertName,
       description: expertDesc,
-      skills: ['writing-plans'],
+      skills: expertSkills,
       isCustom: true
     })
     if (!tempExpert) {
-      Modal.error({ title: '提示', content: '创建专家失败' })
+      Modal.error({ title: '提示', content: isEditing ? '编辑专家失败' : '创建专家失败' })
+      return
+    }
+    if (isEditing) {
+      Modal.success({ title: '保存成功', content: '专家配置已更新' })
+      resetExpertModal()
       return
     }
     setSummonedExpert(tempExpert, { addToRecent: true })
     const prompt = `帮我创建一个 ${expertName}，擅长 ${expertDesc}。我的经验是：[请在此补充您的行业背景与相关经验]`
     await saveDraft('__new_task__', {
       content: prompt,
-      selectedSkillIds: ['writing-plans'],
+      selectedSkillIds: expertSkills,
       selectedConnectorIds: ['mcp'],
       selectedExpertIds: [tempExpert.id],
       selectedExpertId: tempExpert.id,
     })
-    setIsExpertModalOpen(false)
-    setExpertName('')
-    setExpertDesc('')
+    resetExpertModal()
     navigate('/tasks/new')
   }
 
@@ -148,7 +182,7 @@ export default function ExpertsPage() {
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>专家库列表</div>
               <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>专家是带有特定模式、技能和模型预设的 Agent 会话模板。</div>
             </div>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setIsExpertModalOpen(true)} style={{ background: '#0f172a', border: 'none' }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateExpertModal} style={{ background: '#0f172a', border: 'none' }}>
               添加自定义专家
             </Button>
           </div>
@@ -164,12 +198,23 @@ export default function ExpertsPage() {
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                       <strong style={{ fontSize: '14px', color: '#0f172a' }}>{expert.name}</strong>
-                      {expert.isCustom ? (
-                        <Space>
-                          <Tag color="orange">自定义</Tag>
-                          <Button
-                            danger
-                            type="text"
+                        {expert.isCustom ? (
+                          <Space>
+                            <Tag color="orange">自定义</Tag>
+                            <Tooltip title="编辑专家">
+                              <Button
+                                type="text"
+                                size="small"
+                                icon={<EditOutlined />}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openEditExpertModal(expert)
+                                }}
+                              />
+                            </Tooltip>
+                            <Button
+                              danger
+                              type="text"
                             size="small"
                             icon={<DeleteOutlined />}
                             onClick={(e) => { e.stopPropagation(); void deleteExpert(expert.id) }}
@@ -342,10 +387,10 @@ export default function ExpertsPage() {
       {/* Expert Creation Modal */}
       <Modal
         open={isExpertModalOpen}
-        onCancel={() => setIsExpertModalOpen(false)}
+        onCancel={resetExpertModal}
         onOk={handleCreateExpertPrompt}
-        title="添加自定义专家"
-        okText="前往对话创建"
+        title={editingExpertId ? '编辑自定义专家' : '添加自定义专家'}
+        okText={editingExpertId ? '保存修改' : '前往对话创建'}
         cancelText="取消"
       >
         <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -364,6 +409,22 @@ export default function ExpertsPage() {
               placeholder="描述该专家的核心特长与解决痛点..."
               value={expertDesc}
               onChange={e => setExpertDesc(e.target.value)}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: '12px', color: '#64748b', marginBottom: '4px' }}>挂载技能</div>
+            <Select
+              mode="multiple"
+              value={expertSkills}
+              onChange={setExpertSkills}
+              options={localSkills.map(skill => ({
+                value: skill,
+                label: skill,
+              }))}
+              placeholder="选择一个或多个技能"
+              style={{ width: '100%' }}
+              showSearch
+              optionFilterProp="label"
             />
           </div>
         </div>

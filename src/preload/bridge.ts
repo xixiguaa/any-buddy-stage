@@ -13,6 +13,7 @@ import type {
   HumanApproval,
   IpcResult,
   Message,
+  TaskRuntimePayload,
   Task,
   TaskDraft,
   TaskFilter,
@@ -91,7 +92,7 @@ const anybuddyApi: AnybuddyApi = {
       const channel = `agent-run:task-changed:${taskId}`
       const handler = (
         _event: Electron.IpcRendererEvent,
-        payload: { runs: AgentRun[]; events: AgentEvent[]; approvals: HumanApproval[] },
+        payload: TaskRuntimePayload,
       ) => listener(payload)
       ipcRenderer.on(channel, handler)
       return () => ipcRenderer.removeListener(channel, handler)

@@ -38,6 +38,7 @@ import { dialog } from 'electron'
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
+const STREAM_EVENT_FLUSH_MS = 50
 
 function sanitizeModelConfigs(models: ModelConfig[]) {
   return models
@@ -82,6 +83,9 @@ function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange'])
 }
 
 export class AppService {
+  private readonly pendingStreamEventPatches = new Map<string, { taskId: string; event: AgentEvent }>()
+  private streamEventFlushTimer: NodeJS.Timeout | null = null
+
   private state: AppState | null = null
 
   constructor(
@@ -212,12 +216,47 @@ export class AppService {
     await this.syncConfigFilesFromState()
   }
 
-  private emitTaskRuntime(taskId: string) {
+  private emitTaskRuntimeSnapshot(taskId: string) {
     this.bus.emitTaskRuntime(taskId, {
+      kind: 'snapshot',
+      taskId,
       runs: this.listAgentRunsByTask(taskId),
       events: this.listAgentEvents(taskId),
       approvals: this.listApprovals(taskId),
+      messages: this.listMessages(taskId),
     })
+  }
+
+  private emitTaskRuntimePatch(taskId: string, patch: {
+    run?: AgentRun
+    event?: AgentEvent
+    approval?: HumanApproval
+    message?: Message
+  }) {
+    this.bus.emitTaskRuntime(taskId, {
+      kind: 'patch',
+      taskId,
+      ...patch,
+    })
+  }
+
+  private queueStreamEventPatch(taskId: string, event: AgentEvent) {
+    this.pendingStreamEventPatches.set(`${taskId}:${event.id}`, { taskId, event })
+    if (this.streamEventFlushTimer) {
+      return
+    }
+
+    this.streamEventFlushTimer = setTimeout(() => {
+      const pending = [...this.pendingStreamEventPatches.values()]
+      this.pendingStreamEventPatches.clear()
+      this.streamEventFlushTimer = null
+
+      for (const item of pending) {
+        this.emitTaskRuntimePatch(item.taskId, {
+          event: item.event,
+        })
+      }
+    }, STREAM_EVENT_FLUSH_MS)
   }
 
   private createAgentEvent(run: AgentRun, type: AgentEvent['type'], payload: Record<string, unknown>): AgentEvent {
@@ -377,7 +416,7 @@ export class AppService {
       state.agentEvents = state.agentEvents.filter(event => event.taskId !== taskId)
       state.approvals = state.approvals.filter(approval => approval.taskId !== taskId)
     })
-    this.emitTaskRuntime(taskId)
+    this.emitTaskRuntimeSnapshot(taskId)
   }
 
   async attachWorkspace(taskId: string, workspaceId: string, accessMode: 'read_only' | 'read_write' = 'read_only'): Promise<TaskWorkspace> {
@@ -786,7 +825,7 @@ export class AppService {
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
-    this.emitTaskRuntime(taskId)
+    this.emitTaskRuntimeSnapshot(taskId)
     return run
   }
 
@@ -795,17 +834,21 @@ export class AppService {
    */
   async appendRuntimeEvent(runId: string, type: AgentEvent['type'], payload: Record<string, unknown>): Promise<void> {
     let taskId = ''
+    let createdEvent: AgentEvent | null = null
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)
       }
       taskId = run.taskId
-      state.agentEvents.push(this.createAgentEvent(run, type, payload))
+      createdEvent = this.createAgentEvent(run, type, payload)
+      state.agentEvents.push(createdEvent)
     })
 
-    if (taskId) {
-      this.emitTaskRuntime(taskId)
+    if (taskId && createdEvent) {
+      this.emitTaskRuntimePatch(taskId, {
+        event: createdEvent,
+      })
     }
   }
 
@@ -813,8 +856,9 @@ export class AppService {
    * 追加 runtime 消息，包含 system、assistant 和 tool 三类消息。
    */
   async appendRuntimeMessage(taskId: string, runId: string, role: Message['role'], content: string, metadata?: Record<string, unknown>): Promise<void> {
+    let createdMessage: Message | null = null
     await this.mutate(state => {
-      state.messages.push({
+      createdMessage = {
         id: createId('message'),
         taskId,
         runId,
@@ -822,14 +866,19 @@ export class AppService {
         content,
         metadata,
         createdAt: nowIso(),
-      })
+      }
+      state.messages.push(createdMessage)
       const task = state.tasks.find(item => item.id === taskId)
       if (task) {
         task.updatedAt = nowIso()
       }
     })
 
-    this.emitTaskRuntime(taskId)
+    if (createdMessage) {
+      this.emitTaskRuntimePatch(taskId, {
+        message: createdMessage,
+      })
+    }
   }
 
   /**
@@ -837,6 +886,10 @@ export class AppService {
    */
   async completeRuntimeRun(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
     let taskId = ''
+    let completedRun: AgentRun | null = null
+    let runStatusEvent: AgentEvent | null = null
+    let runCompletedEvent: AgentEvent | null = null
+    let assistantMessage: Message | null = null
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
@@ -852,14 +905,16 @@ export class AppService {
         task.status = 'completed'
         task.updatedAt = run.updatedAt
       }
-      state.agentEvents.push(this.createAgentEvent(run, 'run_status', {
+      runStatusEvent = this.createAgentEvent(run, 'run_status', {
         status: 'completed',
         currentNode: run.currentNode,
-      }))
-      state.agentEvents.push(this.createAgentEvent(run, 'run_completed', {
+      })
+      state.agentEvents.push(runStatusEvent)
+      runCompletedEvent = this.createAgentEvent(run, 'run_completed', {
         status: 'completed',
-      }))
-      state.messages.push({
+      })
+      state.agentEvents.push(runCompletedEvent)
+      assistantMessage = {
         id: createId('message'),
         taskId: run.taskId,
         runId,
@@ -867,12 +922,25 @@ export class AppService {
         content,
         metadata,
         createdAt: nowIso(),
-      })
+      }
+      state.messages.push(assistantMessage)
+      completedRun = { ...run }
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
-      this.emitTaskRuntime(taskId)
+      if (completedRun) {
+        this.emitTaskRuntimePatch(taskId, { run: completedRun })
+      }
+      if (runStatusEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: runStatusEvent })
+      }
+      if (runCompletedEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
+      }
+      if (assistantMessage) {
+        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
+      }
     }
   }
 
@@ -881,6 +949,7 @@ export class AppService {
    */
   async upsertAgentMessageEvent(runId: string, eventId: string, content: string, payloadPatch?: Record<string, unknown>): Promise<void> {
     let taskId = ''
+    let changedEvent: AgentEvent | null = null
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
@@ -895,6 +964,7 @@ export class AppService {
           content,
           ...(payloadPatch ?? {}),
         }
+        changedEvent = { ...existing }
       } else {
         const event = {
           id: eventId,
@@ -911,11 +981,12 @@ export class AppService {
           createdAt: nowIso(),
         }
         state.agentEvents.push(event)
+        changedEvent = event
       }
     })
 
-    if (taskId) {
-      this.emitTaskRuntime(taskId)
+    if (taskId && changedEvent) {
+      this.queueStreamEventPatch(taskId, changedEvent)
     }
   }
 
@@ -924,6 +995,8 @@ export class AppService {
    */
   async failRuntimeRun(runId: string, error: unknown): Promise<void> {
     let taskId = ''
+    let failedRun: AgentRun | null = null
+    let failedEvent: AgentEvent | null = null
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
@@ -939,14 +1012,21 @@ export class AppService {
         task.status = 'failed'
         task.updatedAt = run.updatedAt
       }
-      state.agentEvents.push(this.createAgentEvent(run, 'run_failed', {
+      failedEvent = this.createAgentEvent(run, 'run_failed', {
         message: error instanceof Error ? error.message : 'Unknown runtime failure',
-      }))
+      })
+      state.agentEvents.push(failedEvent)
+      failedRun = { ...run }
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
-      this.emitTaskRuntime(taskId)
+      if (failedRun) {
+        this.emitTaskRuntimePatch(taskId, { run: failedRun })
+      }
+      if (failedEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: failedEvent })
+      }
     }
   }
 
@@ -968,6 +1048,8 @@ export class AppService {
   async requestRuntimeApproval(runId: string, reason: string, originalArgs: Record<string, unknown>): Promise<HumanApproval> {
     let approval: HumanApproval | null = null
     let taskId = ''
+    let approvalRun: AgentRun | null = null
+    let approvalRequestedEvent: AgentEvent | null = null
 
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -998,20 +1080,30 @@ export class AppService {
       }
 
       state.approvals.push(approval)
-      state.agentEvents.push(this.createAgentEvent(run, 'approval_requested', {
+      approvalRequestedEvent = this.createAgentEvent(run, 'approval_requested', {
         approvalId: approval.id,
         reason,
         originalArgs,
-      }))
+      })
+      state.agentEvents.push(approvalRequestedEvent)
       state.agentEvents.push(this.createAgentEvent(run, 'interrupt_requested', {
         approvalId: approval.id,
         reason,
       }))
+      approvalRun = { ...run }
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
-      this.emitTaskRuntime(taskId)
+      if (approvalRun) {
+        this.emitTaskRuntimePatch(taskId, { run: approvalRun })
+      }
+      if (approval) {
+        this.emitTaskRuntimePatch(taskId, { approval })
+      }
+      if (approvalRequestedEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: approvalRequestedEvent })
+      }
     }
 
     if (!approval) {
@@ -1028,6 +1120,9 @@ export class AppService {
   async approveRuntimeRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<HumanApproval> {
     let targetTaskId = ''
     let resolvedApproval: HumanApproval | null = null
+    let resolvedRun: AgentRun | null = null
+    let resolvedEvent: AgentEvent | null = null
+    let resolvedMessage: Message | null = null
     await this.mutate(state => {
       const approval = state.approvals.find(item => item.id === approvalId)
       if (!approval) {
@@ -1057,16 +1152,17 @@ export class AppService {
         task.updatedAt = run.updatedAt
       }
 
-      state.agentEvents.push(this.createAgentEvent(run, 'interrupt_resolved', {
+      resolvedEvent = this.createAgentEvent(run, 'interrupt_resolved', {
         approvalId,
         decision,
         editedArgs: editedArgs ?? null,
-      }))
+      })
+      state.agentEvents.push(resolvedEvent)
 
       const primaryWorkspace = state.workspaces.find(w => w.id === task?.primaryWorkspaceId)
       const workspaceName = primaryWorkspace ? primaryWorkspace.name : 'workspace'
 
-      state.messages.push({
+      resolvedMessage = {
         id: createId('message'),
         taskId: approval.taskId,
         runId: run.id,
@@ -1077,12 +1173,25 @@ export class AppService {
             ? `已按修改后的参数恢复执行，目标工作区：[${workspaceName}]。`
             : `已按原参数恢复执行，目标工作区：[${workspaceName}]。`,
         createdAt: nowIso(),
-      })
+      }
+      state.messages.push(resolvedMessage)
+      resolvedRun = { ...run }
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (targetTaskId) {
-      this.emitTaskRuntime(targetTaskId)
+      if (resolvedRun) {
+        this.emitTaskRuntimePatch(targetTaskId, { run: resolvedRun })
+      }
+      if (resolvedApproval) {
+        this.emitTaskRuntimePatch(targetTaskId, { approval: resolvedApproval })
+      }
+      if (resolvedEvent) {
+        this.emitTaskRuntimePatch(targetTaskId, { event: resolvedEvent })
+      }
+      if (resolvedMessage) {
+        this.emitTaskRuntimePatch(targetTaskId, { message: resolvedMessage })
+      }
     }
 
     if (!resolvedApproval) {

@@ -6,3 +6,4 @@ out
 *.tsbuildinfo
 src/main/state.json
 .tmp-tests/
+.opencode
