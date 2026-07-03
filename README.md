@@ -21,6 +21,9 @@ AnyBuddy moves Agents from a simple chat window into a local workspace. Each tas
 - 任务式 Agent 工作流：围绕任务创建、继续执行、运行状态和事件流组织体验。
 - 专家预设：支持通过专家角色快速加载技能组合和任务上下文。
 - 运行时事件可见：将工具调用、审批、子 Agent 状态和执行过程展示在界面中。
+- 工作模式与权限分离：`ask` / `plan` / `craft` 决定 Agent 如何工作，`read_write` / `full_access` 决定 Agent 能做什么。
+- 安全的命令审批：`read_write` 下执行本地命令会先请求确认，审批通过后在原运行流中恢复，不会从头重跑工具链。
+- 全局技能目录：技能统一从 `~/.anybuddy/skills/<skillId>/SKILL.md` 加载，并在运行时镜像到当前工作区缓存。
 - 可扩展架构：通过 shared IPC 契约、preload 桥、主进程服务和 tool registry 保持边界清晰。
 
 - Local-first persistence: tasks, messages, workspaces, runs, events, and approvals are stored locally with SQLite.
@@ -28,7 +31,34 @@ AnyBuddy moves Agents from a simple chat window into a local workspace. Each tas
 - Task-based Agent workflow: the product is organized around task creation, continuation, runtime state, and event streams.
 - Expert presets: expert roles can quickly load skill sets and task context.
 - Visible runtime events: tool calls, approvals, sub-agent state, and execution progress are surfaced in the UI.
+- Separate work modes and permissions: `ask` / `plan` / `craft` define how the Agent works, while `read_write` / `full_access` define what it can do.
+- Safe command approvals: in `read_write` mode, local command execution asks for confirmation and resumes in-place after approval instead of replaying the tool chain from the beginning.
+- Global skills directory: skills are loaded from `~/.anybuddy/skills/<skillId>/SKILL.md` and mirrored into a runtime cache for the current workspace.
 - Extensible architecture: shared IPC contracts, the preload bridge, main-process services, and the tool registry keep boundaries clear.
+
+## 工作模式与权限 / Work Modes and Permissions
+
+AnyBuddy 将“工作方式”和“能力边界”分开配置，避免把产品语义和安全策略混在一起。
+
+AnyBuddy separates how the Agent should work from what it is allowed to do, keeping product intent and safety policy distinct.
+
+工作模式 / Work modes:
+
+- `ask`: 问答模式，适合解释、检索、分析和快速答疑，默认不主动改代码。
+- `plan`: 规划模式，适合先拆解任务、生成步骤和确认执行方向。
+- `craft`: 执行模式，适合直接实现、修改文件并完成验证。
+
+- `ask`: Q&A mode for explanations, lookup, analysis, and quick answers; it should not proactively edit code by default.
+- `plan`: Planning mode for breaking down work, producing steps, and confirming direction.
+- `craft`: Execution mode for implementing changes, editing files, and verifying results.
+
+权限模式 / Permission modes:
+
+- `read_write`: 允许读写工作区；调用 `execute` 执行本地命令前会请求用户确认，批准后在当前 DeepAgents 运行流中原地恢复。
+- `full_access`: 完全访问模式；本地命令可直接执行，适合用户明确信任当前任务时使用。
+
+- `read_write`: Allows workspace read/write access; local `execute` commands require user confirmation and resume in-place inside the current DeepAgents run after approval.
+- `full_access`: Full access mode; local commands can run directly and should be used only when the user explicitly trusts the task.
 
 ## 截图 / Screenshots
 
@@ -42,11 +72,11 @@ AnyBuddy moves Agents from a simple chat window into a local workspace. Each tas
 
 建议截图内容 / Recommended screenshot content:
 
-- 新建任务界面，展示模型、模式、技能、工作区和专家选择入口。
+- 新建任务界面，展示模型、工作模式、权限、技能、工作区和专家选择入口。
 - 任务详情界面，展示对话、运行时事件、审批或子 Agent 状态。
 - 专家配置界面，展示专家预设和技能组合。
 
-- New task screen showing model, mode, skills, workspace, and expert selection.
+- New task screen showing model, work mode, permission mode, skills, workspace, and expert selection.
 - Task detail screen showing conversation, runtime events, approvals, or sub-agent state.
 - Expert configuration screen showing expert presets and skill sets.
 
