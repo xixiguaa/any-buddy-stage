@@ -1,7 +1,6 @@
 import type {
   AgentRun,
   AppSettings,
-  CreateAgentRunInput,
   ModelApiMode,
   ModelConfig,
   Task,
@@ -16,22 +15,7 @@ export type RuntimeContext = {
   taskExperts?: string[]
 }
 
-export type AgentToolName =
-  | 'read_workspace_file'
-  | 'write_workspace_file'
-  | 'edit_workspace_file'
-  | 'search_workspace'
-  | 'list_workspace_files'
-  | 'post_message'
-  | 'request_approval'
-  | 'consult_subagent'
-  | 'send_subagent_message'
-  | 'stop_subagent'
-  | 'list_agent_runs'
-  | 'web_search'
-  | 'run_shell_command'
-  | 'get_task_context'
-  | 'get_run_state'
+export type AgentToolName = 'web_search'
 
 export type AgentToolCall = {
   name: AgentToolName
@@ -43,15 +27,7 @@ export type ToolExecutionResult = {
   data: Record<string, unknown>
 }
 
-export type ToolExecutionContext = RuntimeContext & {
-  requestApproval(input: ToolApprovalRequest): Promise<ToolExecutionResult>
-}
-
-export type CompatSubagentToolExecutionContext = ToolExecutionContext & {
-  spawnSubagent(input: CreateAgentRunInput & { reason?: string }): Promise<ToolExecutionResult>
-  sendSubagentMessage(runId: string, content: string): Promise<ToolExecutionResult>
-  stopSubagent(runId: string, reason?: string): Promise<ToolExecutionResult>
-}
+export type ToolExecutionContext = RuntimeContext
 
 export type AllowedShellCommand = {
   command: string
@@ -64,12 +40,6 @@ export type ToolDefinition = {
   description: string
   requiresApproval: boolean
   execute(context: ToolExecutionContext, args: Record<string, unknown>): Promise<ToolExecutionResult>
-}
-
-export type ToolApprovalRequest = {
-  reason: string
-  originalArgs: Record<string, unknown>
-  summary: string
 }
 
 export type TaskContextSnapshot = {
@@ -86,14 +56,11 @@ export type ResolvedModelConfig = {
   apiMode: ModelApiMode
   apiKey: string | null
 }
+
 export type ModelMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   id?: string
-}
-export type ModelToolPlan = {
-  toolCalls: AgentToolCall[]
-  finalMessage?: string
 }
 
 export class ModelApiModeMismatchError extends Error {

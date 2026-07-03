@@ -37,7 +37,7 @@ export function createDefaultState(): AppState {
     expertIds: [],
     activeExpertId: undefined,
     primaryWorkspaceId: workspaceId,
-    permissionMode: 'default' as const,
+    permissionMode: 'read_write' as const,
     connectorIds: [],
     skillIds: [],
     status: 'idle' as const,

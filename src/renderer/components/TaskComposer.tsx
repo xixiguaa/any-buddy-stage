@@ -107,6 +107,7 @@ export default function TaskComposer({
   onCreate,
   onSend,
   defaultWorkspaceId,
+  defaultPermissionMode,
   draft,
   onDraftChange,
   onClearDraft,
@@ -122,11 +123,12 @@ export default function TaskComposer({
     modelId: string
     skillIds: string[]
     connectorIds: string[]
-    permissionMode: 'default' | 'full_access'
+    permissionMode: 'read_write' | 'full_access'
     expertIds: string[]
     activeExpertId?: string
   }) => Promise<void>
   defaultWorkspaceId?: string
+  defaultPermissionMode?: CreateTaskInput['permissionMode']
   draft?: TaskDraft
   onDraftChange?: (draft: Omit<TaskDraft, 'taskId' | 'updatedAt'>) => Promise<void> | void
   onClearDraft?: () => Promise<void> | void
@@ -156,7 +158,13 @@ export default function TaskComposer({
   const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || '')
   const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
   const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0])
-  const [permissionMode, setPermissionMode] = useState<'default' | 'full_access'>('default')
+  const normalizePermissionMode = (value?: CreateTaskInput['permissionMode']): 'read_write' | 'full_access' => {
+    if (value === 'read_write' || value === 'full_access') {
+      return value
+    }
+    return 'read_write'
+  }
+  const [permissionMode, setPermissionMode] = useState<'read_write' | 'full_access'>(() => normalizePermissionMode(defaultPermissionMode))
   const [busy, setBusy] = useState(false)
 
   // Popover visible states
@@ -253,6 +261,10 @@ export default function TaskComposer({
       setWorkspaceId(workspaceOptions[0].id)
     }
   }, [workspaceId, workspaceOptions])
+
+  useEffect(() => {
+    setPermissionMode(normalizePermissionMode(defaultPermissionMode))
+  }, [defaultPermissionMode])
 
   useEffect(() => {
     const hasCurrent = customModels.some(model => model.id === modelId)
@@ -370,7 +382,7 @@ export default function TaskComposer({
           modelId,
           skillIds: selectedSkillsList,
           connectorIds: selectedConnectorsList,
-          permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
+          permissionMode,
           expertIds: activeExpertId ? [activeExpertId] : [],
           activeExpertId,
         })
@@ -383,7 +395,7 @@ export default function TaskComposer({
             modelId,
             workspaceId: workspaceId || undefined,
             additionalWorkspaceIds: attachedWorkspaceIds,
-            permissionMode: permissionMode === 'full_access' ? 'full_access' : 'default',
+            permissionMode,
             connectorIds: selectedConnectorsList,
             skillIds: selectedSkillsList,
             expertIds: activeExpertId ? [activeExpertId] : [],
@@ -482,6 +494,30 @@ export default function TaskComposer({
     setNewModelApiMode('auto')
     setAddingModel(false)
     Modal.success({ title: '保存成功', content: '自定义模型已添加' })
+  }
+
+  const requestPermissionChange = (nextPermissionMode: typeof permissionMode) => {
+    if (nextPermissionMode === permissionMode) {
+      setShowPermissionPopover(false)
+      return
+    }
+
+    if (nextPermissionMode === 'full_access') {
+      setPermissionMode(nextPermissionMode)
+      setShowPermissionPopover(false)
+      return
+    }
+
+    Modal.confirm({
+      title: '确认开启读写权限？',
+      content: '读写权限允许 Agent 修改工作区文件。请确认当前任务需要写入能力。',
+      okText: '确认开启',
+      cancelText: '取消',
+      onOk: () => {
+        setPermissionMode(nextPermissionMode)
+        setShowPermissionPopover(false)
+      },
+    })
   }
 
   const currentWorkspaceName = useMemo(() => {
@@ -1204,16 +1240,15 @@ export default function TaskComposer({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
                   {[
-                    { value: 'default', label: '🔒 默认受限权限', desc: '写入和运行动作会暂停到恢复点，确认参数后继续。' },
-                    { value: 'full_access', label: '🔑 完全访问权限', desc: '大模型可以自动无限制读写并免审批执行。' }
+                    { value: 'read_write', label: '✍️ 读写权限', desc: 'Agent 可以读写工作区文件，开启前需要确认。' },
+                    { value: 'full_access', label: '🔑 完全访问权限', desc: 'Agent 使用本地 Shell backend，可读写文件并直接执行命令。' }
                   ].map(opt => {
                     const isSelected = permissionMode === opt.value
                     return (
                       <div
                         key={opt.value}
                         onClick={() => {
-                          setPermissionMode(opt.value as any)
-                          setShowPermissionPopover(false)
+                          requestPermissionChange(opt.value as typeof permissionMode)
                         }}
                         style={{
                           padding: '8px 10px',
@@ -1243,7 +1278,7 @@ export default function TaskComposer({
             placement="bottomLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
-              🛡️ 权限: {permissionMode === 'full_access' ? '完全' : '默认'}
+              🛡️ 权限: {permissionMode === 'full_access' ? '完全' : '读写'}
             </Button>
           </Popover>
         </Space>

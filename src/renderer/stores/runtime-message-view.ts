@@ -54,11 +54,34 @@ function readToolName(payload: Record<string, unknown>) {
   return 'unknown';
 }
 
+function describeRunStatus(payload: Record<string, unknown>) {
+  const currentNode = String(payload.currentNode ?? 'idle');
+  switch (currentNode) {
+    case 'loading_skills': {
+      const requested = Array.isArray(payload.requestedSkillIds) ? payload.requestedSkillIds.length : 0;
+      return requested > 0 ? `正在加载 ${requested} 个技能` : '没有配置技能，跳过技能加载';
+    }
+    case 'skill_loaded':
+      return `技能已加载: ${String(payload.skillId ?? 'unknown')}`;
+    case 'skill_missing':
+      return `技能未找到: ${String(payload.skillId ?? 'unknown')}`;
+    case 'skills_ready':
+      return `技能准备完成: ${String(payload.resolvedCount ?? 0)}/${String(payload.requestedCount ?? 0)}`;
+    default:
+      return `${String(payload.status ?? 'unknown')} · ${currentNode}`;
+  }
+}
+
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
-  const visibleMessages = [...baseMessages];
-  
-  // 1. 将所有的事件（包括工具调用、结果、中断等待、以及大模型的想法反馈）作为 synthetic message 混入进来
+  const visibleMessages = [...baseMessages]
+
+  // 1. 将所有的事件（包括工具调用、结果、中断等待）作为 synthetic message 混入进来。
+  // 注意：流式中的 agent_message 事件不进 visibleMessages（它的最新内容由 streamingContentByMessageId 提供），
+  // 这样 messages 数组在流式阶段引用保持稳定，避免整页重新渲染。
   for (const event of events) {
+    if (event.type === 'agent_message' && event.payload?.streaming === true) {
+      continue;
+    }
     const summary = summarizeRuntimeEvent(event);
     if (summary) {
       // 避免重复混入
@@ -158,6 +181,9 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
           sourceEventId: event.id,
           eventType: event.type,
           payload: event.payload,
+          runtimeScope: typeof event.payload.runtimeScope === 'string'
+            ? event.payload.runtimeScope
+            : 'internal',
         },
         createdAt,
       };
@@ -173,6 +199,9 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
           sourceEventId: event.id,
           eventType: event.type,
           payload: event.payload,
+          runtimeScope: typeof event.payload.runtimeScope === 'string'
+            ? event.payload.runtimeScope
+            : 'internal',
         },
         createdAt,
       };
@@ -324,8 +353,9 @@ export function buildRuntimeEventCard(event: AgentEvent): RuntimeEventCard {
         taskId: event.taskId,
         runId: event.runId,
         title: '状态更新',
-        description: `${String(event.payload.status ?? 'unknown')} · ${String(event.payload.currentNode ?? 'idle')}`,
+        description: describeRunStatus(event.payload),
         tone: 'neutral',
+        detail: stringifyPayload(event.payload.skillId ?? event.payload.resolved ?? event.payload.tried),
         createdAt: event.createdAt,
         eventType: event.type,
       };

@@ -40,6 +40,10 @@ const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'wa
 const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
 const STREAM_EVENT_FLUSH_MS = 50
 
+function isStreamingAgentMessageEvent(event: AgentEvent) {
+  return event.type === 'agent_message' && event.payload?.streaming === true
+}
+
 function sanitizeModelConfigs(models: ModelConfig[]) {
   return models
     .filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
@@ -80,6 +84,10 @@ function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange'])
   const cutoff = new Date(startOfToday)
   cutoff.setDate(cutoff.getDate() - (daysBack - 1))
   return target.getTime() >= cutoff.getTime()
+}
+
+function taskPermissionToWorkspaceAccess(permissionMode: Task['permissionMode']): TaskWorkspace['accessMode'] {
+  return permissionMode === 'read_only' ? 'read_only' : 'read_write'
 }
 
 export class AppService {
@@ -136,7 +144,10 @@ export class AppService {
     if (!this.state) {
       throw new Error('App service not initialized')
     }
-    await this.repository.save(this.state)
+    await this.repository.save({
+      ...this.state,
+      agentEvents: this.state.agentEvents.filter(event => !isStreamingAgentMessageEvent(event)),
+    })
   }
 
   private get snapshot() {
@@ -150,6 +161,10 @@ export class AppService {
     const result = await fn(this.snapshot)
     await this.persist()
     return result
+  }
+
+  private async mutateTransient<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {
+    return fn(this.snapshot)
   }
 
   private getConfigDir() {
@@ -365,7 +380,7 @@ export class AppService {
           taskId: task.id,
           workspaceId: input.workspaceId,
           role: 'primary',
-          accessMode: 'read_write',
+          accessMode: taskPermissionToWorkspaceAccess(input.permissionMode),
           addedAt: now,
         })
       }
@@ -396,6 +411,12 @@ export class AppService {
         modelId: input.modelId ? this.resolveTaskModelId(input.modelId) : input.modelId,
       }
       Object.assign(task, nextInput, { updatedAt: nowIso() })
+      if (input.permissionMode) {
+        const primaryRelation = state.taskWorkspaces.find(rel => rel.taskId === taskId && rel.role === 'primary')
+        if (primaryRelation) {
+          primaryRelation.accessMode = taskPermissionToWorkspaceAccess(input.permissionMode)
+        }
+      }
       return task
     })
   }
@@ -454,7 +475,7 @@ export class AppService {
         taskId,
         workspaceId,
         role: 'primary',
-        accessMode: 'read_write',
+        accessMode: taskPermissionToWorkspaceAccess(task.permissionMode),
         addedAt: nowIso(),
       })
       return task
@@ -950,7 +971,7 @@ export class AppService {
   async upsertAgentMessageEvent(runId: string, eventId: string, content: string, payloadPatch?: Record<string, unknown>): Promise<void> {
     let taskId = ''
     let changedEvent: AgentEvent | null = null
-    await this.mutate(state => {
+    await this.mutateTransient(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)

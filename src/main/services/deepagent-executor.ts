@@ -1,6 +1,6 @@
 import { tool } from 'langchain';
 import { ChatOpenAI } from '@langchain/openai';
-import { createDeepAgent, FilesystemBackend, LocalShellBackend } from 'deepagents/node';
+import { createDeepAgent, LocalShellBackend } from 'deepagents/node';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, stat } from 'node:fs/promises';
 import os from 'node:os';
@@ -12,9 +12,18 @@ import { AgentApprovalPendingError } from './langchain-agent-service.js';
 import { OpenAIModelService } from './openai-model-service.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { ModelApiModeMismatchError } from './agent-runtime-types.js';
+import type { HumanApproval } from '../../shared/types.js';
 
 type DeepAgentExecutorDependencies = {
   modelService: OpenAIModelService
+};
+
+type PendingExecuteApproval = {
+  runId: string
+  originalCommand: string
+  execute: (command: string) => Promise<unknown>
+  resolve: (value: unknown) => void
+  reject: (error: unknown) => void
 };
 
 function shouldUseResponsesApi(model: ResolvedModelConfig) {
@@ -137,6 +146,20 @@ function isSameDrive(a: string, b: string): boolean {
 }
 
 const SYSTEM_SKILL_CACHE_DIRNAME = '.system-skill-cache';
+const GLOBAL_SKILLS_DIRNAME = 'skills';
+
+function getGlobalSkillsRoot() {
+  return path.join(os.homedir(), '.anybuddy', GLOBAL_SKILLS_DIRNAME);
+}
+
+// 项目注册并通过 `tools: [...]` 传给 deepagent 的工具白名单。
+// 其他工具（包括 ls / read_file / write_file / edit_file / grep / glob / execute / task / write_todos 等）
+// 都是 deepagents 内置，归为 'internal'。
+const PROJECT_TOOLS = new Set<string>(['web_search'])
+
+function classifyToolScope(toolName: string): 'project' | 'internal' {
+  return PROJECT_TOOLS.has(toolName) ? 'project' : 'internal'
+}
 
 async function mirrorSkillIntoBackend(backendRootDir: string, sourceSkillDir: string, skillId: string): Promise<string | null> {
   const cacheRoot = path.join(backendRootDir, SYSTEM_SKILL_CACHE_DIRNAME);
@@ -274,7 +297,29 @@ function readMessageId(message: unknown): string | undefined {
   return typeof id === 'string' && id ? id : undefined;
 }
 
+function isApprovalPendingError(error: unknown): boolean {
+  if (error instanceof AgentApprovalPendingError) {
+    return true;
+  }
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Tool paused for confirmation/i.test(message) || /AgentApprovalPendingError/i.test(message)) {
+    return true;
+  }
+  const cause = (error as { cause?: unknown }).cause;
+  return cause ? isApprovalPendingError(cause) : false;
+}
+
+function normalizeExecuteApprovalCommand(command: string) {
+  return command.replace(/\r\n/g, '\n').trim();
+}
+
 export class DeepAgentExecutor implements AgentExecutor {
+  private readonly approvedExecuteCommandsByRun = new Map<string, Set<string>>();
+  private readonly pendingExecuteApprovals = new Map<string, PendingExecuteApproval>();
+
   constructor(
     private readonly appService: AppService,
     private readonly dependencies: DeepAgentExecutorDependencies,
@@ -313,17 +358,19 @@ export class DeepAgentExecutor implements AgentExecutor {
         },
       });
 
+      const skillSources = await this.resolveSkillSources(context.run.id, context.task.skillIds, backendRootDir);
+
       const agent = createDeepAgent({
         model,
         backend,
         subagents: [],
-        permissions: this.resolvePermissions(context, taskWorkspaces),
+        permissions: this.resolvePermissions(context),
         // Do not enable interruptOn yet. Deepagents requires a checkpointer for
         // human-in-the-loop interrupts, while AnyBuddy currently restores
         // approvals through its own AppService/approval tables.
         tools: tools.map(toolDefinition => this.toDeepAgentTool(toolDefinition, toolExecutionContext)),
         memory: this.resolveMemoryFiles(backendRootDir),
-        skills: await this.resolveSkillSources(context.task.skillIds, backendRootDir),
+        skills: skillSources,
         systemPrompt: activeExpert
           ? [
               `你当前以专家 ${activeExpert.name} (专家 ID: ${activeExpert.id}) 的身份工作。`,
@@ -350,9 +397,11 @@ export class DeepAgentExecutor implements AgentExecutor {
       const accumulatedMessagesMap = new Map<string, string>();
       const toolCallArgsMap = new Map<string, string>();
       const toolCallNameMap = new Map<string, string>();
+      const streamSegmentBySource = new Map<string, number>();
+      const failedToolSummaries: string[] = [];
       const updateNodeSeen = new Set<string>();
-      let streamIndex = 0;
       let toolIndex = 0;
+      let finalAssistantMessage = '';
       const streamingPayloadPatch = {
         ...assistantMetadata,
         runtimeEngine: 'deepagents',
@@ -396,6 +445,7 @@ export class DeepAgentExecutor implements AgentExecutor {
                     runtimeEngine: 'deepagents',
                     namespace: source,
                     toolCallId,
+                    runtimeScope: classifyToolScope(toolName),
                   });
                   toolIndex += 1;
                   toolCallNameMap.delete(toolCallId);
@@ -415,18 +465,27 @@ export class DeepAgentExecutor implements AgentExecutor {
                 summary: content,
                 runtimeEngine: 'deepagents',
                 namespace: source,
+                runtimeScope: classifyToolScope(toolName),
               });
+              if (/^Error:/i.test(content.trim())) {
+                failedToolSummaries.push(`${toolName}: ${content.trim()}`);
+              }
+              streamSegmentBySource.set(source, (streamSegmentBySource.get(source) ?? 0) + 1);
             }
 
             const tokenText = readChunkText(message);
             if (tokenText && toolCallChunks.length === 0 && !isToolResultMessage(message)) {
               const chunkMessageId = readMessageId(message);
+              const streamSegment = streamSegmentBySource.get(source) ?? 0;
               const msgId = chunkMessageId
                 ? `chunk-${chunkMessageId}`
-                : `stream-${source}-${streamIndex++}`;
-              const nextContent = `${accumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
-              accumulatedMessagesMap.set(msgId, nextContent);
-              await this.appService.upsertAgentMessageEvent(context.run.id, `msg-${msgId}`, nextContent, {
+                : `stream-${source}-${streamSegment}`;
+              const nextText = `${accumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
+              accumulatedMessagesMap.set(msgId, nextText);
+              if (source === 'main' || !finalAssistantMessage) {
+                finalAssistantMessage = nextText;
+              }
+              await this.appService.upsertAgentMessageEvent(context.run.id, `msg-${msgId}`, nextText, {
                 ...streamingPayloadPatch,
                 namespace: source,
               });
@@ -452,37 +511,36 @@ export class DeepAgentExecutor implements AgentExecutor {
         }
       }
 
-      const finalMessage = Array.from(accumulatedMessagesMap.values()).at(-1);
+      const finalMessage = finalAssistantMessage || Array.from(accumulatedMessagesMap.values()).at(-1);
       if (!finalMessage) {
         return false;
       }
+
+      const completedMessage = failedToolSummaries.length > 0
+        ? [
+            `工具执行失败原因：\n${failedToolSummaries.map(item => `- ${item}`).join('\n')}`,
+            finalMessage,
+          ].join('\n\n')
+        : finalMessage;
 
       await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
         status: 'running',
         currentNode: 'stream_completed',
       });
 
-      await this.appService.completeRuntimeRun(context.run.id, finalMessage, {
+      await this.appService.completeRuntimeRun(context.run.id, completedMessage, {
         ...assistantMetadata,
         runtimeEngine: 'deepagents',
       });
       return true;
     } catch (error) {
-      if (error instanceof AgentApprovalPendingError) {
+      if (isApprovalPendingError(error)) {
         return true;
       }
-      if (error instanceof ModelApiModeMismatchError) {
-        throw error;
-      }
-
-      await this.appService.appendRuntimeMessage(
-        context.task.id,
-        context.run.id,
-        'system',
-        `DeepAgents 执行失败，已回退到 LangChain：${error instanceof Error ? error.message : 'unknown error'}`,
-      );
-      return false;
+      throw error;
     } finally {
+      this.approvedExecuteCommandsByRun.delete(context.run.id);
+      this.clearPendingExecuteApprovals(context.run.id);
       if ('close' in backend && typeof backend.close === 'function') {
         await backend.close();
       }
@@ -516,61 +574,63 @@ export class DeepAgentExecutor implements AgentExecutor {
     return virtualPath ? [virtualPath] : [];
   }
 
-  private async resolveSkillSources(skillIds: string[], rootDir: string) {
+  private async resolveSkillSources(runId: string, skillIds: string[], rootDir: string) {
     const uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
-    const skillRoots = [
-      path.resolve(process.cwd(), '.agents', 'skills'),
-      path.join(os.homedir(), '.agents', 'skills'),
-    ];
+    const skillsRoot = getGlobalSkillsRoot();
+
+    await this.appService.appendRuntimeEvent(runId, 'run_status', {
+      status: 'running',
+      currentNode: 'loading_skills',
+      runtimeEngine: 'deepagents',
+      requestedSkillIds: uniqueSkillIds,
+    });
 
     const resolved: Array<{
       skillId: string
       source: string
-      via: 'same-volume' | 'cross-volume-mirror'
+      cachedPath: string
       virtualPath: string
     }> = [];
 
     for (const skillId of uniqueSkillIds) {
-      let picked: { source: string; via: 'same-volume' | 'cross-volume-mirror'; virtualPath: string } | null = null;
-
-      for (const baseDir of skillRoots) {
-        const skillDir = path.join(baseDir, skillId);
-        const skillFile = path.join(skillDir, 'SKILL.md');
-        if (!existsSync(skillFile)) {
-          continue;
-        }
-
-        const virtualPath = this.toBackendVirtualPath(rootDir, skillDir);
-        if (virtualPath) {
-          picked = { source: skillDir, via: 'same-volume', virtualPath };
-          break;
-        }
-
-        const mirroredDir = await mirrorSkillIntoBackend(rootDir, skillDir, skillId);
-        if (mirroredDir) {
-          const mirroredVirtualPath = this.toBackendVirtualPath(rootDir, mirroredDir);
-          if (mirroredVirtualPath) {
-            console.debug('[DeepAgentSkills] cross-volume mirrored', {
-              skillId,
-              source: skillDir,
-              backendRootDir: rootDir,
-              mirroredDir,
-              virtualPath: mirroredVirtualPath,
-            });
-            picked = { source: skillDir, via: 'cross-volume-mirror', virtualPath: mirroredVirtualPath };
-            break;
+      let picked: { source: string; cachedPath: string; virtualPath: string } | null = null;
+      const skillDir = path.join(skillsRoot, skillId);
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      if (existsSync(skillFile)) {
+        const cachedPath = await mirrorSkillIntoBackend(rootDir, skillDir, skillId);
+        if (cachedPath) {
+          const virtualPath = this.toBackendVirtualPath(rootDir, cachedPath);
+          if (virtualPath) {
+            picked = { source: skillDir, cachedPath, virtualPath };
           }
         }
       }
 
       if (picked) {
         console.debug('[DeepAgentSkills] resolve hit', picked);
+        await this.appService.appendRuntimeEvent(runId, 'run_status', {
+          status: 'running',
+          currentNode: 'skill_loaded',
+          runtimeEngine: 'deepagents',
+          skillId,
+          source: picked.source,
+          cachedPath: picked.cachedPath,
+          virtualPath: picked.virtualPath,
+          skillsRoot,
+        });
         resolved.push({ ...picked, skillId });
       } else {
         console.debug('[DeepAgentSkills] resolve miss', {
           skillId,
           rootDir,
-          tried: skillRoots,
+          tried: [skillsRoot],
+        });
+        await this.appService.appendRuntimeEvent(runId, 'run_status', {
+          status: 'running',
+          currentNode: 'skill_missing',
+          runtimeEngine: 'deepagents',
+          skillId,
+          tried: [skillsRoot],
         });
       }
     }
@@ -579,6 +639,14 @@ export class DeepAgentExecutor implements AgentExecutor {
     console.debug('[DeepAgentSkills] resolve summary', {
       requested: skillIds,
       unique: uniqueSkillIds,
+      resolved: virtualPaths,
+    });
+    await this.appService.appendRuntimeEvent(runId, 'run_status', {
+      status: 'running',
+      currentNode: 'skills_ready',
+      runtimeEngine: 'deepagents',
+      requestedCount: uniqueSkillIds.length,
+      resolvedCount: virtualPaths.length,
       resolved: virtualPaths,
     });
     return virtualPaths;
@@ -606,57 +674,89 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   private async createBackend(context: ExecuteAgentParams['context'], rootDir: string) {
-    if (context.task.permissionMode === 'full_access') {
-      return LocalShellBackend.create({
-        rootDir,
-        virtualMode: true,
-      });
-    }
-
-    return new FilesystemBackend({
+    const backend = await LocalShellBackend.create({
       rootDir,
       virtualMode: true,
     });
-  }
+    const originalExecute = backend.execute.bind(backend);
 
-  private resolvePermissions(context: ExecuteAgentParams['context'], taskWorkspaces: ReturnType<AppService['listTaskWorkspaces']>) {
-    if (context.task.permissionMode === 'full_access') {
-      return undefined;
+    if (context.task.permissionMode === 'read_write') {
+      backend.execute = async (command: string) => {
+        const approvedCommands = this.approvedExecuteCommandsByRun.get(context.run.id);
+        const normalizedCommand = normalizeExecuteApprovalCommand(command);
+        if (approvedCommands?.has(normalizedCommand)) {
+          return originalExecute(command);
+        }
+
+        const approval = await this.appService.requestRuntimeApproval(
+          context.run.id,
+          `即将执行本地命令，请确认是否允许：${command}`,
+          {
+            toolName: 'execute',
+            command,
+            permissionMode: context.task.permissionMode,
+          },
+        );
+        return await new Promise((resolve, reject) => {
+          this.pendingExecuteApprovals.set(approval.id, {
+            runId: context.run.id,
+            originalCommand: command,
+            execute: async (approvedCommand: string) => originalExecute(approvedCommand),
+            resolve,
+            reject,
+          });
+        });
+      };
     }
 
-    const normalizeWorkspacePath = (workspacePath: string) => {
-      const normalized = workspacePath.replace(/\\/g, '/').replace(/\/+$|\/+$/g, '');
-      const withoutDrive = normalized.replace(/^[A-Za-z]:/, '');
-      return withoutDrive.startsWith('/') ? withoutDrive : `/${withoutDrive}`;
-    };
+    return backend;
+  }
 
-    const allowedRules = taskWorkspaces.flatMap(workspace => {
-      const basePath = normalizeWorkspacePath(workspace.workspace.path);
-      const readRule = {
-        operations: ['read'] as const,
-        paths: [`${basePath}/**`, basePath],
-      };
+  approveExecuteCommand(runId: string, command: string) {
+    const normalizedCommand = normalizeExecuteApprovalCommand(command);
+    if (!normalizedCommand) {
+      return;
+    }
+    const approvedCommands = this.approvedExecuteCommandsByRun.get(runId) ?? new Set<string>();
+    approvedCommands.add(normalizedCommand);
+    this.approvedExecuteCommandsByRun.set(runId, approvedCommands);
+  }
 
-      if (workspace.accessMode === 'read_write') {
-        return [
-          readRule,
-          {
-            operations: ['write'] as const,
-            paths: [`${basePath}/**`, basePath],
-          },
-        ];
+  resolvePendingExecuteApproval(approval: HumanApproval) {
+    const pending = this.pendingExecuteApprovals.get(approval.id);
+    if (!pending) {
+      return false;
+    }
+
+    this.pendingExecuteApprovals.delete(approval.id);
+    if (approval.decision === 'rejected') {
+      pending.reject(new Error('用户拒绝执行本地命令。'));
+      return true;
+    }
+
+    const args = approval.editedArgs ?? approval.originalArgs ?? {};
+    const command = typeof args.command === 'string' && args.command.trim()
+      ? args.command
+      : pending.originalCommand;
+
+    this.approveExecuteCommand(pending.runId, command);
+    void pending.execute(command).then(pending.resolve, pending.reject);
+    return true;
+  }
+
+  private clearPendingExecuteApprovals(runId: string) {
+    for (const [approvalId, pending] of this.pendingExecuteApprovals) {
+      if (pending.runId === runId) {
+        this.pendingExecuteApprovals.delete(approvalId);
       }
+    }
+  }
 
-      return [readRule];
-    });
-
-    return [
-      ...allowedRules,
-      {
-        operations: ['read', 'write'] as const,
-        paths: ['/**'],
-        mode: 'deny' as const,
-      },
-    ];
+  private resolvePermissions(_context: ExecuteAgentParams['context']) {
+    // LocalShellBackend is required for DeepAgents execute support. DeepAgents
+    // path permissions are intentionally disabled because they are incompatible
+    // with shell-capable backends; AnyBuddy enforces read_write execute safety
+    // through the approval gate in createBackend().
+    return undefined;
   }
 }

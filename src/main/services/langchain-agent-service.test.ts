@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LangChainAgentService } from './langchain-agent-service.js';
 import type {
-  CompatSubagentToolExecutionContext,
   ModelMessage,
   ResolvedModelConfig,
   ToolDefinition,
@@ -38,7 +37,7 @@ function createResolvedModel(): ResolvedModelConfig {
   };
 }
 
-function createToolContext(): CompatSubagentToolExecutionContext {
+function createToolContext(): ToolExecutionContext {
   const now = new Date().toISOString();
   return {
     task: {
@@ -76,44 +75,12 @@ function createToolContext(): CompatSubagentToolExecutionContext {
       maxConcurrentRuns: 1,
       sandboxEnabled: true,
     },
-    async requestApproval() {
-      return {
-        summary: 'approval requested',
-        data: {
-          pendingApproval: true,
-        },
-      };
-    },
-    async spawnSubagent() {
-      return {
-        summary: 'subagent requested',
-        data: {
-          subagentRunId: 'sub-1',
-        },
-      };
-    },
-    async sendSubagentMessage() {
-      return {
-        summary: 'subagent message sent',
-        data: {
-          ok: true,
-        },
-      };
-    },
-    async stopSubagent() {
-      return {
-        summary: 'subagent stopped',
-        data: {
-          ok: true,
-        },
-      };
-    },
   };
 }
 
 function createEchoTool(executions: Array<Record<string, unknown>>): ToolDefinition {
   return {
-    name: 'get_task_context',
+    name: 'web_search',
     description: 'Read task context',
     requiresApproval: false,
     async execute(_context: ToolExecutionContext, args: Record<string, unknown>): Promise<ToolExecutionResult> {

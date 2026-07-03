@@ -19,10 +19,7 @@ function fail(error: unknown): IpcResult<never> {
 }
 
 async function listLocalSkills() {
-  const skillRoots = [
-    path.resolve(process.cwd(), '.agents', 'skills'),
-    path.join(os.homedir(), '.agents', 'skills'),
-  ]
+  const skillRoots = [path.join(os.homedir(), '.anybuddy', 'skills')]
   const names = new Set<string>()
 
   for (const skillsRoot of skillRoots) {

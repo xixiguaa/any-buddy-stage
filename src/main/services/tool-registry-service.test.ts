@@ -1,39 +1,80 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ToolRegistryService } from './tool-registry-service.js';
-import type { CompatSubagentToolExecutionContext } from './agent-runtime-types.js';
+import type { AppSettings, Task, AgentRun, ModelConfig } from '../../shared/types.js';
 
-function createToolRegistry() {
-  const appService = {
+function createAppServiceMock(overrides: Partial<{
+  networkEnabled: boolean
+  webSearchEnabled: boolean
+  taskTitle: string
+}> = {}) {
+  const networkEnabled = overrides.networkEnabled ?? true
+  const webSearchEnabled = overrides.webSearchEnabled ?? true
+  const taskTitle = overrides.taskTitle ?? 'search'
+
+  return {
     getTaskContext() {
-      return null;
+      return null
     },
     getAgentRun() {
-      return null;
+      return null
     },
     listApprovals() {
-      return [];
+      return []
     },
     listAgentEvents() {
-      return [];
+      return []
     },
     listTaskWorkspaces() {
-      return [];
+      return []
     },
     listAgentRunsByTask() {
-      return [];
+      return []
     },
-  };
-
-  return new ToolRegistryService(appService as never);
+  }
 }
 
-test('web_search 会映射真实搜索结果并执行域名过滤与数量限制', async () => {
-  const registry = createToolRegistry();
-  const tool = registry.getTool('web_search');
-  assert.ok(tool);
+function createToolContext(appService: ReturnType<typeof createAppServiceMock>, taskTitle: string) {
+  const task: Task = {
+    id: 'task-1',
+    title: taskTitle,
+    mode: 'ask',
+    modelId: 'model-1',
+    expertIds: [],
+    permissionMode: 'default',
+    connectorIds: [],
+    skillIds: [],
+    status: 'running',
+    unreadEventCount: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  const run: AgentRun = {
+    id: 'run-1',
+    taskId: task.id,
+    workspaceIds: [],
+    agentId: 'agent-1',
+    agentName: 'Main Agent',
+    kind: 'main',
+    status: 'running',
+    graphThreadId: 'thread-1',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }
+  const settings: AppSettings = {
+    networkEnabled: true,
+    webSearchEnabled: true,
+    maxConcurrentRuns: 1,
+  }
+  return { task, run, model: null as ModelConfig | null, settings }
+}
 
-  const originalFetch = globalThis.fetch;
+test('web_search 抓取 DuckDuckGo 结果并应用域名过滤与数量上限', async () => {
+  const registry = new ToolRegistryService(createAppServiceMock() as never)
+  const tool = registry.getTool('web_search')
+  assert.ok(tool)
+
+  const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({
     AbstractText: 'OpenAI 官方说明',
     AbstractURL: 'https://openai.com/index/openai-api/',
@@ -59,168 +100,50 @@ test('web_search 会映射真实搜索结果并执行域名过滤与数量限制
   }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
-  });
+  })
 
   try {
     const result = await tool.execute({
-      task: {
-        id: 'task-1',
-        title: 'search',
-        mode: 'ask',
-        modelId: 'model-1',
-        expertIds: [],
-        permissionMode: 'default',
-        connectorIds: [],
-        skillIds: [],
-        status: 'running',
-        unreadEventCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      run: {
-        id: 'run-1',
-        taskId: 'task-1',
-        workspaceIds: [],
-        agentId: 'agent-1',
-        agentName: 'Main Agent',
-        kind: 'main',
-        status: 'running',
-        graphThreadId: 'thread-1',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      model: null,
-      settings: {
-        networkEnabled: true,
-        webSearchEnabled: true,
-        maxConcurrentRuns: 1,
-      },
-      requestApproval: async () => {
-        throw new Error('not used');
-      },
-      spawnSubagent: async () => {
-        throw new Error('not used');
-      },
-      sendSubagentMessage: async () => {
-        throw new Error('not used');
-      },
-      stopSubagent: async () => {
-        throw new Error('not used');
-      },
-    } as CompatSubagentToolExecutionContext, {
+      ...createToolContext(createAppServiceMock(), 'openai'),
+    }, {
       query: 'openai',
       domains: ['openai.com', 'platform.openai.com'],
       maxResults: 2,
-    });
+    })
 
-    assert.equal(result.data.enabled, true);
-    assert.equal(result.data.provider, 'duckduckgo_instant_answer');
-    assert.equal((result.data.results as Array<unknown>).length, 2);
+    assert.equal(result.data.enabled, true)
+    assert.equal(result.data.provider, 'duckduckgo_instant_answer')
+    assert.equal((result.data.results as Array<unknown>).length, 2)
     assert.deepEqual(
       (result.data.results as Array<{ url: string }>).map(item => item.url),
       [
         'https://openai.com/index/openai-api/',
         'https://platform.openai.com/docs/overview',
       ],
-    );
-    assert.equal((result.data.audit as { filteredCount: number }).filteredCount, 1);
+    )
+    assert.equal((result.data.audit as { filteredCount: number }).filteredCount, 1)
   } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.fetch = originalFetch
   }
-});
+})
 
-test('list_agent_runs 返回当前任务的主子 agent 运行摘要', async () => {
-  const registry = new ToolRegistryService({
-    getTaskContext() {
-      return null;
-    },
-    getAgentRun() {
-      return null;
-    },
-    listApprovals() {
-      return [];
-    },
-    listAgentEvents() {
-      return [];
-    },
-    listTaskWorkspaces() {
-      return [];
-    },
-    listAgentRunsByTask() {
-      return [
-        {
-          id: 'run-main',
-          kind: 'main',
-          agentName: 'Main Agent',
-          parentRunId: undefined,
-          status: 'running',
-          currentNode: 'execution',
-          startedAt: '2026-01-01T00:00:00.000Z',
-          completedAt: undefined,
-        },
-        {
-          id: 'run-sub',
-          kind: 'subagent',
-          agentName: 'research-subagent',
-          parentRunId: 'run-main',
-          status: 'completed',
-          currentNode: 'finished',
-          startedAt: '2026-01-01T00:00:01.000Z',
-          completedAt: '2026-01-01T00:00:03.000Z',
-        },
-      ];
-    },
-  } as never);
-
-  const tool = registry.getTool('list_agent_runs');
-  assert.ok(tool);
+test('web_search 在网络/搜索未开启时返回 enabled=false', async () => {
+  const registry = new ToolRegistryService(createAppServiceMock({
+    networkEnabled: false,
+    webSearchEnabled: false,
+  }) as never)
+  const tool = registry.getTool('web_search')
+  assert.ok(tool)
 
   const result = await tool.execute({
-    task: {
-      id: 'task-1',
-      title: 'subagent task',
-      mode: 'ask',
-      modelId: 'model-1',
-      expertIds: [],
-      permissionMode: 'default',
-      connectorIds: [],
-      skillIds: [],
-      status: 'running',
-      unreadEventCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    run: {
-      id: 'run-main',
-      taskId: 'task-1',
-      workspaceIds: [],
-      agentId: 'agent-1',
-      agentName: 'Main Agent',
-      kind: 'main',
-      status: 'running',
-      graphThreadId: 'thread-1',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-    model: null,
-    settings: {
+    ...createToolContext(createAppServiceMock({
       networkEnabled: false,
       webSearchEnabled: false,
-      maxConcurrentRuns: 1,
-    },
-    requestApproval: async () => {
-      throw new Error('not used');
-    },
-    spawnSubagent: async () => {
-      throw new Error('not used');
-    },
-    sendSubagentMessage: async () => {
-      throw new Error('not used');
-    },
-    stopSubagent: async () => {
-      throw new Error('not used');
-    },
-  } as CompatSubagentToolExecutionContext, {});
+    }), 'search'),
+  }, {
+    query: 'openai',
+  })
 
-  assert.equal((result.data.runs as Array<unknown>).length, 2);
-});
+  assert.equal(result.data.enabled, false)
+  assert.equal(result.data.reason, 'network_disabled')
+})

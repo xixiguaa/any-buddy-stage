@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { CheckOutlined, CloseOutlined, EditOutlined } from '@ant-design/icons';
 import { Alert, Button, Empty, Input, Modal, Tag } from 'antd';
@@ -8,6 +8,12 @@ import { createAnybuddyClients } from '../api/clients.js';
 import TaskComposer from '../components/TaskComposer.js';
 import { useAppStore } from '../stores/app-store.js';
 import { buildRuntimeToolCards, summarizeRuntimeEvent } from '../stores/runtime-message-view.js';
+
+const AUTO_SCROLL_BOTTOM_THRESHOLD = 96;
+
+function isNearScrollBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_BOTTOM_THRESHOLD;
+}
 
 function formatAccessMode(value: 'read_only' | 'read_write') {
   return value === 'read_only' ? '只读' : '读写';
@@ -103,9 +109,18 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
   const [collapsed, setCollapsed] = useState(true);
   const eventType = message.metadata?.eventType;
   const isResult = message.content.startsWith('工具结果:') || eventType === 'tool_result';
+  const runtimeScope = message.metadata?.runtimeScope === 'project' ? 'project' : 'internal';
+  const isInternal = runtimeScope === 'internal';
 
   const payload = message.metadata?.payload as Record<string, unknown> | undefined;
   const toolName = String(payload?.toolName ?? 'unknown');
+
+// 内置 deepagent 工具默认折叠 + 灰色背景，项目工具保持当前样式
+  useEffect(() => {
+    if (isInternal && eventType === 'tool_called') {
+      setCollapsed(true)
+    }
+  }, [isInternal, eventType]);
 
   // Extract key args for display on the title bar
   let argContext = '';
@@ -122,12 +137,13 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
   }
 
   // Determine beautiful title
+  const scopePrefix = isInternal ? '⚙️ deepagent · ' : '';
   let displayTitle = '';
   if (eventType === 'tool_called') {
-    displayTitle = `调用工具 · ${toolName}${argContext ? ` (${argContext})` : ''}`;
+    displayTitle = `${scopePrefix}调用工具 · ${toolName}${argContext ? ` (${argContext})` : ''}`;
   } else if (eventType === 'tool_result') {
     const summary = String(payload?.summary || '执行成功');
-    displayTitle = `工具结果 · ${toolName} : ${summary}`;
+    displayTitle = `${scopePrefix}工具结果 · ${toolName} : ${summary}`;
   } else {
     displayTitle = message.content;
   }
@@ -146,6 +162,21 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
     }
   }
 
+  const headerBg = isInternal
+    ? (isResult
+        ? 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)'
+        : 'linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%)')
+    : (isResult
+      ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)'
+      : 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)')
+  const headerBorder = isInternal
+    ? (isResult ? '1px solid #cbd5e1' : '1px solid #cbd5e1')
+    : (isResult ? '1px solid #bbf7d0' : '1px solid #e2e8f0')
+  const headerText = isInternal ? '#475569' : (isResult ? '#166534' : '#334155')
+  const badgeBg = isInternal ? '#e2e8f0' : (isResult ? '#dcfce7' : '#e2e8f0')
+  const badgeText = isResult ? '✅' : '🔧'
+  const trailingText = isInternal ? '#64748b' : (isResult ? '#15803d' : '#64748b')
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', width: '100%', margin: '6px 0' }}>
       <div
@@ -156,15 +187,11 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
           gap: '10px',
           padding: '8px 14px',
           borderRadius: '10px',
-          background: isResult
-            ? 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)'
-            : 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)',
-          border: isResult
-            ? '1px solid #bbf7d0'
-            : '1px solid #e2e8f0',
+          background: headerBg,
+          border: headerBorder,
           cursor: 'pointer',
           fontSize: '12px',
-          color: isResult ? '#166534' : '#334155',
+          color: headerText,
           userSelect: 'none',
           transition: 'all 0.2s',
           boxShadow: '0 2px 6px rgba(0,0,0,0.01)',
@@ -173,11 +200,11 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
           justifyContent: 'space-between',
         }}
         onMouseEnter={e => {
-          e.currentTarget.style.borderColor = isResult ? '#86efac' : '#cbd5e1';
+          e.currentTarget.style.borderColor = isResult && !isInternal ? '#86efac' : '#cbd5e1';
           e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.03)';
         }}
         onMouseLeave={e => {
-          e.currentTarget.style.borderColor = isResult ? '#bbf7d0' : '#e2e8f0';
+          e.currentTarget.style.borderColor = headerBorder;
           e.currentTarget.style.boxShadow = '0 2px 6px rgba(0,0,0,0.01)';
         }}
       >
@@ -189,14 +216,14 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
             width: '20px',
             height: '20px',
             borderRadius: '6px',
-            background: isResult ? '#dcfce7' : '#e2e8f0',
+            background: badgeBg,
             fontSize: '11px',
           }}>
-            {isResult ? '✅' : '🔧'}
+            {badgeText}
           </span>
           <span style={{ fontWeight: 600, fontFamily: `Consolas, 'Fira Code', monospace` }}>{displayTitle}</span>
         </div>
-        <span style={{ fontSize: '11px', color: isResult ? '#15803d' : '#64748b', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: '11px', color: trailingText, whiteSpace: 'nowrap' }}>
           {collapsed ? '展开参数' : '收起参数'}
         </span>
       </div>
@@ -226,6 +253,107 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
   );
 }
 
+const MessageItem = memo(function MessageItem({
+  message,
+  streamingContent,
+}: {
+  message: Message
+  streamingContent?: string
+}) {
+  const isUser = message.role === 'user';
+  const isAssistant = message.role === 'assistant';
+  const isSystem = message.role === 'system';
+  const isTool = message.role === 'tool';
+  // 处于流式阶段：要么是来自持久化的 streaming message，要么是通过 streamingContent prop 注入
+  const isStreamingAssistant = isAssistant && (Boolean(message.metadata?.streaming) || streamingContent !== undefined);
+  const displayContent = streamingContent ?? message.content;
+
+  // 流式消息跳过 markdown 解析，只显示纯文本；非流式消息缓存 markdown 结果，避免每次 flush 重跑。
+  const renderedMarkdown = useMemo(() => {
+    if (isStreamingAssistant || !isAssistant) {
+      return null;
+    }
+    return renderMarkdown(displayContent);
+  }, [displayContent, isStreamingAssistant, isAssistant]);
+
+  if (isSystem) {
+    const isError = message.metadata?.eventType === 'run_failed';
+    if (isError) {
+      return (
+        <div key={message.id} style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px',
+          margin: '12px 0',
+          padding: '16px',
+          background: 'linear-gradient(180deg, #fef2f2 0%, #fff1f1 100%)',
+          border: '1px solid #fca5a5',
+          borderRadius: '12px',
+          boxShadow: '0 4px 12px rgba(239, 68, 68, 0.05)',
+          width: '100%',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', fontWeight: 700, fontSize: '13px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', background: '#fee2e2', fontSize: '12px' }}>
+              ❌
+            </span>
+            运行失败
+          </div>
+          <div style={{ fontSize: '12px', color: '#991b1b', lineHeight: 1.6, fontFamily: `Consolas, 'Fira Code', monospace`, background: 'rgba(239, 68, 68, 0.03)', padding: '10px 12px', borderRadius: '6px', border: '1px dashed #fca5a5', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {message.content}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
+        <div style={{ background: '#f1f5f9', color: '#64748b', padding: '6px 16px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, border: '1px solid #e2e8f0' }}>{message.content}</div>
+      </div>
+    );
+  }
+
+  if (isTool) {
+    return <CollapsibleToolMessage key={message.id} message={message} />;
+  }
+
+  return (
+    <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
+      <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
+        {isUser
+          ? '用户'
+          : isAssistant
+            ? (isStreamingAssistant
+                ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
+                : String(message.metadata?.expertName ?? 'AnyBuddy'))
+            : '工具调用'}
+      </div>
+      <div
+        style={{
+          maxWidth: '85%',
+          padding: '12px 16px',
+          background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
+          color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
+          border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
+          fontSize: '14px',
+          lineHeight: '1.6',
+          fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit',
+        }}
+      >
+        {isUser ? (
+          <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>
+        ) : renderedMarkdown !== null ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {renderedMarkdown}
+          </div>
+        ) : (
+          <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export default function TaskDetailPage() {
   const { taskId } = useParams();
   const selectedTaskId = useAppStore((state) => state.selectedTaskId);
@@ -248,13 +376,31 @@ export default function TaskDetailPage() {
   const [editedArgsText, setEditedArgsText] = useState('');
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const previousTaskIdRef = useRef<string | undefined>(undefined);
   const lastMessage = messages[messages.length - 1];
 
   useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const taskChanged = previousTaskIdRef.current !== taskId;
+    previousTaskIdRef.current = taskId;
+
+    if (taskChanged) {
+      shouldAutoScrollRef.current = true;
+    }
+
+    if (shouldAutoScrollRef.current) {
+      container.scrollTop = container.scrollHeight;
     }
   }, [lastMessage?.id, lastMessage?.content, taskId]);
+
+  const handleMessageScroll = () => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    shouldAutoScrollRef.current = isNearScrollBottom(container);
+  };
 
   useEffect(() => {
     if (taskId && selectedTaskId !== taskId) {
@@ -368,90 +514,78 @@ export default function TaskDetailPage() {
     await selectTask(taskId);
   };
 
-  const renderedMessages = useMemo(() => {
-    return messages.map((message) => {
-      const isUser = message.role === 'user';
-      const isAssistant = message.role === 'assistant';
-      const isSystem = message.role === 'system';
-      const isTool = message.role === 'tool';
-      const isStreamingAssistant = isAssistant && Boolean(message.metadata?.streaming);
-
-      if (isSystem) {
-        const isError = message.metadata?.eventType === 'run_failed';
-        if (isError) {
-          return (
-            <div key={message.id} style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '8px',
-              margin: '12px 0',
-              padding: '16px',
-              background: 'linear-gradient(180deg, #fef2f2 0%, #fff1f1 100%)',
-              border: '1px solid #fca5a5',
-              borderRadius: '12px',
-              boxShadow: '0 4px 12px rgba(239, 68, 68, 0.05)',
-              width: '100%',
-              boxSizing: 'border-box'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', fontWeight: 700, fontSize: '13px' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '20px', height: '20px', borderRadius: '50%', background: '#fee2e2', fontSize: '12px' }}>
-                  ❌
-                </span>
-                运行失败
-              </div>
-              <div style={{ fontSize: '12px', color: '#991b1b', lineHeight: 1.6, fontFamily: `Consolas, 'Fira Code', monospace`, background: 'rgba(239, 68, 68, 0.03)', padding: '10px 12px', borderRadius: '6px', border: '1px dashed #fca5a5', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                {message.content}
-              </div>
-            </div>
-          );
-        }
-        return (
-          <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
-            <div style={{ background: '#f1f5f9', color: '#64748b', padding: '6px 16px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, border: '1px solid #e2e8f0' }}>{message.content}</div>
-          </div>
-        );
-      }
-
-      if (isTool) {
-        return <CollapsibleToolMessage key={message.id} message={message} />;
-      }
-
-      return (
-        <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
-          <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
-            {isUser
-              ? '用户'
-              : isAssistant
-                ? (isStreamingAssistant
-                    ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
-                    : String(message.metadata?.expertName ?? 'AnyBuddy'))
-                : '工具调用'}
-          </div>
-          <div
-            style={{
-              maxWidth: '85%',
-              padding: '12px 16px',
-              background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
-              color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
-              border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
-              fontSize: '14px',
-              lineHeight: '1.6',
-              fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit',
-            }}
-          >
-            {isUser || isTool ? (
-              <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                {renderMarkdown(message.content)}
-              </div>
-            )}
-          </div>
-        </div>
-      );
-    });
+const renderedMessages = useMemo(() => {
+    return messages.map(message => (
+      <MessageItem key={message.id} message={message} />
+    ));
   }, [messages]);
+
+/**
+ * 流式消息独立渲染通道。订阅 streamingContentByMessageId / streamingMessageIdsByRun，
+ * 流式 token 到来时只会触发本组件重渲染，TaskDetailPage 顶层不会重跑。
+ */
+const StreamingMessageList = memo(function StreamingMessageList() {
+  // selector 只返回字符串（原始值），避免新数组引用触发无限循环。
+  const streamingDataKey = useAppStore((state) => {
+    const ids = Object.values(state.streamingMessageIdsByRun).flat()
+    let key = String(ids.length)
+    for (const id of ids) {
+      const c = state.streamingContentByMessageId[id]
+      if (c !== undefined) key += `${id}:${c.length};`
+    }
+    return key
+  })
+
+  const streamingEntries = useMemo(() => {
+    const state = useAppStore.getState()
+    const result: Array<{ id: string; runId: string; content: string }> = []
+    for (const runId of Object.keys(state.streamingMessageIdsByRun)) {
+      for (const id of state.streamingMessageIdsByRun[runId] ?? []) {
+        const content = state.streamingContentByMessageId[id]
+        if (content !== undefined) {
+          result.push({ id, runId, content })
+        }
+      }
+    }
+    return result
+  }, [streamingDataKey])
+
+  const streamingLength = useMemo(() => streamingEntries.reduce((sum, e) => sum + e.content.length, 0), [streamingDataKey])
+
+  useEffect(() => {
+    if (streamingEntries.length === 0) return
+    if (typeof window === 'undefined') return
+    const raf = window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current
+      if (container && shouldAutoScrollRef.current) {
+        container.scrollTop = container.scrollHeight
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [streamingDataKey])
+
+  if (streamingEntries.length === 0) return null
+
+  return (
+    <>
+      {streamingEntries.map(entry => (
+        <MessageItem
+          key={entry.id}
+          message={{
+            id: entry.id,
+            taskId: '',
+            runId: entry.runId,
+            role: 'assistant',
+            content: entry.content,
+            metadata: { streaming: true },
+            createdAt: new Date().toISOString(),
+          }}
+          streamingContent={entry.content}
+        />
+      ))}
+    </>
+  )
+})
 
   if (!task) {
     return (
@@ -539,8 +673,9 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        <div ref={scrollContainerRef} style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div ref={scrollContainerRef} data-streaming-scroll onScroll={handleMessageScroll} style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {renderedMessages}
+          <StreamingMessageList />
 
           {isAgentWorking && (
             <div style={{
@@ -586,6 +721,7 @@ export default function TaskDetailPage() {
           <TaskComposer
             workspaces={workspaces}
             draft={drafts[taskId ?? '']}
+            defaultPermissionMode={task.permissionMode}
             hideTitle={true}
             hideWorkspacePicker={true}
             buttonLabel="发送"

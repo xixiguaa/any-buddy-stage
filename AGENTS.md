@@ -1,53 +1,40 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## What This App Is
 
-This is an Electron + React + TypeScript app. Core code lives in `src/`:
+- Electron Forge + Vite desktop app: main process owns runtime, filesystem, SQLite, model/tool calls; renderer owns React UI and Zustand state.
+- Real entrypoints are `src/main/index.ts`, `src/preload/index.ts`, and `src/renderer/main.tsx`; Forge wires them through `forge.config.ts` and `vite.*.config.ts`.
 
-- `src/main/` for Electron main-process bootstrapping, IPC, services, and window creation.
-- `src/preload/` for the bridge exposed to the renderer.
-- `src/renderer/` for React UI, pages, components, layout, stores, and styles.
-- `src/shared/` for shared types, IPC contracts, and utility helpers.
+## Commands
 
-Build output is generated under `.vite/`. Do not edit generated files directly.
+- `npm install` installs dependencies from `package-lock.json`.
+- `npm run dev` / `npm start` launches the Electron app through Electron Forge.
+- `npm run lint` is TypeScript only: `tsc --noEmit`. Do not run it automatically if the user asks to skip local checks.
+- `npm run package` and `npm run make` create distributables; do not run packaging builds unless explicitly requested.
+- Test files exist and `tsconfig.test.json` can compile them to `.tmp-tests`, but `package.json` currently has no test script.
 
-## Build, Test, and Development Commands
+## Cross-Process Changes
 
-Use npm scripts from `package.json`:
+- Renderer code must call main-process capabilities through `window.anybuddy`; do not import Electron or Node APIs in `src/renderer/`.
+- For new or changed IPC, update all four places together: `src/shared/ipc.ts`, `src/preload/bridge.ts`, `src/main/ipc/register-ipc-handlers.ts`, and `src/renderer/api/clients.ts`.
+- Shared payload and domain types live in `src/shared/types.ts`; keep IPC contracts explicit there before wiring UI or services.
 
-- `npm install` installs dependencies.
-- `npm run dev` starts the Electron app in development mode.
-- `npm start` is the same development entry point as `dev`.
-- `npm run package` creates a distributable app bundle.
-- `npm run make` builds platform-specific installers.
-- `npm run lint` runs TypeScript checking via `tsc --noEmit`.
+## Runtime And Persistence Gotchas
 
-## Coding Style & Naming Conventions
+- SQLite persistence is in `src/main/repositories/app-state-repository.ts`; `save(state)` rewrites all tables inside one transaction. Avoid calling persistent mutations for high-frequency stream chunks.
+- Agent runtime is coordinated by `src/main/services/agent-runtime-service.ts`; DeepAgents execution is in `src/main/services/deepagent-executor.ts`; project tools are registered in `src/main/services/tool-registry-service.ts`.
+- Streaming assistant output should stay transient until a run completes; final assistant messages are persisted via `completeRuntimeRun` in `AppService`.
+- Runtime patches reach the renderer through `agent-run:task-changed:<taskId>` and are merged in `src/renderer/stores/app-store.ts`; avoid rebuilding `messages` for every streaming token.
+- Skills are global user folders under `~/.anybuddy/skills/<skillId>/SKILL.md`; DeepAgents mirrors selected skills into the current backend's `.system-skill-cache` before execution.
 
-The project uses TypeScript and React with ES modules. Follow the existing style:
+## Local Data And Config
 
-- Use 2-space indentation and semicolons, matching the current codebase.
-- Name React components and files in `PascalCase` for components, `camelCase` for helpers, and `kebab-case` for non-component assets when needed.
-- Keep main-process, preload, and renderer code separated by directory.
-- Prefer explicit types in shared contracts and IPC payloads.
+- Main state is stored in `anybuddy.db` under Electron `app.getPath('userData')`, not in the repo.
+- Model and MCP config are mirrored through files under `~/.anybuddy` via `AppService`; access them through main-process service APIs.
+- Generated build output under `.vite/` and `dist/renderer/` should not be edited directly.
 
-## Testing Guidelines
+## UI Notes
 
-<!-- No automated test runner is configured yet. Before submitting changes, run `npm run lint` and manually verify the affected flow in the Electron app. If you add tests, place them near the code they cover and use a clear naming pattern such as `*.test.ts` or `*.test.tsx`. -->
-
-## Commit & Pull Request Guidelines
-
-Recent commits use short conventional-style prefixes such as `feat:` followed by a brief description. Keep commits focused and written in the imperative mood.
-
-Pull requests should include:
-
-- A short summary of the change and why it was made.
-- Notes on verification, especially manual checks for UI or IPC changes.
-- Screenshots or screen recordings for visible renderer updates.
-- Links to related issues when applicable.
-
-## Agent-Specific Instructions
-
-Check for an existing `AGENTS.md` before creating or editing contributor guidance. Keep edits scoped to the requested task and avoid touching generated output or unrelated files.
-
-暂时不需要打包构建，我先本地查看有没有错误
+- The renderer uses React 19, Ant Design, lucide icons, and Zustand.
+- Task conversation UI is centered in `src/renderer/pages/TaskDetailPage.tsx`; runtime message shaping lives in `src/renderer/stores/runtime-message-view.ts`.
+- Preserve the existing auto-scroll behavior: follow new output only when the user is already near the bottom or after switching tasks.

@@ -33,6 +33,11 @@ type AppStoreState = {
   taskDetail?: Task | null
   taskWorkspaces: TaskWorkspaceContext[]
   messages: Message[]
+  // 流式 assistant 输出的实时内容，单独存放避免 messages 引用频繁变化。
+  // key: event.id（agent_message event id，前端生成 event-${id} 作 message key）
+  streamingContentByMessageId: Record<string, string>
+  // 流式消息按 run 排序的 id 列表（用于在 UI 上保持出现顺序）。
+  streamingMessageIdsByRun: Record<string, string[]>
   drafts: Record<string, TaskDraft>
   workspaces: WorkspaceSummary[]
   settings: AppSettings | null
@@ -82,12 +87,12 @@ type AppStoreState = {
 
 let bootstrapSubscription: (() => void) | null = null
 let selectedTaskSubscription: (() => void) | null = null
-let selectedTaskPatchTimer: ReturnType<typeof window.setTimeout> | null = null
+let selectedTaskPatchRaf: number | null = null
 let selectedTaskPatchQueue: TaskRuntimePayload[] = []
 let selectedTaskPatchTaskId: string | null = null
 const RECENT_EXPERTS_STORAGE_KEY = 'anybuddy.recentExperts'
 const RECENT_EXPERTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000
-const TASK_RUNTIME_PATCH_FLUSH_MS = 50
+const STREAM_BATCH_FALLBACK_MS = 80
 
 function parseRecentExpertsFromStorage(): ExpertPreset[] {
   if (typeof window === 'undefined') {
@@ -138,10 +143,63 @@ function upsertById<T extends { id: string }>(items: T[], nextItem: T) {
   return [...items.filter(item => item.id !== nextItem.id), nextItem]
 }
 
+function isStreamingAgentMessageEvent(event: AgentEvent) {
+  return event.type === 'agent_message' && event.payload?.streaming === true
+}
+
+function removeStreamingRun(
+  streamingContent: Record<string, string>,
+  streamingIdsByRun: Record<string, string[]>,
+  runId: string,
+) {
+  const ids = streamingIdsByRun[runId] ?? []
+  let nextStreamingContent = streamingContent
+  if (ids.length > 0) {
+    nextStreamingContent = { ...streamingContent }
+    for (const id of ids) {
+      delete nextStreamingContent[id]
+    }
+  }
+
+  const { [runId]: _omit, ...nextStreamingIdsByRun } = streamingIdsByRun
+  return { nextStreamingContent, nextStreamingIdsByRun }
+}
+
+/**
+ * 单条更新 task summary：run 状态变化时使用，不触发 IPC、不拉全量。
+ * AgentRunStatus 与 TaskStatus 字面量完全重叠，可直接 cast。
+ */
+function mergeTaskSummary(tasks: TaskSummary[], taskId: string, run: AgentRun): TaskSummary[] {
+  const idx = tasks.findIndex(t => t.id === taskId)
+  if (idx === -1) return tasks
+  const old = tasks[idx]
+  return [
+    ...tasks.slice(0, idx),
+    {
+      ...old,
+      status: run.status as TaskSummary['status'],
+      updatedAt: run.updatedAt,
+    },
+    ...tasks.slice(idx + 1),
+  ]
+}
+
 function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: TaskRuntimePayload) {
   if (payload.kind === 'snapshot') {
     const messages = buildVisibleMessages(payload.messages, payload.events)
     const activeRun = payload.runs.find(run => run.id === state.taskDetail?.lastRunId) ?? payload.runs[0]
+    // snapshot 通常是初始全量，从持久化消息恢复 streaming 临时态。
+    const streamingContentByMessageId: Record<string, string> = {}
+    const streamingMessageIdsByRun: Record<string, string[]> = {}
+    for (const message of payload.messages) {
+      if (message.role === 'assistant' && message.metadata?.streaming && message.runId) {
+        streamingContentByMessageId[message.id] = message.content
+        const existingIds = streamingMessageIdsByRun[message.runId] ?? []
+        if (!existingIds.includes(message.id)) {
+          streamingMessageIdsByRun[message.runId] = [...existingIds, message.id]
+        }
+      }
+    }
     return {
       agentRuns: [
         ...state.agentRuns.filter(run => run.taskId !== taskId),
@@ -150,6 +208,20 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
       taskEvents: payload.events,
       taskApprovals: payload.approvals,
       messages,
+      // snapshot 重置 tasks：保留状态中已有项，更新当前 task 摘要
+      tasks: state.tasks.some(t => t.id === taskId)
+        ? state.tasks.map(t => {
+            const matched = activeRun && t.id === taskId
+            if (!matched) return t
+            return {
+              ...t,
+              status: activeRun!.status as TaskSummary['status'],
+              updatedAt: activeRun!.updatedAt,
+            }
+          })
+        : state.tasks,
+      streamingContentByMessageId,
+      streamingMessageIdsByRun,
       taskDetail: state.taskDetail && state.taskDetail.id === taskId
         ? {
             ...state.taskDetail,
@@ -168,7 +240,7 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
       ]
     : state.agentRuns
 
-  const nextEvents = payload.event
+  const nextEvents = payload.event && !isStreamingAgentMessageEvent(payload.event)
     ? upsertById(state.taskEvents, payload.event)
     : state.taskEvents
 
@@ -176,11 +248,48 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     ? upsertById(state.taskApprovals, payload.approval)
     : state.taskApprovals
 
-  const persistedMessages = payload.message
-    ? upsertById(state.messages.filter(message => !message.metadata?.synthetic), payload.message)
-    : state.messages.filter(message => !message.metadata?.synthetic)
+  let persistedMessages = state.messages.filter(message => !message.metadata?.synthetic)
+  let nextStreamingContent = state.streamingContentByMessageId
+  let nextStreamingIdsByRun = state.streamingMessageIdsByRun
 
-  const nextMessages = buildVisibleMessages(persistedMessages, nextEvents)
+  if (payload.event && isStreamingAgentMessageEvent(payload.event)) {
+    const streamingContent = payload.event.payload?.content
+    if (typeof streamingContent === 'string' && streamingContent.length > 0) {
+      const eventId = payload.event.id
+      if (nextStreamingContent[eventId] !== streamingContent) {
+        nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+      }
+      const runId = payload.event.runId
+      if (runId) {
+        const existingIds = nextStreamingIdsByRun[runId] ?? []
+        if (!existingIds.includes(eventId)) {
+          nextStreamingIdsByRun = {
+            ...nextStreamingIdsByRun,
+            [runId]: [...existingIds, eventId],
+          }
+        }
+      }
+    }
+  }
+
+  if (payload.message) {
+    persistedMessages = upsertById(persistedMessages, payload.message)
+    const completedId = payload.message.id
+    if (nextStreamingContent[completedId] !== undefined) {
+      const { [completedId]: _omit, ...rest } = nextStreamingContent
+      nextStreamingContent = rest
+    }
+    const completedRunId = payload.message.runId
+    if (completedRunId && nextStreamingIdsByRun[completedRunId]) {
+      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
+      nextStreamingContent = cleared.nextStreamingContent
+      nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+    }
+  }
+
+  const nextMessages = payload.message || (payload.event && !isStreamingAgentMessageEvent(payload.event))
+    ? buildVisibleMessages(persistedMessages, nextEvents)
+    : state.messages
   const taskRuns = nextRuns.filter(run => run.taskId === taskId)
   const activeRun = taskRuns.find(run => run.id === state.taskDetail?.lastRunId) ?? taskRuns[0]
 
@@ -189,6 +298,9 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     taskEvents: nextEvents,
     taskApprovals: nextApprovals,
     messages: nextMessages,
+    tasks: payload.run ? mergeTaskSummary(state.tasks, taskId, payload.run) : state.tasks,
+    streamingContentByMessageId: nextStreamingContent,
+    streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail: state.taskDetail && state.taskDetail.id === taskId
       ? {
           ...state.taskDetail,
@@ -205,7 +317,12 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
   let nextEvents = state.taskEvents
   let nextApprovals = state.taskApprovals
   let persistedMessages = state.messages.filter(message => !message.metadata?.synthetic)
+  let nextStreamingContent = state.streamingContentByMessageId
+  let nextStreamingIdsByRun = state.streamingMessageIdsByRun
   let taskDetail = state.taskDetail
+  let hasRunPatch = false
+  let latestRunPatch: AgentRun | null = null
+  let hasVisibleMessageChange = false
 
   for (const payload of payloads) {
     if (payload.kind === 'snapshot') {
@@ -213,6 +330,8 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     }
 
     if (payload.run) {
+      hasRunPatch = true
+      latestRunPatch = payload.run
       nextRuns = [
         ...nextRuns.filter(run => !(run.taskId === taskId && run.id === payload.run?.id)),
         payload.run,
@@ -220,7 +339,29 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     }
 
     if (payload.event) {
-      nextEvents = upsertById(nextEvents, payload.event)
+      if (!isStreamingAgentMessageEvent(payload.event)) {
+        nextEvents = upsertById(nextEvents, payload.event)
+        hasVisibleMessageChange = true
+      }
+      if (isStreamingAgentMessageEvent(payload.event)) {
+        const streamingContent = payload.event.payload?.content
+        if (typeof streamingContent === 'string' && streamingContent.length > 0) {
+          const eventId = payload.event.id
+          if (nextStreamingContent[eventId] !== streamingContent) {
+            nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+          }
+          const runId = payload.event.runId
+          if (runId) {
+            const existingIds = nextStreamingIdsByRun[runId] ?? []
+            if (!existingIds.includes(eventId)) {
+              nextStreamingIdsByRun = {
+                ...nextStreamingIdsByRun,
+                [runId]: [...existingIds, eventId],
+              }
+            }
+          }
+        }
+      }
     }
 
     if (payload.approval) {
@@ -229,24 +370,22 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
 
     if (payload.message) {
       persistedMessages = upsertById(persistedMessages, payload.message)
+      hasVisibleMessageChange = true
+      const completedId = payload.message.id
+      if (nextStreamingContent[completedId] !== undefined) {
+        const { [completedId]: _omit, ...rest } = nextStreamingContent
+        nextStreamingContent = rest
+      }
+      const completedRunId = payload.message.runId
+      if (completedRunId && nextStreamingIdsByRun[completedRunId]) {
+        const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
+        nextStreamingContent = cleared.nextStreamingContent
+        nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+      }
     }
   }
 
-  const lastStreamingEvent = [...nextEvents].reverse().find(event => event.type === 'agent_message')
-  if (lastStreamingEvent) {
-    const content = typeof lastStreamingEvent.payload.content === 'string'
-      ? lastStreamingEvent.payload.content
-      : ''
-    console.debug('[StreamDebug] batched flush', {
-      eventsInBatch: payloads.filter(p => p.kind === 'patch' && p.event?.type === 'agent_message').length,
-      eventId: lastStreamingEvent.id,
-      length: content.length,
-      preview: content.slice(0, 60),
-      tail: content.slice(-60),
-    })
-  }
-
-  const nextMessages = buildVisibleMessages(persistedMessages, nextEvents)
+  const nextMessages = hasVisibleMessageChange ? buildVisibleMessages(persistedMessages, nextEvents) : state.messages
   const taskRuns = nextRuns.filter(run => run.taskId === taskId)
   const activeRun = taskRuns.find(run => run.id === taskDetail?.lastRunId) ?? taskRuns[0]
 
@@ -264,6 +403,9 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     taskEvents: nextEvents,
     taskApprovals: nextApprovals,
     messages: nextMessages,
+    tasks: hasRunPatch && latestRunPatch ? mergeTaskSummary(state.tasks, taskId, latestRunPatch) : state.tasks,
+    streamingContentByMessageId: nextStreamingContent,
+    streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail,
   }
 }
@@ -271,9 +413,13 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
 function clearTaskRuntimePatchQueue() {
   selectedTaskPatchQueue = []
   selectedTaskPatchTaskId = null
-  if (selectedTaskPatchTimer) {
-    window.clearTimeout(selectedTaskPatchTimer)
-    selectedTaskPatchTimer = null
+  if (selectedTaskPatchRaf !== null) {
+    if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(selectedTaskPatchRaf)
+    } else {
+      window.clearTimeout(selectedTaskPatchRaf)
+    }
+    selectedTaskPatchRaf = null
   }
 }
 
@@ -286,21 +432,27 @@ function enqueueTaskRuntimePayload(taskId: string, payload: TaskRuntimePayload, 
 
   selectedTaskPatchTaskId = taskId
   selectedTaskPatchQueue.push(payload)
-  if (selectedTaskPatchTimer) {
+  if (selectedTaskPatchRaf !== null) {
     return
   }
 
-  selectedTaskPatchTimer = window.setTimeout(() => {
+  // 用 requestAnimationFrame 把 patch flush 对齐到下一帧（~16ms）。
+  // 浏览器/标签页隐藏时 rAF 不触发，所以保留 setTimeout 兜底。
+  const schedule = (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function')
+    ? window.requestAnimationFrame.bind(window)
+    : (cb: FrameRequestCallback) => window.setTimeout(() => cb(performance.now()), STREAM_BATCH_FALLBACK_MS)
+
+  selectedTaskPatchRaf = schedule(() => {
     const queuedTaskId = selectedTaskPatchTaskId
     const queuedPayloads = selectedTaskPatchQueue
     selectedTaskPatchQueue = []
     selectedTaskPatchTaskId = null
-    selectedTaskPatchTimer = null
+    selectedTaskPatchRaf = null
 
     if (queuedTaskId && queuedPayloads.length > 0) {
       apply(queuedTaskId, queuedPayloads)
     }
-  }, TASK_RUNTIME_PATCH_FLUSH_MS)
+  })
 }
 
 export const useAppStore = create<AppStoreState>((set, get) => ({
@@ -308,6 +460,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   tasks: [],
   taskWorkspaces: [],
   messages: [],
+  streamingContentByMessageId: {},
+  streamingMessageIdsByRun: {},
   drafts: {},
   workspaces: [],
   settings: null,
@@ -441,8 +595,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         taskDetail: state.taskDetail && state.taskDetail.id === taskId
           ? { ...state.taskDetail, unreadEventCount: 0 }
           : state.taskDetail,
+        // 单条更新 task summary：unreadEventCount 清零
+        tasks: state.tasks.map(t => t.id === taskId ? { ...t, unreadEventCount: 0 } : t),
       }))
-      await get().refreshTaskIndex()
     }
   },
   async reloadTask(taskId: string) {
@@ -467,7 +622,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         throw new Error(runResult.error.message)
       }
     }
-    await get().refreshTaskIndex()
     return task
   },
   async createWorkspace(input: CreateWorkspaceInput) {
@@ -573,7 +727,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       throw new Error(result.error.message)
     }
     await get().reloadTask(taskId)
-    await get().refreshTaskIndex()
   },
   async pauseRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -581,7 +734,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!result.ok) {
       throw new Error(result.error.message)
     }
-    await get().refreshTaskIndex()
   },
   async resumeRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -589,7 +741,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!result.ok) {
       throw new Error(result.error.message)
     }
-    await get().refreshTaskIndex()
   },
   async cancelRun(runId: string) {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -597,7 +748,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!result.ok) {
       throw new Error(result.error.message)
     }
-    await get().refreshTaskIndex()
   },
   async approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>) {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -608,7 +758,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (get().selectedTaskId) {
       await get().reloadTask(get().selectedTaskId!)
     }
-    await get().refreshTaskIndex()
   },
   async resumeInterruptedRun(interruptId: string, action: 'resume' | 'cancel' | 'resume_with_edits', editedArgs?: Record<string, unknown>) {
     const decision = action === 'cancel'

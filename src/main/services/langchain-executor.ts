@@ -20,14 +20,12 @@ export class LangChainExecutor implements AgentExecutor {
   }
 
   async execute({ context, systemPrompt, activeExpert, tools, toolExecutionContext, assistantMetadata }: ExecuteAgentParams): Promise<boolean> {
-    console.log('[Runtime] tryExecuteWithLangChain entered');
     const resolvedModel = this.dependencies.modelService.resolveModelConfig(
       this.appService.listModelConfigs(),
       context.task.modelId,
     );
 
     if (!resolvedModel?.apiKey) {
-      console.log('[Runtime] no resolved model apiKey, falling back to legacy planner');
       return false;
     }
 
@@ -56,7 +54,6 @@ export class LangChainExecutor implements AgentExecutor {
         role: message.role,
         content: message.content,
       }));
-      console.log('[Runtime] invoking stream with messages count:', runtimeMessages.length);
       const stream = await runtimeAgent.stream({
         messages: runtimeMessages,
       }, {
@@ -70,8 +67,6 @@ export class LangChainExecutor implements AgentExecutor {
       };
       let turnIndex = 0;
       for await (const chunk of stream) {
-        console.log('[Runtime] stream chunk received:', JSON.stringify(chunk).slice(0, 300));
-
         const assistantMsgs = chunk.messages.filter((m: any) => m.role === 'assistant');
         for (const msg of assistantMsgs) {
           if (!msg.content) continue;
@@ -97,7 +92,6 @@ export class LangChainExecutor implements AgentExecutor {
         finalMessage = accumulatedMessagesMap.get(keys[keys.length - 1]);
       }
 
-      console.log('[Runtime] finalMessage:', finalMessage);
       if (finalMessage) {
         await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
           status: 'running',
@@ -112,7 +106,6 @@ export class LangChainExecutor implements AgentExecutor {
       );
       return true;
     } catch (error) {
-      console.error('[Runtime] tryExecuteWithLangChain error:', error);
       if (error instanceof AgentApprovalPendingError) {
         return true;
       }
