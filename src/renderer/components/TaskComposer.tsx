@@ -107,6 +107,7 @@ export default function TaskComposer({
   onCreate,
   onSend,
   defaultWorkspaceId,
+  defaultMode = 'plan',
   defaultPermissionMode,
   draft,
   onDraftChange,
@@ -128,6 +129,7 @@ export default function TaskComposer({
     activeExpertId?: string
   }) => Promise<void>
   defaultWorkspaceId?: string
+  defaultMode?: CreateTaskInput['mode']
   defaultPermissionMode?: CreateTaskInput['permissionMode']
   draft?: TaskDraft
   onDraftChange?: (draft: Omit<TaskDraft, 'taskId' | 'updatedAt'>) => Promise<void> | void
@@ -151,7 +153,7 @@ export default function TaskComposer({
   )
   const [title, setTitle] = useState('未命名任务')
   const [message, setMessage] = useState(draft?.content ?? '')
-  const [mode, setMode] = useState<CreateTaskInput['mode']>('plan')
+  const [mode, setMode] = useState<CreateTaskInput['mode']>(defaultMode)
   const [modelId, setModelId] = useState(defaultModelId)
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? workspaceOptions[0]?.id ?? '')
   const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
@@ -265,6 +267,10 @@ export default function TaskComposer({
   useEffect(() => {
     setPermissionMode(normalizePermissionMode(defaultPermissionMode))
   }, [defaultPermissionMode])
+
+  useEffect(() => {
+    setMode(defaultMode)
+  }, [defaultMode])
 
   useEffect(() => {
     const hasCurrent = customModels.some(model => model.id === modelId)

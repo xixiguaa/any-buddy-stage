@@ -231,7 +231,7 @@ export class LangChainAgentService {
         name: toolDefinition.name,
         description,
         // 当前阶段先允许透传任意对象参数，后面再逐步收紧到每个工具自己的 schema。
-        schema: z.object({}).passthrough(),
+        schema: toolDefinition.inputSchema ?? z.object({}).passthrough(),
       },
     );
   }

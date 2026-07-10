@@ -6,6 +6,7 @@ import type {
   Task,
   TaskWorkspaceContext,
 } from '../../shared/types.js'
+import type { ZodTypeAny } from 'zod'
 
 export type RuntimeContext = {
   task: Task
@@ -38,6 +39,8 @@ export type AllowedShellCommand = {
 export type ToolDefinition = {
   name: AgentToolName
   description: string
+  connectorId?: string
+  inputSchema?: ZodTypeAny
   requiresApproval: boolean
   execute(context: ToolExecutionContext, args: Record<string, unknown>): Promise<ToolExecutionResult>
 }

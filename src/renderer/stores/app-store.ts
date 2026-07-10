@@ -147,6 +147,22 @@ function isStreamingAgentMessageEvent(event: AgentEvent) {
   return event.type === 'agent_message' && event.payload?.streaming === true
 }
 
+function isPersistedFinalAssistantMessage(message: Message, runId?: string) {
+  return (
+    message.role === 'assistant' &&
+    message.runId === runId &&
+    !message.metadata?.synthetic &&
+    message.metadata?.source !== 'runtime_tool_progress'
+  )
+}
+
+function hasPersistedFinalAssistantForRun(messages: Message[], runId?: string) {
+  if (!runId) {
+    return false
+  }
+  return messages.some(message => isPersistedFinalAssistantMessage(message, runId))
+}
+
 function removeStreamingRun(
   streamingContent: Record<string, string>,
   streamingIdsByRun: Record<string, string[]>,
@@ -253,19 +269,25 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
   let nextStreamingIdsByRun = state.streamingMessageIdsByRun
 
   if (payload.event && isStreamingAgentMessageEvent(payload.event)) {
-    const streamingContent = payload.event.payload?.content
-    if (typeof streamingContent === 'string' && streamingContent.length > 0) {
-      const eventId = payload.event.id
-      if (nextStreamingContent[eventId] !== streamingContent) {
-        nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
-      }
-      const runId = payload.event.runId
-      if (runId) {
-        const existingIds = nextStreamingIdsByRun[runId] ?? []
-        if (!existingIds.includes(eventId)) {
-          nextStreamingIdsByRun = {
-            ...nextStreamingIdsByRun,
-            [runId]: [...existingIds, eventId],
+    const runId = payload.event.runId
+    if (runId && hasPersistedFinalAssistantForRun(persistedMessages, runId)) {
+      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
+      nextStreamingContent = cleared.nextStreamingContent
+      nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+    } else {
+      const streamingContent = payload.event.payload?.content
+      if (typeof streamingContent === 'string' && streamingContent.length > 0) {
+        const eventId = payload.event.id
+        if (nextStreamingContent[eventId] !== streamingContent) {
+          nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+        }
+        if (runId) {
+          const existingIds = nextStreamingIdsByRun[runId] ?? []
+          if (!existingIds.includes(eventId)) {
+            nextStreamingIdsByRun = {
+              ...nextStreamingIdsByRun,
+              [runId]: [...existingIds, eventId],
+            }
           }
         }
       }
@@ -344,19 +366,25 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
         hasVisibleMessageChange = true
       }
       if (isStreamingAgentMessageEvent(payload.event)) {
-        const streamingContent = payload.event.payload?.content
-        if (typeof streamingContent === 'string' && streamingContent.length > 0) {
-          const eventId = payload.event.id
-          if (nextStreamingContent[eventId] !== streamingContent) {
-            nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
-          }
-          const runId = payload.event.runId
-          if (runId) {
-            const existingIds = nextStreamingIdsByRun[runId] ?? []
-            if (!existingIds.includes(eventId)) {
-              nextStreamingIdsByRun = {
-                ...nextStreamingIdsByRun,
-                [runId]: [...existingIds, eventId],
+        const runId = payload.event.runId
+        if (runId && hasPersistedFinalAssistantForRun(persistedMessages, runId)) {
+          const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
+          nextStreamingContent = cleared.nextStreamingContent
+          nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+        } else {
+          const streamingContent = payload.event.payload?.content
+          if (typeof streamingContent === 'string' && streamingContent.length > 0) {
+            const eventId = payload.event.id
+            if (nextStreamingContent[eventId] !== streamingContent) {
+              nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+            }
+            if (runId) {
+              const existingIds = nextStreamingIdsByRun[runId] ?? []
+              if (!existingIds.includes(eventId)) {
+                nextStreamingIdsByRun = {
+                  ...nextStreamingIdsByRun,
+                  [runId]: [...existingIds, eventId],
+                }
               }
             }
           }

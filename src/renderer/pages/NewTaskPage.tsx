@@ -50,6 +50,7 @@ export default function NewTaskPage() {
           workspaces={workspaces}
           draft={drafts[NEW_TASK_DRAFT_ID]}
           defaultWorkspaceId={defaultWorkspaceId}
+          defaultMode="plan"
           onDraftChange={draft => saveDraft(NEW_TASK_DRAFT_ID, draft)}
           onClearDraft={() => clearDraft(NEW_TASK_DRAFT_ID)}
           onPickWorkspace={() => createWorkspaceFromFolderPicker()}

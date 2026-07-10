@@ -406,9 +406,11 @@ export class AppService {
       if (!task) {
         throw new Error(`Task not found: ${taskId}`)
       }
-      const nextInput = {
-        ...input,
-        modelId: input.modelId ? this.resolveTaskModelId(input.modelId) : input.modelId,
+      const nextInput: UpdateTaskInput = { ...input }
+      if ('modelId' in input) {
+        nextInput.modelId = this.resolveTaskModelId(input.modelId)
+      } else {
+        delete nextInput.modelId
       }
       Object.assign(task, nextInput, { updatedAt: nowIso() })
       if (input.permissionMode) {
@@ -965,6 +967,107 @@ export class AppService {
     }
   }
 
+  async completeRuntimeRunWithPlanApproval(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
+    let taskId = ''
+    let waitingRun: AgentRun | null = null
+    let runStatusEvent: AgentEvent | null = null
+    let runCompletedEvent: AgentEvent | null = null
+    let assistantMessage: Message | null = null
+    let approval: HumanApproval | null = null
+    let approvalRequestedEvent: AgentEvent | null = null
+
+    await this.mutate(state => {
+      const run = state.agentRuns.find(item => item.id === runId)
+      if (!run) {
+        throw new Error(`Agent run not found: ${runId}`)
+      }
+
+      taskId = run.taskId
+      run.status = 'waiting_approval'
+      run.currentNode = 'plan_approval'
+      run.updatedAt = nowIso()
+
+      const task = state.tasks.find(item => item.id === run.taskId)
+      if (task && task.lastRunId === run.id) {
+        task.status = 'waiting_approval'
+        task.updatedAt = run.updatedAt
+      }
+
+      runStatusEvent = this.createAgentEvent(run, 'run_status', {
+        status: 'waiting_approval',
+        currentNode: run.currentNode,
+      })
+      state.agentEvents.push(runStatusEvent)
+
+      runCompletedEvent = this.createAgentEvent(run, 'run_completed', {
+        status: 'waiting_approval',
+        awaiting: 'plan_confirmation',
+      })
+      state.agentEvents.push(runCompletedEvent)
+
+      assistantMessage = {
+        id: createId('message'),
+        taskId: run.taskId,
+        runId,
+        role: 'assistant',
+        content,
+        metadata: {
+          ...metadata,
+          planApprovalPending: true,
+        },
+        createdAt: nowIso(),
+      }
+      state.messages.push(assistantMessage)
+
+      approval = {
+        id: createId('approval'),
+        taskId: run.taskId,
+        runId: run.id,
+        toolCallId: createId('planApproval'),
+        reason: '请确认是否按当前方案继续执行。',
+        originalArgs: {
+          approvalType: 'plan_confirmation',
+          nextMode: 'craft',
+          plan: content,
+        },
+        decision: 'pending',
+        createdAt: nowIso(),
+      }
+      state.approvals.push(approval)
+
+      approvalRequestedEvent = this.createAgentEvent(run, 'approval_requested', {
+        approvalId: approval.id,
+        reason: approval.reason,
+        originalArgs: approval.originalArgs,
+      })
+      state.agentEvents.push(approvalRequestedEvent)
+
+      waitingRun = { ...run }
+    })
+
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (taskId) {
+      if (waitingRun) {
+        this.emitTaskRuntimePatch(taskId, { run: waitingRun })
+      }
+      if (runStatusEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: runStatusEvent })
+      }
+      if (runCompletedEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
+      }
+      if (assistantMessage) {
+        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
+      }
+      if (approval) {
+        this.emitTaskRuntimePatch(taskId, { approval })
+      }
+      if (approvalRequestedEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: approvalRequestedEvent })
+      }
+    }
+  }
+
   /**
    * 更新或追加运行时流式消息事件，供前端实时显示打字机效果。
    */
@@ -1160,16 +1263,25 @@ export class AppService {
         throw new Error(`Agent run not found: ${approval.runId}`)
       }
 
-      run.status = decision === 'rejected' ? 'failed' : 'running'
+      const isPlanConfirmation = approval.originalArgs?.approvalType === 'plan_confirmation'
+      run.status = isPlanConfirmation
+        ? (decision === 'rejected' ? 'cancelled' : 'completed')
+        : decision === 'rejected'
+          ? 'failed'
+          : 'running'
       run.currentNode = decision === 'rejected' ? 'approval_rejected' : 'approval_resolved'
       run.updatedAt = nowIso()
-      if (decision === 'rejected') {
+      if (decision === 'rejected' || isPlanConfirmation) {
         run.completedAt = run.updatedAt
       }
 
       const task = state.tasks.find(item => item.id === approval.taskId)
       if (task) {
-        task.status = decision === 'rejected' ? 'failed' : 'running'
+        task.status = isPlanConfirmation
+          ? (decision === 'rejected' ? 'cancelled' : 'completed')
+          : decision === 'rejected'
+            ? 'failed'
+            : 'running'
         task.updatedAt = run.updatedAt
       }
 
@@ -1194,6 +1306,12 @@ export class AppService {
             ? `已按修改后的参数恢复执行，目标工作区：[${workspaceName}]。`
             : `已按原参数恢复执行，目标工作区：[${workspaceName}]。`,
         createdAt: nowIso(),
+      }
+      if (isPlanConfirmation) {
+        resolvedMessage.content = decision === 'rejected'
+          ? '已取消按该方案继续执行。'
+          : '方案已确认，接下来将进入 Craft 执行模式。'
+        resolvedMessage.metadata = { planApprovalResolved: true, decision }
       }
       state.messages.push(resolvedMessage)
       resolvedRun = { ...run }

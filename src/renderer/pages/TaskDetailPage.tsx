@@ -32,6 +32,25 @@ function formatTimestamp(value?: string) {
     return value;
   }
 }
+
+function isPlanApproval(approval: { originalArgs?: Record<string, unknown> }) {
+  return approval.originalArgs?.approvalType === 'plan_confirmation';
+}
+
+function getPlanApprovalText(approval: { originalArgs?: Record<string, unknown> }) {
+  const plan = approval.originalArgs?.plan;
+  return typeof plan === 'string' ? plan : '';
+}
+
+function isPersistedFinalAssistantMessage(message: Message, runId?: string) {
+  return (
+    message.role === 'assistant' &&
+    message.runId === runId &&
+    !message.metadata?.synthetic &&
+    message.metadata?.source !== 'runtime_tool_progress'
+  );
+}
+
 function parseInlineMarkdown(text: string): React.ReactNode[] {
   const regex = /(\*\*.*?\*\*|`.*?`)/g;
   const splitParts = text.split(regex);
@@ -374,6 +393,7 @@ export default function TaskDetailPage() {
 
   const [editApprovalId, setEditApprovalId] = useState<string | null>(null);
   const [editedArgsText, setEditedArgsText] = useState('');
+  const [closedPlanApprovalId, setClosedPlanApprovalId] = useState<string | null>(null);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
@@ -423,7 +443,17 @@ export default function TaskDetailPage() {
 
   const attachedWorkspaces = useMemo(() => taskWorkspaces.filter((workspace) => workspace.role === 'attached'), [taskWorkspaces]);
 
-  const pendingInterrupts = useMemo(() => taskApprovals.filter((appr) => appr.decision === 'pending'), [taskApprovals]);
+  const pendingPlanApprovals = useMemo(
+    () => taskApprovals.filter((appr) => appr.decision === 'pending' && isPlanApproval(appr)),
+    [taskApprovals],
+  );
+  const activePlanApproval = pendingPlanApprovals[0];
+  const isPlanApprovalModalOpen = Boolean(activePlanApproval && closedPlanApprovalId !== activePlanApproval.id);
+  const pendingInterrupts = useMemo(
+    () => taskApprovals.filter((appr) => appr.decision === 'pending' && !isPlanApproval(appr)),
+    [taskApprovals],
+  );
+  const pendingApprovalCount = pendingPlanApprovals.length + pendingInterrupts.length;
 
   const isAgentWorking = useMemo(() => {
     return currentRun && ['queued', 'running', 'planning'].includes(currentRun.status);
@@ -514,6 +544,67 @@ export default function TaskDetailPage() {
     await selectTask(taskId);
   };
 
+  const handleApprovePlan = async (approvalId: string) => {
+    if (!taskId) return;
+    const clients = createAnybuddyClients(window.anybuddy);
+    const approval = taskApprovals.find(item => item.id === approvalId);
+    const approvedPlan = approval ? getPlanApprovalText(approval) : '';
+    const approvalResult = await clients.agentRun.approve(approvalId, 'approved');
+    if (!approvalResult.ok) {
+      throw new Error(approvalResult.error.message);
+    }
+    const updateResult = await clients.task.update(taskId, { mode: 'craft' });
+    if (!updateResult.ok) {
+      throw new Error(updateResult.error.message);
+    }
+    const messageResult = await clients.message.create(taskId, {
+      role: 'user',
+      content: approvedPlan
+        ? `我已确认以下执行方案。请严格按照该方案继续执行，不要重新规划。\n\n${approvedPlan}`
+        : '我已确认执行方案。请切换到 Craft 模式继续执行。',
+      metadata: {
+        eventType: 'plan_approved',
+        approvalId,
+      },
+    });
+    if (!messageResult.ok) {
+      throw new Error(messageResult.error.message);
+    }
+    const runResult = await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' });
+    if (!runResult.ok) {
+      throw new Error(runResult.error.message);
+    }
+    await selectTask(taskId);
+  };
+
+  const handleRejectPlan = async (approvalId: string) => {
+    await resumeInterruptedRun(approvalId, 'cancel');
+  };
+
+  const handleApprovePlanWithFeedback = async (approvalId: string) => {
+    try {
+      await handleApprovePlan(approvalId);
+      setClosedPlanApprovalId(null);
+    } catch (error) {
+      Modal.error({
+        title: '执行方案失败',
+        content: error instanceof Error ? error.message : '确认方案后启动执行失败，请查看运行日志。',
+      });
+    }
+  };
+
+  const handleRejectPlanWithFeedback = async (approvalId: string) => {
+    try {
+      await handleRejectPlan(approvalId);
+      setClosedPlanApprovalId(null);
+    } catch (error) {
+      Modal.error({
+        title: '取消方案失败',
+        content: error instanceof Error ? error.message : '取消方案失败，请查看运行日志。',
+      });
+    }
+  };
+
 const renderedMessages = useMemo(() => {
     return messages.map(message => (
       <MessageItem key={message.id} message={message} />
@@ -538,8 +629,17 @@ const StreamingMessageList = memo(function StreamingMessageList() {
 
   const streamingEntries = useMemo(() => {
     const state = useAppStore.getState()
+    const completedRuns = new Set(
+      state.messages
+        .filter(message => isPersistedFinalAssistantMessage(message, message.runId))
+        .map(message => message.runId)
+        .filter((runId): runId is string => Boolean(runId)),
+    )
     const result: Array<{ id: string; runId: string; content: string }> = []
     for (const runId of Object.keys(state.streamingMessageIdsByRun)) {
+      if (completedRuns.has(runId)) {
+        continue
+      }
       for (const id of state.streamingMessageIdsByRun[runId] ?? []) {
         const content = state.streamingContentByMessageId[id]
         if (content !== undefined) {
@@ -721,6 +821,7 @@ const StreamingMessageList = memo(function StreamingMessageList() {
           <TaskComposer
             workspaces={workspaces}
             draft={drafts[taskId ?? '']}
+            defaultMode={task.mode}
             defaultPermissionMode={task.permissionMode}
             hideTitle={true}
             hideWorkspacePicker={true}
@@ -862,7 +963,7 @@ const StreamingMessageList = memo(function StreamingMessageList() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
               <span style={{ color: '#64748b' }}>待恢复中断</span>
-              <span style={{ color: '#b45309', fontWeight: 600 }}>{pendingInterrupts.length}</span>
+              <span style={{ color: '#b45309', fontWeight: 600 }}>{pendingApprovalCount}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
               <span style={{ color: '#64748b' }}>最近事件</span>
@@ -870,6 +971,93 @@ const StreamingMessageList = memo(function StreamingMessageList() {
             </div>
           </div>
         </div>
+
+        {pendingPlanApprovals.length > 0 && (
+          <div style={{
+            background: '#ffffff',
+            border: '1px solid #bfdbfe',
+            borderRadius: '16px',
+            padding: '16px',
+            boxShadow: '0 6px 20px rgba(37, 99, 235, 0.06)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '24px',
+                height: '24px',
+                borderRadius: '6px',
+                background: '#eff6ff',
+                color: '#2563eb'
+              }}>
+                <AlertCircle size={14} />
+              </span>
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>方案确认</div>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>同意后将切换到 Craft 模式继续执行</div>
+              </div>
+            </div>
+
+            {pendingPlanApprovals.map((approval) => {
+              const planText = getPlanApprovalText(approval);
+              return (
+                <div key={approval.id} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{
+                    maxHeight: '220px',
+                    overflowY: 'auto',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px solid #dbeafe',
+                    background: '#f8fbff',
+                    color: '#334155',
+                    fontSize: '12px',
+                    lineHeight: 1.6
+                  }}>
+                    {planText ? renderMarkdown(planText) : approval.reason}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <Button
+                      type="primary"
+                      size="middle"
+                      icon={<Play size={14} style={{ marginRight: '4px' }} />}
+                      onClick={() => void handleApprovePlanWithFeedback(approval.id)}
+                      style={{
+                        flex: 1,
+                        background: '#0f172a',
+                        borderColor: '#0f172a',
+                        borderRadius: '8px',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        height: '36px'
+                      }}
+                    >
+                      同意方案并执行
+                    </Button>
+                    <Button
+                      danger
+                      size="middle"
+                      icon={<XCircle size={13} style={{ marginRight: '2px' }} />}
+                      onClick={() => void handleRejectPlanWithFeedback(approval.id)}
+                      style={{
+                        borderRadius: '8px',
+                        fontWeight: 600,
+                        height: '36px'
+                      }}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div id="runtime-interrupts-panel" style={{
           background: '#ffffff',
@@ -1106,6 +1294,60 @@ const StreamingMessageList = memo(function StreamingMessageList() {
           </div>
         )}
       </div>
+
+      <Modal
+        open={isPlanApprovalModalOpen}
+        onCancel={() => activePlanApproval && setClosedPlanApprovalId(activePlanApproval.id)}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0f172a' }}>
+            <span style={{ color: '#2563eb', display: 'flex', alignItems: 'center' }}>
+              <AlertCircle size={16} />
+            </span>
+            <span style={{ fontWeight: 700 }}>方案确认</span>
+          </div>
+        }
+        width={720}
+        footer={activePlanApproval ? [
+          <Button
+            key="reject"
+            danger
+            icon={<XCircle size={13} style={{ marginRight: '2px' }} />}
+            onClick={() => void handleRejectPlanWithFeedback(activePlanApproval.id)}
+          >
+            拒绝并结束任务
+          </Button>,
+          <Button
+            key="approve"
+            type="primary"
+            icon={<Play size={14} style={{ marginRight: '4px' }} />}
+            onClick={() => void handleApprovePlanWithFeedback(activePlanApproval.id)}
+            style={{ background: '#0f172a', borderColor: '#0f172a', fontWeight: 600 }}
+          >
+            同意并开始执行
+          </Button>,
+        ] : null}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '4px' }}>
+          <div style={{ fontSize: '13px', color: '#64748b', lineHeight: 1.6 }}>
+            Agent 已完成 Plan 阶段。确认后会切换到 Craft 模式并启动新的执行轮次；拒绝会直接结束当前任务。
+          </div>
+          <div style={{
+            maxHeight: '420px',
+            overflowY: 'auto',
+            padding: '14px',
+            borderRadius: '10px',
+            border: '1px solid #dbeafe',
+            background: '#f8fbff',
+            color: '#334155',
+            fontSize: '13px',
+            lineHeight: 1.6
+          }}>
+            {activePlanApproval
+              ? (getPlanApprovalText(activePlanApproval) ? renderMarkdown(getPlanApprovalText(activePlanApproval)) : activePlanApproval.reason)
+              : null}
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={editApprovalId !== null}

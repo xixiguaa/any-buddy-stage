@@ -22,7 +22,7 @@ type PendingExecuteApproval = {
   runId: string
   originalCommand: string
   execute: (command: string) => Promise<unknown>
-  resolve: (value: unknown) => void
+  resolve: (value: any) => void
   reject: (error: unknown) => void
 };
 
@@ -528,10 +528,15 @@ export class DeepAgentExecutor implements AgentExecutor {
         currentNode: 'stream_completed',
       });
 
-      await this.appService.completeRuntimeRun(context.run.id, completedMessage, {
+      const finalMetadata = {
         ...assistantMetadata,
         runtimeEngine: 'deepagents',
-      });
+      };
+      if (context.task.mode === 'plan') {
+        await this.appService.completeRuntimeRunWithPlanApproval(context.run.id, completedMessage, finalMetadata);
+      } else {
+        await this.appService.completeRuntimeRun(context.run.id, completedMessage, finalMetadata);
+      }
       return true;
     } catch (error) {
       if (isApprovalPendingError(error)) {
@@ -563,7 +568,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       {
         name: toolDefinition.name,
         description,
-        schema: z.object({}).passthrough(),
+        schema: toolDefinition.inputSchema ?? z.object({}).passthrough(),
       },
     );
   }
@@ -679,8 +684,25 @@ export class DeepAgentExecutor implements AgentExecutor {
       virtualMode: true,
     });
     const originalExecute = backend.execute.bind(backend);
+    console.debug('[DeepAgentBackend] create', {
+      runId: context.run.id,
+      taskId: context.task.id,
+      permissionMode: context.task.permissionMode,
+      executeRequiresApproval: context.task.permissionMode === 'read_write',
+    });
 
-    if (context.task.permissionMode === 'read_write') {
+    if (context.task.mode !== 'craft') {
+      backend.write = async (filePath: string) => ({
+        error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
+        filesUpdate: null,
+      });
+      backend.edit = async (filePath: string) => ({
+        error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before editing files. Blocked edit: ${filePath}`,
+        filesUpdate: null,
+      });
+    }
+
+    if (context.task.mode === 'craft' && context.task.permissionMode === 'read_write') {
       backend.execute = async (command: string) => {
         const approvedCommands = this.approvedExecuteCommandsByRun.get(context.run.id);
         const normalizedCommand = normalizeExecuteApprovalCommand(command);
@@ -697,7 +719,7 @@ export class DeepAgentExecutor implements AgentExecutor {
             permissionMode: context.task.permissionMode,
           },
         );
-        return await new Promise((resolve, reject) => {
+        return await new Promise<Awaited<ReturnType<typeof originalExecute>>>((resolve, reject) => {
           this.pendingExecuteApprovals.set(approval.id, {
             runId: context.run.id,
             originalCommand: command,

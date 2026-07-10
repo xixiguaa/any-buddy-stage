@@ -40,6 +40,10 @@ export class AgentRuntimeService {
     }
 
     const settings = this.appService.getSettings();
+    console.debug('[AgentRuntime] start', {
+      taskId,
+      permissionMode: task.permissionMode,
+    });
     const run = await this.appService.createRuntimeRun(taskId, input);
     const resolvedModel = this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId);
 
@@ -128,14 +132,15 @@ export class AgentRuntimeService {
   ) {
     await this.appService.resumeRuntimeRun(context.run.id);
 
-    const systemPrompt = this.buildTaskContextPrompt(context);
+    const tools = this.buildDeepAgentTools(context);
+    const systemPrompt = this.buildTaskContextPrompt(context, tools);
     const activeExpert = this.resolveActiveExpert(context, this.appService.listExperts());
 
     const handledByDeepAgent = await this.deepAgentExecutor.execute({
       context,
       systemPrompt,
       activeExpert,
-      tools: this.buildDeepAgentTools(),
+      tools,
       toolExecutionContext: this.createToolExecutionContext(context),
       assistantMetadata: this.buildAssistantMetadata(context, activeExpert),
     });
@@ -144,8 +149,13 @@ export class AgentRuntimeService {
     }
   }
 
-  private buildTaskContextPrompt(context: RuntimeContext) {
+  private buildTaskContextPrompt(context: RuntimeContext, tools: ToolDefinition[]) {
+    const modeInstruction = this.buildModeInstruction(context.task.mode)
+    const mountedProjectTools = tools.map(tool => tool.name).join(', ') || 'none'
     return [
+      modeInstruction,
+      `Mounted project tools: ${mountedProjectTools}`,
+      'Only project tools listed above are mounted for this task. Do not call unlisted project tools.',
       `任务: ${context.task.title}`,
       `模式: ${context.task.mode}`,
       `权限: ${context.task.permissionMode}`,
@@ -159,8 +169,38 @@ export class AgentRuntimeService {
     ].join('\n');
   }
 
-  private buildDeepAgentTools(): ToolDefinition[] {
-    return this.toolRegistry.listTools()
+  private buildModeInstruction(mode: RuntimeContext['task']['mode']) {
+    if (mode === 'ask') {
+      return [
+        'Mode policy: ASK.',
+        'Only answer, explain, inspect, search, or read context.',
+        'You may use tools to inspect context, but do not edit files or write files.',
+      ].join('\n')
+    }
+
+    if (mode === 'plan') {
+      return [
+        'Mode policy: PLAN.',
+        'First analyze the request and produce a concrete step-by-step execution plan, then stop.',
+        'You may inspect files, search, and run commands needed to understand the task, but do not write files or edit files before the user approves the plan.',
+        'The plan must clearly list what will be done first, second, and later. After the plan is produced, the app will show Confirm and Cancel buttons. Only a confirmed plan may continue in Craft mode.',
+      ].join('\n')
+    }
+
+    return [
+      'Mode policy: CRAFT.',
+      'Execute the approved or requested work. You may edit files and run necessary commands while respecting the configured permission mode.',
+    ].join('\n')
+  }
+
+  private buildDeepAgentTools(context: RuntimeContext): ToolDefinition[] {
+    const selectedConnectors = new Set(context.task.connectorIds)
+    return this.toolRegistry.listTools().filter(tool => {
+      if (!tool.connectorId) {
+        return true
+      }
+      return selectedConnectors.has(tool.connectorId)
+    })
   }
 
   private createToolExecutionContext(context: RuntimeContext): ToolExecutionContext {
