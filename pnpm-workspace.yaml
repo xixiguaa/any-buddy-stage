@@ -1,14 +1,12 @@
-onlyBuiltDependencies:
-  - '-'
-  - a
-  - better-sqlite3
-  - d
-  - e
-  - electron
-  - electron-winstaller
-  - esbuild
-  - f
-  - i
-  - n
-  - o
-  - s
+packages:
+  - '.'
+nodeLinker: hoisted
+publicHoistPattern:
+  - '*'
+blockExoticSubdeps: false
+confirmModulesPurge: false
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
