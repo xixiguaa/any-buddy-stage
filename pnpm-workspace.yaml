@@ -1,12 +1,23 @@
 packages:
-  - '.'
-nodeLinker: hoisted
-publicHoistPattern:
-  - '*'
-blockExoticSubdeps: false
-confirmModulesPurge: false
+  - .
+
 allowBuilds:
   better-sqlite3: true
   electron: true
   electron-winstaller: true
   esbuild: true
+
+blockExoticSubdeps: false
+
+confirmModulesPurge: false
+
+nodeLinker: hoisted
+
+onlyBuiltDependencies:
+  - better-sqlite3
+  - electron
+  - electron-winstaller
+  - esbuild
+
+publicHoistPattern:
+  - '*'

@@ -1,5 +1,9 @@
 {
   "name": "anybuddy",
+  "description": "Desktop AI assistant application.",
+  "author": {
+    "name": "ymx"
+  },
   "private": true,
   "version": "0.1.0",
   "type": "module",

@@ -1,195 +1,149 @@
 # AnyBuddy
 
-一个本地优先的 AI Agent 工作台，用任务、工作区、专家预设和运行时事件，把复杂工作拆成可追踪、可恢复、可协作的 Agent 流程。
+一个本地优先的 AI Agent 工作台。它通过任务、工作区、专家预设和运行时事件，将复杂工作拆解为可追踪、可恢复、可协作的 Agent 工作流。
 
-A local-first AI Agent workspace that turns complex work into traceable, resumable, and collaborative Agent workflows with tasks, workspace context, expert presets, and runtime events.
+## 项目解决的问题
 
-## 项目解决什么问题 / What Problem It Solves
+许多 AI 编程或办公助手仍停留在一次性聊天界面：上下文难以管理、任务状态难以追踪、工具调用不透明、长任务中断后难以恢复，也难以将不同专家能力组织进同一条工作流。
 
-很多 AI 编程或办公助手仍停留在一次性聊天界面：上下文难管理、任务状态难追踪、工具调用不透明、长任务中断后难恢复，也很难把不同专家能力组织进同一个工作流。
+AnyBuddy 将 Agent 从聊天窗口带入本地工作台。每个任务都可以携带工作区上下文、模型设置、技能、连接器、运行时事件、审批状态和历史记录。你可以创建和继续任务、调用专家、查看运行时事件，并逐步将 Agent 工作流沉淀为可维护的本地系统。
 
-Many AI coding or productivity assistants still behave like one-off chat boxes: context is hard to manage, task status is difficult to track, tool calls are opaque, long-running work is hard to resume, and expert capabilities are difficult to compose into one workflow.
+## 项目亮点
 
-AnyBuddy 试图把 Agent 从“聊天窗口”推进到“本地工作台”：每个任务都有工作区、模型、技能、连接器、运行事件、审批状态和历史记录。你可以创建任务、继续任务、召唤专家、查看运行时事件，并逐步把 Agent 工作流沉淀为可维护的本地系统。
-
-AnyBuddy moves Agents from a simple chat window into a local workspace. Each task can carry workspace context, model settings, skills, connectors, runtime events, approval state, and history. You can create tasks, continue tasks, summon experts, inspect runtime events, and gradually turn Agent workflows into a maintainable local system.
-
-## 亮点 / Highlights
-
-- 本地优先：核心任务、消息、工作区、运行记录和审批状态走本地 SQLite 持久化。
-- Electron 桌面体验：主进程负责文件系统、运行时和持久化，渲染进程专注交互界面。
-- 任务式 Agent 工作流：围绕任务创建、继续执行、运行状态和事件流组织体验。
-- 专家预设：支持通过专家角色快速加载技能组合和任务上下文。
-- 运行时事件可见：将工具调用、审批、子 Agent 状态和执行过程展示在界面中。
-- 工作模式与权限分离：`ask` / `plan` / `craft` 决定 Agent 如何工作，`read_write` / `full_access` 决定 Agent 能做什么。
-- 安全的命令审批：`read_write` 下执行本地命令会先请求确认，审批通过后在原运行流中恢复，不会从头重跑工具链。
+- 本地优先的持久化：任务、消息、工作区、运行记录、事件和审批状态均保存在本地 SQLite 中。
+- 原生桌面体验：Electron 主进程负责文件系统访问、运行时编排和持久化；渲染进程专注于交互界面。
+- 基于任务的 Agent 工作流：产品围绕任务创建、继续执行、运行状态和事件流组织。
+- 专家预设：通过专家角色快速加载技能组合和任务上下文。
+- 可见的运行时事件：在界面中展示工具调用、审批、子 Agent 状态和执行进度。
+- 工作模式与权限分离：`ask`、`plan`、`craft` 决定 Agent 如何工作；`read_write`、`full_access` 决定 Agent 可以做什么。
+- 安全的命令审批：在 `read_write` 模式下，执行本地命令前会请求确认；审批通过后会在原运行流中恢复，不会从头重新执行工具链。
 - 全局技能目录：技能统一从 `~/.anybuddy/skills/<skillId>/SKILL.md` 加载，并在运行时镜像到当前工作区缓存。
-- 可扩展架构：通过 shared IPC 契约、preload 桥、主进程服务和 tool registry 保持边界清晰。
+- 可扩展架构：共享 IPC 契约、预加载桥接、主进程服务和工具注册表保持清晰的边界。
 
-- Local-first persistence: tasks, messages, workspaces, runs, events, and approvals are stored locally with SQLite.
-- Desktop-native Electron shell: the main process owns filesystem access, runtime orchestration, and persistence while the renderer focuses on UI.
-- Task-based Agent workflow: the product is organized around task creation, continuation, runtime state, and event streams.
-- Expert presets: expert roles can quickly load skill sets and task context.
-- Visible runtime events: tool calls, approvals, sub-agent state, and execution progress are surfaced in the UI.
-- Separate work modes and permissions: `ask` / `plan` / `craft` define how the Agent works, while `read_write` / `full_access` define what it can do.
-- Safe command approvals: in `read_write` mode, local command execution asks for confirmation and resumes in-place after approval instead of replaying the tool chain from the beginning.
-- Global skills directory: skills are loaded from `~/.anybuddy/skills/<skillId>/SKILL.md` and mirrored into a runtime cache for the current workspace.
-- Extensible architecture: shared IPC contracts, the preload bridge, main-process services, and the tool registry keep boundaries clear.
+## 工作模式与权限
 
-## 工作模式与权限 / Work Modes and Permissions
+AnyBuddy 将 Agent 的工作方式与能力边界分开配置，避免将产品意图与安全策略混在一起。
 
-AnyBuddy 将“工作方式”和“能力边界”分开配置，避免把产品语义和安全策略混在一起。
+### 工作模式
 
-AnyBuddy separates how the Agent should work from what it is allowed to do, keeping product intent and safety policy distinct.
+- `ask`：问答模式，适合解释、检索、分析和快速答疑；默认不主动修改代码。
+- `plan`：规划模式，适合拆解任务、生成步骤并确认执行方向。
+- `craft`：执行模式，适合直接实现需求、修改文件并完成验证。
 
-工作模式 / Work modes:
+### 权限模式
 
-- `ask`: 问答模式，适合解释、检索、分析和快速答疑，默认不主动改代码。
-- `plan`: 规划模式，适合先拆解任务、生成步骤和确认执行方向。
-- `craft`: 执行模式，适合直接实现、修改文件并完成验证。
+- `read_write`：允许读写工作区；执行本地 `execute` 命令前需要用户确认，审批后会在当前 DeepAgents 运行中原地恢复。
+- `full_access`：完全访问模式；可以直接执行本地命令，仅应在用户明确授权当前任务时使用。
 
-- `ask`: Q&A mode for explanations, lookup, analysis, and quick answers; it should not proactively edit code by default.
-- `plan`: Planning mode for breaking down work, producing steps, and confirming direction.
-- `craft`: Execution mode for implementing changes, editing files, and verifying results.
+## 截图
 
-权限模式 / Permission modes:
-
-- `read_write`: 允许读写工作区；调用 `execute` 执行本地命令前会请求用户确认，批准后在当前 DeepAgents 运行流中原地恢复。
-- `full_access`: 完全访问模式；本地命令可直接执行，适合用户明确信任当前任务时使用。
-
-- `read_write`: Allows workspace read/write access; local `execute` commands require user confirmation and resume in-place inside the current DeepAgents run after approval.
-- `full_access`: Full access mode; local commands can run directly and should be used only when the user explicitly trusts the task.
-
-## 截图 / Screenshots
-
-> 当前仓库还没有提交真实截图。建议在首个公开版本中补充 `docs/assets/anybuddy-preview.png` 或 `docs/assets/anybuddy-demo.gif`，让 README 在 GitHub 首页直接展示产品形态。
-
-> No real screenshot is committed yet. For the first public release, add `docs/assets/anybuddy-preview.png` or `docs/assets/anybuddy-demo.gif` so the GitHub README shows the product clearly.
+> 当前仓库尚未提交真实截图。首个公开版本建议添加 `docs/assets/anybuddy-preview.png` 或 `docs/assets/anybuddy-demo.gif`，以便在 GitHub README 中直观展示产品形态。
 
 ```md
-![AnyBuddy preview](docs/assets/anybuddy-preview.png)
+![AnyBuddy 预览图](docs/assets/anybuddy-preview.png)
 ```
 
-建议截图内容 / Recommended screenshot content:
+建议截图包含以下内容：
 
-- 新建任务界面，展示模型、工作模式、权限、技能、工作区和专家选择入口。
-- 任务详情界面，展示对话、运行时事件、审批或子 Agent 状态。
-- 专家配置界面，展示专家预设和技能组合。
+- 新建任务页面：展示模型、工作模式、权限、技能、工作区和专家选择入口。
+- 任务详情页面：展示对话、运行时事件、审批或子 Agent 状态。
+- 专家配置页面：展示专家预设和技能组合。
 
-- New task screen showing model, work mode, permission mode, skills, workspace, and expert selection.
-- Task detail screen showing conversation, runtime events, approvals, or sub-agent state.
-- Expert configuration screen showing expert presets and skill sets.
+## 快速开始
 
-## 快速上手 / Quick Start
+### 环境要求
 
-### 环境要求 / Prerequisites
-
-- 推荐使用 Node.js 20 或更新版本。
-- 项目脚本使用 npm。
+- 推荐使用 Node.js 20 或更高版本。
+- 项目使用 pnpm 管理依赖和运行脚本。
 - 需要可运行 Electron 桌面应用的系统环境。
 
-- Node.js 20 or newer is recommended.
-- npm is used by the project scripts.
-- A desktop environment capable of running Electron apps is required.
-
-### 安装依赖 / Install Dependencies
+### 安装依赖
 
 ```bash
-npm install
+pnpm install --frozen-lockfile
 ```
 
-### 启动开发应用 / Start Development App
+该命令严格按已提交的 `pnpm-lock.yaml` 安装依赖，且不会在安装过程中修改锁文件。
+
+### 启动开发应用
 
 ```bash
-npm run dev
+pnpm run dev
 ```
 
-该命令会通过 Electron Forge 和 Vite 启动 Electron 开发应用。`npm start` 等同于 `npm run dev`。
+该命令通过 Electron Forge 和 Vite 启动 Electron 开发应用。`pnpm start` 与 `pnpm run dev` 等效。
 
-This starts the Electron development app through Electron Forge and Vite. `npm start` is equivalent to `npm run dev`.
-
-### 类型检查 / Type Check
+### 类型检查
 
 ```bash
-npm run lint
+pnpm run lint
 ```
 
-当前 `lint` 脚本会执行 `tsc --noEmit` 进行 TypeScript 检查。
+当前 `lint` 脚本会执行 `tsc --noEmit` 进行 TypeScript 类型检查。
 
-The current `lint` script runs TypeScript checking with `tsc --noEmit`.
-
-### 本地打包 / Package Locally
+### 本地打包
 
 ```bash
-npm run package
+pnpm run package
 ```
 
-### 构建安装包 / Build Installers
+### 构建发布物
 
 ```bash
-npm run make
+pnpm run make
 ```
 
-## 文档 / Documentation
+### 构建 ZIP 便携包
 
-- [贡献指南 / Contribution Guide](docs/contributing.md): 介绍如何参与贡献、提交 Issue、发起 Pull Request 和验证改动。
-- [技术架构 / Technical Architecture](docs/technical-architecture.md): 介绍项目结构、进程边界、数据流和架构图。
-- [详细设计草案 / Detailed Design Draft](docs/anybuddy-detailed-design.md): 更完整的产品与实现设计说明。
+```bash
+pnpm run make:zip
+```
 
-## 目录结构 / Repository Layout
+生成的 ZIP 包完整解压后即可运行其中的应用程序。
+
+## 文档
+
+- [贡献指南](docs/contributing.md)：介绍如何参与贡献、提交 Issue、发起 Pull Request 和验证改动。
+- [技术架构](docs/technical-architecture.md)：介绍项目结构、进程边界、数据流和架构图。
+- [详细设计草案](docs/anybuddy-detailed-design.md)：包含更完整的产品与实现设计说明。
+
+## 目录结构
 
 ```text
 src/
-  main/       Electron 主进程、IPC 处理、仓储、运行时服务
-  preload/    暴露给渲染进程的安全桥
+  main/       Electron 主进程、IPC 处理器、仓储和运行时服务
+  preload/    暴露给渲染进程的安全桥接层
   renderer/   React 界面、页面、组件、状态和样式
-  shared/     共享类型、IPC 契约和跨进程工具
+  shared/     共享类型、IPC 契约和跨进程辅助工具
 docs/         贡献文档、架构说明和设计草案
 ```
 
-```text
-src/
-  main/       Electron main process, IPC handlers, repositories, runtime services
-  preload/    Safe bridge exposed to the renderer process
-  renderer/   React UI, pages, components, stores, and styles
-  shared/     Shared types, IPC contracts, and cross-process helpers
-docs/         Contributor docs, architecture notes, and design drafts
-```
+## GitHub About 配置建议
 
-## GitHub About 配置建议 / Suggested GitHub About Settings
+GitHub 仓库页面右上角的描述、主题和 About 元数据需要手动配置，不能仅通过 README 自动设置。建议填写：
 
-GitHub 右上角的 Description、Topics 和 About 需要在仓库页面手动配置，不能只靠 README 自动设置。建议填写：
-
-GitHub Description, Topics, and About metadata must be configured manually on the repository page. Recommended values:
-
-Description:
+描述：
 
 ```text
-Local-first AI Agent workspace for task-based workflows, expert presets, runtime events, and Electron desktop automation.
+面向任务工作流、专家预设、运行时事件和 Electron 桌面自动化的本地优先 AI Agent 工作台。
 ```
 
-Topics:
+主题：
 
 ```text
 ai-agent, agent-workflow, electron, react, typescript, sqlite, langchain, desktop-app, local-first, task-management, ai-workspace, ipc
 ```
 
-Website:
+网站：
 
 ```text
 https://github.com/<your-org-or-user>/anybuddy
 ```
 
-## 参与贡献 / Contributing
+## 参与贡献
 
-欢迎大家参与贡献 AnyBuddy。无论是提交 bug、改进文档、优化界面体验、补充测试，还是参与 Agent Runtime 和工具体系建设，都可以从贡献指南开始。
+欢迎参与 AnyBuddy 的建设。无论是提交 bug、改进文档、优化界面体验、补充测试，还是参与 Agent Runtime 和工具体系建设，都可以从贡献指南开始。
 
-Contributions are welcome. Whether you want to report bugs, improve documentation, polish the UI, add tests, or work on the Agent runtime and tool system, the contribution guide is the best place to start.
+开始贡献前，请先阅读 [docs/contributing.md](docs/contributing.md)。其中介绍了推荐的本地开发流程、代码规范、验证步骤和 Pull Request 要求。
 
-开始贡献前，请先阅读 [docs/contributing.md](docs/contributing.md)。它介绍了推荐的本地开发流程、代码规范、验证步骤和 Pull Request 要求。
-
-Start with [docs/contributing.md](docs/contributing.md). It explains the recommended local workflow, coding conventions, verification steps, and pull request expectations.
-
-如果准备进行较大的改动，请先阅读 [docs/technical-architecture.md](docs/technical-architecture.md)，确保主进程、preload、渲染进程和 shared 契约之间的边界保持清晰。
-
-For larger changes, read [docs/technical-architecture.md](docs/technical-architecture.md) first so the main, preload, renderer, and shared boundaries stay clear.
+如果准备进行较大的改动，请先阅读 [docs/technical-architecture.md](docs/technical-architecture.md)，确保主进程、预加载层、渲染进程和 shared 契约之间的边界保持清晰。
