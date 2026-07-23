@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { logProcessError } from '../runtime/error-logger.js'
 
 export function createMainWindow() {
-  const currentDir = dirname(fileURLToPath(import.meta.url))
+  const currentDir = typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url))
   const win = new BrowserWindow({
     width: 1500,
     height: 940,
@@ -13,7 +13,7 @@ export function createMainWindow() {
     backgroundColor: '#f4f1eb',
     title: 'anybuddy',
     webPreferences: {
-      preload: join(currentDir, 'preload.js'),
+      preload: join(currentDir, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,

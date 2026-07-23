@@ -3,9 +3,24 @@ import { MakerZIP } from '@electron-forge/maker-zip'
 import { VitePlugin } from '@electron-forge/plugin-vite'
 import type { ForgeConfig } from '@electron-forge/shared-types'
 
+const shouldIgnorePackagedFile = (file: string) => {
+  if (!file) return false
+
+  if (file === '/node_modules') return false
+  if (file.startsWith('/node_modules/')) {
+    return file.startsWith('/node_modules/.')
+  }
+
+  return !file.startsWith('/.vite')
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
+    asar: {
+      unpack: '**/*.node',
+    },
+    // Keep runtime dependencies available for Packager's production dependency pruning.
+    ignore: shouldIgnorePackagedFile,
   },
   rebuildConfig: {},
   makers: [

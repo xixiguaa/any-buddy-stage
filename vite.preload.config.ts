@@ -1,22 +1,28 @@
 import { defineConfig } from 'vite'
+import { builtinModules } from 'node:module'
+
+const builtins = [
+  'electron',
+  ...builtinModules,
+  ...builtinModules.map(m => `node:${m}`),
+]
 
 export default defineConfig({
   build: {
     emptyOutDir: false,
     lib: {
       entry: 'src/preload/index.ts',
-      formats: ['es'],
-      fileName: () => 'preload.js',
+      formats: ['cjs'],
+      fileName: () => 'preload.cjs',
     },
     outDir: '.vite/build',
     rollupOptions: {
-      external: ['electron'],
+      external: builtins,
       output: {
-        entryFileNames: 'preload.js',
+        entryFileNames: 'preload.cjs',
       },
     },
     target: 'node22',
   },
 })
-
 

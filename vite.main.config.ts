@@ -1,21 +1,28 @@
 import { defineConfig } from 'vite'
+import { builtinModules } from 'node:module'
+
+const builtins = [
+  'electron',
+  'better-sqlite3',
+  ...builtinModules,
+  ...builtinModules.map(m => `node:${m}`),
+]
 
 export default defineConfig({
   build: {
     emptyOutDir: false,
     lib: {
       entry: 'src/main/index.ts',
-      formats: ['es'],
-      fileName: () => 'main.js',
+      formats: ['cjs'],
+      fileName: () => 'main.cjs',
     },
     outDir: '.vite/build',
     rollupOptions: {
-      external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:os', 'node:events'],
+      external: builtins,
       output: {
-        entryFileNames: 'main.js',
+        entryFileNames: 'main.cjs',
       },
     },
     target: 'node22',
   },
 })
-
