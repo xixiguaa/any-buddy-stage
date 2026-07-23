@@ -1,6 +1,5 @@
-
 import { randomUUID } from 'node:crypto'
-import { shell } from 'electron'
+import { shell, dialog } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -33,17 +32,27 @@ import type {
   ModelConfig,
 } from '../../shared/types.js'
 import { createId, nowIso } from '../../shared/utils.js'
-import { dialog } from 'electron'
 
+// 活跃中的运行状态与任务状态列表
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
+
+// 默认空 MCP 配置文件结构
 const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
+
+// 流式文本 Patch 防抖刷盘延迟时间 (毫秒)
 const STREAM_EVENT_FLUSH_MS = 50
 
+/**
+ * 判断事件是否为流式生成中的 Agent 助手消息事件。
+ */
 function isStreamingAgentMessageEvent(event: AgentEvent) {
   return event.type === 'agent_message' && event.payload?.streaming === true
 }
 
+/**
+ * 规范化模型配置数组：剔除已过时的内置预览模型，纠正第三方端点 (如 DeepSeek) 的 API 模式。
+ */
 function sanitizeModelConfigs(models: ModelConfig[]) {
   return models
     .filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
@@ -62,6 +71,9 @@ function sanitizeModelConfigs(models: ModelConfig[]) {
     })
 }
 
+/**
+ * 判断 ISO 时间戳字符串是否落在筛选时间范围内。
+ */
 function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange']) {
   if (!timeRange || timeRange === 'all') {
     return true
@@ -86,14 +98,28 @@ function matchesTimeRange(updatedAt: string, timeRange: TaskFilter['timeRange'])
   return target.getTime() >= cutoff.getTime()
 }
 
+/**
+ * 将任务全局权限约束 (read_only / read_write) 映射到具体工作区关系的访问权限。
+ */
 function taskPermissionToWorkspaceAccess(permissionMode: Task['permissionMode']): TaskWorkspace['accessMode'] {
   return permissionMode === 'read_only' ? 'read_only' : 'read_write'
 }
 
+/**
+ * 应用主领域服务 (AppService)
+ * 
+ * 职责覆盖：
+ * 1. 负责整合持久化仓储 (`AppStateRepository`) 与内存缓存数据 (`AppState`)。
+ * 2. 负责 Task、Workspace、Message、Draft、Expert、AgentRun、AgentEvent、HumanApproval 领域的 CRUD。
+ * 3. 负责向应用事件总线 (`AppEventBus`) 实时广播增量 Patch 与快照补丁，维持渲染进程 UI 状态同步。
+ * 4. 负责镜像是将模型与 MCP 配置导出同步至本地隐藏配置文件 (`~/.anybuddy/models.json` / `mcp.json`)。
+ */
 export class AppService {
+  /** 缓存待防抖刷盘的流式文本事件 Patch */
   private readonly pendingStreamEventPatches = new Map<string, { taskId: string; event: AgentEvent }>()
   private streamEventFlushTimer: NodeJS.Timeout | null = null
 
+  /** 内存中的全局完整应用状态缓存 */
   private state: AppState | null = null
 
   constructor(
@@ -101,12 +127,15 @@ export class AppService {
     private readonly bus: AppEventBus,
   ) {}
 
+  /**
+   * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置，并清理上次未正常关机残留卡住的活跃运行。
+   */
   async init() {
     this.state = await this.repository.load(createDefaultState())
     await this.ensureDefaultExperts()
     await this.hydrateConfigStateFromFiles()
     
-    // Cleanup stuck active tasks/runs on startup
+    // 应用启动时清理异常卡在活跃状态（running/queued等）的任务与运行
     let changed = false
     for (const run of this.state.agentRuns) {
       if (activeRunStatuses.includes(run.status)) {
@@ -128,6 +157,7 @@ export class AppService {
     }
   }
 
+  /** 确保系统预设的默认专家 (ExpertPresets) 已注入持久化状态中 */
   private async ensureDefaultExperts() {
     const existingIds = new Set(this.snapshot.experts.map(expert => expert.id))
     const missingExperts = DEFAULT_EXPERTS.filter(expert => !existingIds.has(expert.id))
@@ -140,6 +170,7 @@ export class AppService {
     })
   }
 
+  /** 将当前内存中的全局状态写入底层持久化 SQLite 仓储（排除流式中间吐字的暂态事件） */
   private async persist() {
     if (!this.state) {
       throw new Error('App service not initialized')
@@ -150,6 +181,7 @@ export class AppService {
     })
   }
 
+  /** 读取当前内存中的只读快照；未初始化时抛错 */
   private get snapshot() {
     if (!this.state) {
       throw new Error('App service not initialized')
@@ -157,32 +189,39 @@ export class AppService {
     return this.state
   }
 
+  /** 对内存状态进行可变修改，修改完成后自动触发写盘持久化 */
   private async mutate<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {
     const result = await fn(this.snapshot)
     await this.persist()
     return result
   }
 
+  /** 对内存状态进行可变修改，但跳过落盘持久化（适用于频繁高频流式 Patch） */
   private async mutateTransient<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {
     return fn(this.snapshot)
   }
 
+  /** 获取 AnyBuddy 的全局本地配置目录路径 (`~/.anybuddy`) */
   private getConfigDir() {
     return join(os.homedir(), '.anybuddy')
   }
 
+  /** 获取模型配置文件路径 (`~/.anybuddy/models.json`) */
   private getModelsConfigFile() {
     return join(this.getConfigDir(), 'models.json')
   }
 
+  /** 获取 MCP 配置文件路径 (`~/.anybuddy/mcp.json`) */
   private getMcpConfigFile() {
     return join(this.getConfigDir(), 'mcp.json')
   }
 
+  /** 确保本地配置目录存在 */
   private async ensureConfigDir() {
     await mkdir(this.getConfigDir(), { recursive: true })
   }
 
+  /** 同步读取模型配置文件，解析失败时退回空数组 */
   private readModelsConfigFileSync(): string {
     const file = this.getModelsConfigFile()
     try {
@@ -195,6 +234,7 @@ export class AppService {
     }
   }
 
+  /** 将内存中的模型与 MCP 配置同步镜像写入本地隐藏文件 (`~/.anybuddy/`) */
   private async syncConfigFilesFromState() {
     this.snapshot.modelConfigs = sanitizeModelConfigs(this.snapshot.modelConfigs)
     await this.ensureConfigDir()
@@ -204,6 +244,7 @@ export class AppService {
     ])
   }
 
+  /** 从本地配置文件水合 (Hydrate) 模型和 MCP 配置至内存及数据库 */
   private async hydrateConfigStateFromFiles() {
     const fileModelsRaw = this.readModelsConfigFileSync()
     const fileMcpRaw = await this.readMcpConfigFromFile()
@@ -216,7 +257,7 @@ export class AppService {
         changed = true
       }
     } catch {
-      // Keep SQLite state when file content is invalid.
+      // 当本地文件内容非法时，保留 SQLite 中原有的数据
     }
 
     if (fileMcpRaw && fileMcpRaw !== defaultMcpConfigRaw) {
@@ -231,6 +272,7 @@ export class AppService {
     await this.syncConfigFilesFromState()
   }
 
+  /** 向事件总线广播指定任务的完整运行时快照包 */
   private emitTaskRuntimeSnapshot(taskId: string) {
     this.bus.emitTaskRuntime(taskId, {
       kind: 'snapshot',
@@ -242,6 +284,7 @@ export class AppService {
     })
   }
 
+  /** 向事件总线广播指定任务的增量 Patch 变更 */
   private emitTaskRuntimePatch(taskId: string, patch: {
     run?: AgentRun
     event?: AgentEvent
@@ -255,6 +298,7 @@ export class AppService {
     })
   }
 
+  /** 将流式打字机消息 Patch 放入队列，并在防抖时间到期后合并批量广播 */
   private queueStreamEventPatch(taskId: string, event: AgentEvent) {
     this.pendingStreamEventPatches.set(`${taskId}:${event.id}`, { taskId, event })
     if (this.streamEventFlushTimer) {
@@ -274,6 +318,7 @@ export class AppService {
     }, STREAM_EVENT_FLUSH_MS)
   }
 
+  /** 创建 AgentEvent 数据工厂 */
   private createAgentEvent(run: AgentRun, type: AgentEvent['type'], payload: Record<string, unknown>): AgentEvent {
     return {
       id: createId('event'),
@@ -286,6 +331,7 @@ export class AppService {
     }
   }
 
+  /** 为 Task 数据填充主工作区名称等摘要拓展字段 */
   private enrichTask(task: Task): TaskSummary {
     const taskWorkspace = this.snapshot.taskWorkspaces.find(item => item.taskId === task.id && item.role === 'primary')
     const workspaceName = taskWorkspace ? this.snapshot.workspaces.find(workspace => workspace.id === taskWorkspace.workspaceId)?.name : undefined
@@ -302,6 +348,13 @@ export class AppService {
     }
   }
 
+  // ==========================================
+  // 任务 (Task) 业务接口
+  // ==========================================
+
+  /**
+   * 根据筛选条件（关键词、时间范围、状态、关联工作区）获取任务摘要列表。
+   */
   listTasks(filter: TaskFilter = {}): TaskSummary[] {
     const { tasks, taskWorkspaces, workspaces } = this.snapshot
     const summaries = tasks.map(task => {
@@ -348,10 +401,14 @@ export class AppService {
     })
   }
 
+  /** 根据 ID 查询指定任务 */
   getTask(taskId: string): Task | null {
     return this.snapshot.tasks.find(task => task.id === taskId) ?? null
   }
 
+  /**
+   * 创建新任务，同时绑定主工作区和可选的附加工作区。
+   */
   async createTask(input: CreateTaskInput): Promise<Task> {
     return this.mutate(state => {
       const now = nowIso()
@@ -400,6 +457,9 @@ export class AppService {
     })
   }
 
+  /**
+   * 更新任务属性（模式、激活专家、模型、权限等）。
+   */
   async updateTask(taskId: string, input: UpdateTaskInput): Promise<Task> {
     return this.mutate(state => {
       const task = state.tasks.find(item => item.id === taskId)
@@ -423,6 +483,7 @@ export class AppService {
     })
   }
 
+  /** 彻底删除任务及其关联的消息、草稿、工作区绑定和 Agent 运行记录 */
   async deleteTask(taskId: string): Promise<void> {
     await this.mutate(state => {
       state.tasks = state.tasks.filter(task => task.id !== taskId)
@@ -433,6 +494,7 @@ export class AppService {
     })
   }
 
+  /** 清空指定任务下的所有运行日志、事件和审批记录 */
   async clearTaskRuns(taskId: string): Promise<void> {
     await this.mutate(state => {
       state.agentRuns = state.agentRuns.filter(run => run.taskId !== taskId)
@@ -442,6 +504,11 @@ export class AppService {
     this.emitTaskRuntimeSnapshot(taskId)
   }
 
+  // ==========================================
+  // 工作区 (Workspace) 关联业务接口
+  // ==========================================
+
+  /** 为任务附加额外的关联工作区 */
   async attachWorkspace(taskId: string, workspaceId: string, accessMode: 'read_only' | 'read_write' = 'read_only'): Promise<TaskWorkspace> {
     return this.mutate(state => {
       const relation: TaskWorkspace = {
@@ -457,12 +524,14 @@ export class AppService {
     })
   }
 
+  /** 解绑任务的附加工作区 */
   async detachWorkspace(taskId: string, workspaceId: string): Promise<void> {
     await this.mutate(state => {
       state.taskWorkspaces = state.taskWorkspaces.filter(rel => !(rel.taskId === taskId && rel.workspaceId === workspaceId && rel.role === 'attached'))
     })
   }
 
+  /** 切换任务的主工作区 */
   async setPrimaryWorkspace(taskId: string, workspaceId: string): Promise<Task> {
     return this.mutate(state => {
       const task = state.tasks.find(item => item.id === taskId)
@@ -484,6 +553,7 @@ export class AppService {
     })
   }
 
+  /** 获取指定任务绑定的所有工作区上下文信息列表 */
   listTaskWorkspaces(taskId: string): TaskWorkspaceContext[] {
     return this.snapshot.taskWorkspaces
       .filter(relation => relation.taskId === taskId)
@@ -503,6 +573,7 @@ export class AppService {
       })
   }
 
+  /** 清空任务的未读事件计数 */
   async markRead(taskId: string): Promise<Task> {
     return this.mutate(state => {
       const task = state.tasks.find(item => item.id === taskId)
@@ -515,16 +586,23 @@ export class AppService {
     })
   }
 
+  /** 获取所有处于活跃运行状态的任务摘要 */
   listRunningTasks(): TaskSummary[] {
     return this.listTasks({ status: ['queued', 'running', 'paused', 'waiting_approval'] })
   }
 
+  // ==========================================
+  // 消息 (Message) & 草稿 (Draft) 业务接口
+  // ==========================================
+
+  /** 获取指定任务下的历史对话消息列表 */
   listMessages(taskId: string): Message[] {
     return this.snapshot.messages
       .filter(message => message.taskId === taskId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
+  /** 创建新的对话消息并向任务追加引用 */
   async createMessage(taskId: string, input: CreateMessageInput): Promise<Message> {
     return this.mutate(state => {
       const message: Message = {
@@ -546,16 +624,19 @@ export class AppService {
     })
   }
 
+  /** 删除单条指定消息 */
   async deleteMessage(messageId: string): Promise<void> {
     await this.mutate(state => {
       state.messages = state.messages.filter(message => message.id !== messageId)
     })
   }
 
+  /** 获取指定任务输入框的暂存草稿 */
   getDraft(taskId: string): TaskDraft | null {
     return this.snapshot.drafts.find(draft => draft.taskId === taskId) ?? null
   }
 
+  /** 保存或更新任务输入框草稿 */
   async saveDraft(taskId: string, draft: Omit<TaskDraft, 'taskId' | 'updatedAt'> & Partial<Pick<TaskDraft, 'updatedAt'>>): Promise<TaskDraft> {
     return this.mutate(state => {
       const next: TaskDraft = {
@@ -577,12 +658,18 @@ export class AppService {
     })
   }
 
+  /** 清除任务草稿 */
   async clearDraft(taskId: string): Promise<void> {
     await this.mutate(state => {
       state.drafts = state.drafts.filter(draft => draft.taskId !== taskId)
     })
   }
 
+  // ==========================================
+  // 工作区 (Workspace) 管理业务接口
+  // ==========================================
+
+  /** 获取包含关联任务数及状态统计的工作区摘要列表 */
   listWorkspaces(): WorkspaceSummary[] {
     const { workspaces, taskWorkspaces, tasks } = this.snapshot
     return workspaces
@@ -599,6 +686,7 @@ export class AppService {
       })
   }
 
+  /** 创建新的本地项目工作区 */
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
     return this.mutate(state => {
       const now = nowIso()
@@ -618,6 +706,7 @@ export class AppService {
     })
   }
 
+  /** 归档/移除工作区 */
   async removeWorkspace(workspaceId: string): Promise<void> {
     await this.mutate(state => {
       const workspace = state.workspaces.find(item => item.id === workspaceId)
@@ -629,6 +718,7 @@ export class AppService {
     })
   }
 
+  /** 在系统原生文件管理器 (Explorer/Finder) 中打开指定工作区文件夹 */
   async openWorkspaceFolder(workspaceId: string): Promise<void> {
     const workspace = this.snapshot.workspaces.find(item => item.id === workspaceId)
     if (!workspace) {
@@ -646,6 +736,7 @@ export class AppService {
     }
   }
 
+  /** 调起原生系统弹窗选择本地文件夹 */
   async pickWorkspaceFolder(): Promise<string | null> {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || !result.filePaths[0]) {
@@ -654,10 +745,12 @@ export class AppService {
     return result.filePaths[0]
   }
 
+  /** 查询归属于指定工作区的任务列表 */
   async listWorkspaceTasks(workspaceId: string, filter: TaskFilter = {}): Promise<TaskSummary[]> {
     return this.listTasks({ ...filter, workspaceId })
   }
 
+  /** 设置应用默认工作区 ID */
   async setDefaultWorkspace(workspaceId: string): Promise<AppSettings> {
     return this.mutate(state => {
       state.settings.defaultWorkspaceId = workspaceId
@@ -665,42 +758,55 @@ export class AppService {
     })
   }
 
+  /** 获取当前应用全局设置 */
   getSettings(): AppSettings {
     return this.snapshot.settings
   }
 
+  /** 更新全局设置 Patch */
   async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
     return this.mutate(state => Object.assign(state.settings, patch))
   }
 
+  // ==========================================
+  // Agent 运行记录 (AgentRun) 与 专家 (Expert) 业务接口
+  // ==========================================
+
+  /** 获取所有 AgentRun 列表（按创建时间倒序） */
   listAgentRuns(): AgentRun[] {
     return [...this.snapshot.agentRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }
 
+  /** 获取当前活跃的 AgentRun 列表 */
   listActiveAgentRuns(): AgentRun[] {
     return this.listAgentRuns().filter(run => activeRunStatuses.includes(run.status))
   }
 
+  /** 获取指定任务下的所有 Agent 事件流 */
   listAgentEvents(taskId: string): AgentEvent[] {
     return this.snapshot.agentEvents
       .filter(event => event.taskId === taskId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
+  /** 获取指定任务下的敏感操作审批列表 */
   listApprovals(taskId: string): HumanApproval[] {
     return this.snapshot.approvals
       .filter(approval => approval.taskId === taskId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
+  /** 获取特定 Task 下的所有运行记录 */
   listAgentRunsByTask(taskId: string): AgentRun[] {
     return this.listAgentRuns().filter(run => run.taskId === taskId)
   }
 
+  /** 获取专家预设 (ExpertPresets) 列表 */
   listExperts(): ExpertPreset[] {
     return [...this.snapshot.experts].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
+  /** 创建或更新专家角色设定 */
   async createExpert(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<ExpertPreset> {
     const now = nowIso()
     const expert: ExpertPreset = {
@@ -718,16 +824,19 @@ export class AppService {
     })
   }
 
+  /** 删除自定义专家预设 */
   async deleteExpert(expertId: string): Promise<void> {
     await this.mutate(state => {
       state.experts = state.experts.filter(expert => expert.id !== expertId)
     })
   }
 
+  /** 获取规范化后的可用模型配置列表 */
   listModelConfigs(): ModelConfig[] {
     return sanitizeModelConfigs(this.snapshot.modelConfigs)
   }
 
+  /** 解析匹配任务使用的有效模型 ID，无法匹配时自动降级 */
   private resolveTaskModelId(requestedModelId?: string) {
     if (requestedModelId && this.snapshot.modelConfigs.some(model => model.id === requestedModelId)) {
       return requestedModelId
@@ -742,7 +851,7 @@ export class AppService {
   }
 
   /**
-   * 返回任务运行所需的完整上下文，供 runtime 组装提示词和工具输入。
+   * 返回任务运行所需的完整上下文，供 AgentRuntimeService 组装提示词和工具输入。
    */
   getTaskContext(taskId: string) {
     const task = this.getTask(taskId)
@@ -760,14 +869,17 @@ export class AppService {
     }
   }
 
+  /** 获取指定 AgentRun 实体 */
   getAgentRun(runId: string): AgentRun | null {
     return this.snapshot.agentRuns.find(run => run.id === runId) ?? null
   }
 
+  /** 获取指定审批实体 */
   getApproval(approvalId: string): HumanApproval | null {
     return this.snapshot.approvals.find(approval => approval.id === approvalId) ?? null
   }
 
+  /** 向运行追加子 Agent 派生的消息 */
   async appendSubagentMessage(runId: string, content: string, metadata?: Record<string, unknown>) {
     const run = this.getAgentRun(runId)
     if (!run) {
@@ -785,6 +897,7 @@ export class AppService {
     })
   }
 
+  /** 停止指定的子 Agent 运行 */
   async stopSubagentRun(runId: string, reason?: string): Promise<AgentRun> {
     const run = this.getAgentRun(runId)
     if (!run) {
@@ -967,6 +1080,9 @@ export class AppService {
     }
   }
 
+  /**
+   * 以等待方案确认 (Plan Approval) 的状态完成单次运行。
+   */
   async completeRuntimeRunWithPlanApproval(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
     let taskId = ''
     let waitingRun: AgentRun | null = null
@@ -1154,14 +1270,17 @@ export class AppService {
     }
   }
 
+  /** 暂停运行时 AgentRun */
   async pauseRuntimeRun(runId: string): Promise<AgentRun> {
     return this.updateAgentRunStatus(runId, 'paused')
   }
 
+  /** 恢复运行 AgentRun */
   async resumeRuntimeRun(runId: string): Promise<AgentRun> {
     return this.updateAgentRunStatus(runId, 'running')
   }
 
+  /** 取消运行 AgentRun */
   async cancelRuntimeRun(runId: string): Promise<AgentRun> {
     return this.updateAgentRunStatus(runId, 'cancelled')
   }
@@ -1237,10 +1356,14 @@ export class AppService {
     return approval
   }
 
+  /** 响应审批请求（别名） */
   async approveRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<HumanApproval> {
     return this.approveRuntimeRequest(approvalId, decision, editedArgs)
   }
 
+  /**
+   * 响应人工敏感操作审批（通过、修改参数通过、或拒绝），恢复或终止运行状态并记录原因。
+   */
   async approveRuntimeRequest(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>): Promise<HumanApproval> {
     let targetTaskId = ''
     let resolvedApproval: HumanApproval | null = null
@@ -1340,6 +1463,7 @@ export class AppService {
     return resolvedApproval
   }
 
+  /** 更新 AgentRun 状态并向 UI 发送更新补丁 */
   private async updateAgentRunStatus(runId: string, status: AgentRun['status']): Promise<AgentRun> {
     return this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -1374,10 +1498,16 @@ export class AppService {
     })
   }
 
+  // ==========================================
+  // 模型 (Models) & MCP 外部配置文件镜像读写
+  // ==========================================
+
+  /** 读取格式化后的模型配置 JSON 字符串 */
   async readModelsConfig(): Promise<string> {
     return JSON.stringify(sanitizeModelConfigs(this.snapshot.modelConfigs), null, 2)
   }
 
+  /** 写入并覆盖模型配置 JSON，同时更新内存与 `~/.anybuddy/models.json` */
   async writeModelsConfig(content: string): Promise<void> {
     const parsed = JSON.parse(content) as ModelConfig[]
     if (!Array.isArray(parsed)) {
@@ -1390,6 +1520,7 @@ export class AppService {
     await this.syncConfigFilesFromState()
   }
 
+  /** 读取 MCP 服务的配置 JSON 文本 */
   async readMcpConfig(): Promise<string> {
     try {
       JSON.parse(this.snapshot.mcpConfigRaw)
@@ -1400,6 +1531,7 @@ export class AppService {
     }
   }
 
+  /** 保存 MCP 服务配置文本，并同步至 `~/.anybuddy/mcp.json` */
   async writeMcpConfig(content: string): Promise<void> {
     JSON.parse(content)
     await this.mutate(state => {
@@ -1408,6 +1540,7 @@ export class AppService {
     await this.syncConfigFilesFromState()
   }
 
+  /** 从磁盘文件 `~/.anybuddy/mcp.json` 读取 MCP 配置内容 */
   private async readMcpConfigFromFile(): Promise<string> {
     const file = this.getMcpConfigFile()
     try {

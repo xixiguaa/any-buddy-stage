@@ -72,3 +72,15 @@ export class ModelApiModeMismatchError extends Error {
     this.name = 'ModelApiModeMismatchError';
   }
 }
+
+// 工具执行如果触发敏感操作恢复点，需要立刻中断当前 agent 轮次，等待确认后再恢复。
+export class AgentApprovalPendingError extends Error {
+  constructor(
+    public readonly toolName: string,
+    public readonly result: ToolExecutionResult,
+  ) {
+    super(`Tool paused for confirmation: ${toolName}`);
+    this.name = 'AgentApprovalPendingError';
+  }
+}
+

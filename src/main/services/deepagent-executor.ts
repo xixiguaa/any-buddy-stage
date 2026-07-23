@@ -8,10 +8,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
-import { AgentApprovalPendingError } from './langchain-agent-service.js';
 import { OpenAIModelService } from './openai-model-service.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
-import { ModelApiModeMismatchError } from './agent-runtime-types.js';
+import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
 import type { HumanApproval } from '../../shared/types.js';
 
 type DeepAgentExecutorDependencies = {

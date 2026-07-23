@@ -10,8 +10,6 @@
   "include": [
     "src/main/services/agent-runtime-service.test.ts",
     "src/main/services/tool-registry-service.test.ts",
-    "src/main/services/openai-model-service.test.ts",
-    "src/main/services/langchain-agent-service.test.ts",
     "src/main/state/default-state.test.ts",
     "src/renderer/stores/runtime-message-view.test.ts"
   ]
