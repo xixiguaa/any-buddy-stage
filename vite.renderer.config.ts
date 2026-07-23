@@ -11,10 +11,6 @@ export default defineConfig({
       '@shared': '/src/shared',
     },
   },
-  build: {
-    outDir: 'dist/renderer',
-    emptyOutDir: true,
-  },
   server: {
     port: 5173,
     strictPort: true,
