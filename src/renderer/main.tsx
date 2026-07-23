@@ -7,6 +7,10 @@ import { AnybuddyApiProvider } from './api/context.js'
 import { useAppStore } from './stores/app-store.js'
 import './styles/app.css'
 
+if (!window.anybuddy) {
+  console.error('window.anybuddy is undefined. Make sure Electron preload script is loaded.')
+}
+
 const clients = createAnybuddyClients(window.anybuddy)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

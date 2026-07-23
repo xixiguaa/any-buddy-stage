@@ -11,7 +11,11 @@ export default defineConfig({
     outDir: '.vite/build',
     rollupOptions: {
       external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:os', 'node:events'],
+      output: {
+        entryFileNames: 'main.js',
+      },
     },
     target: 'node22',
   },
 })
+

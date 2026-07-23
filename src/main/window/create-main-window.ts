@@ -13,7 +13,7 @@ export function createMainWindow() {
     backgroundColor: '#f4f1eb',
     title: 'anybuddy',
     webPreferences: {
-      preload: join(currentDir, 'index.js'),
+      preload: join(currentDir, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -26,7 +26,7 @@ export function createMainWindow() {
       logProcessError({ scope: 'loadURL', detail: { devUrl } }, error)
     })
   } else {
-    const file = join(app.getAppPath(), 'dist/renderer/index.html')
+    const file = join(app.getAppPath(), '.vite/renderer/main_window/index.html')
     void win.loadFile(file).catch(error => {
       logProcessError({ scope: 'loadFile', detail: { file } }, error)
     })
