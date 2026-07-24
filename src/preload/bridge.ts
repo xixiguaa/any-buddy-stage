@@ -104,6 +104,7 @@ const anybuddyApi: AnybuddyApi = {
     readMcp: () => invoke<string>(IPC_CHANNELS.configReadMcp),
     writeMcp: content => invoke<void>(IPC_CHANNELS.configWriteMcp, content),
     listSkills: () => invoke<string[]>(IPC_CHANNELS.configListSkills),
+    importSkill: input => invoke<{ name: string; description?: string }>(IPC_CHANNELS.configImportSkill, input),
   },
 }
 

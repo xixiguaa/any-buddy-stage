@@ -23,6 +23,7 @@ import {
 import { Sparkles, Terminal, ShieldAlert, Award, Radio, MoreHorizontal } from 'lucide-react'
 import { useAppStore } from '../stores/app-store.js'
 import { createAnybuddyClients } from '../api/clients.js'
+import CustomPopover from '../components/Popover.js'
 
 const { Sider } = Layout
 
@@ -90,6 +91,7 @@ export default function Sidebar() {
   const [tasksCollapsed, setTasksCollapsed] = useState(false)
   const [workspacesCollapsed, setWorkspacesCollapsed] = useState(false)
   const [hoveredWorkspaceId, setHoveredWorkspaceId] = useState<string | null>(null)
+  const [activeWorkspacePopoverId, setActiveWorkspacePopoverId] = useState<string | null>(null)
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null)
 
   // Settings Modal States
@@ -657,16 +659,18 @@ export default function Sidebar() {
                             </Space>
 
                             <Space size={2} onClick={e => e.stopPropagation()}>
-                              {hoveredWorkspaceId === workspace.id && (
-                                <Popover
+                              {(hoveredWorkspaceId === workspace.id || activeWorkspacePopoverId === workspace.id) && (
+                                <CustomPopover
                                   content={
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '120px' }}>
                                       <Button
                                         type="text"
                                         size="small"
                                         icon={<FolderOpenOutlined />}
-                                        style={{ textAlign: 'left', fontSize: '12px' }}
-                                        onClick={async () => {
+                                        style={{ textAlign: 'left', fontSize: '12px', justifyContent: 'flex-start' }}
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          setActiveWorkspacePopoverId(null)
                                           const clients = createAnybuddyClients(window.anybuddy)
                                           const res = await clients.workspace.openFolder(workspace.id)
                                           if (!res.ok) {
@@ -685,8 +689,10 @@ export default function Sidebar() {
                                         size="small"
                                         danger
                                         icon={<DeleteOutlined />}
-                                        style={{ textAlign: 'left', fontSize: '12px' }}
-                                        onClick={async () => {
+                                        style={{ textAlign: 'left', fontSize: '12px', justifyContent: 'flex-start' }}
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          setActiveWorkspacePopoverId(null)
                                           Modal.confirm({
                                             title: '移除工作空间',
                                             content: `确定要从列表中移除空间 "${workspace.name}" 吗？`,
@@ -709,6 +715,8 @@ export default function Sidebar() {
                                   }
                                   trigger="click"
                                   placement="bottomRight"
+                                  open={activeWorkspacePopoverId === workspace.id}
+                                  onOpenChange={(open: boolean) => setActiveWorkspacePopoverId(open ? workspace.id : null)}
                                 >
                                   <Button
                                     type="text"
@@ -716,7 +724,7 @@ export default function Sidebar() {
                                     icon={<MoreHorizontal size={14} />}
                                     style={{ width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                                   />
-                                </Popover>
+                                </CustomPopover>
                               )}
                               <Button
                                 type="text"

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { shell, dialog } from 'electron'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import os from 'node:os'
@@ -8,6 +8,8 @@ import { AppEventBus } from '../runtime/event-bus.js'
 import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
 import { DEFAULT_EXPERTS } from '../../renderer/data/experts.js'
+import { OpenAIModelService } from './openai-model-service.js'
+import { ChatOpenAI } from '@langchain/openai'
 import type {
   AgentEvent,
   AgentRun,
@@ -115,6 +117,9 @@ function taskPermissionToWorkspaceAccess(permissionMode: Task['permissionMode'])
  * 4. 负责镜像是将模型与 MCP 配置导出同步至本地隐藏配置文件 (`~/.anybuddy/models.json` / `mcp.json`)。
  */
 export class AppService {
+  /** 模型配置解析服务（用于根据模式和 API Key 实例化 ChatOpenAI 进行意图分析与生成标题） */
+  private readonly modelService = new OpenAIModelService()
+
   /** 缓存待防抖刷盘的流式文本事件 Patch */
   private readonly pendingStreamEventPatches = new Map<string, { taskId: string; event: AgentEvent }>()
   private streamEventFlushTimer: NodeJS.Timeout | null = null
@@ -128,12 +133,13 @@ export class AppService {
   ) {}
 
   /**
-   * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置，并清理上次未正常关机残留卡住的活跃运行。
+   * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置、同步扫描 AnyBuddy 工作区目录，并清理上次未正常关机残留卡住的活跃运行。
    */
   async init() {
     this.state = await this.repository.load(createDefaultState())
     await this.ensureDefaultExperts()
     await this.hydrateConfigStateFromFiles()
+    await this.syncAnyBuddyWorkspaces()
     
     // 应用启动时清理异常卡在活跃状态（running/queued等）的任务与运行
     let changed = false
@@ -154,6 +160,49 @@ export class AppService {
     }
     if (changed) {
       await this.persist()
+    }
+  }
+
+  /**
+   * 自动扫描并水合用户目录 AnyBuddy 文件夹下的已存在工作区子目录
+   */
+  private async syncAnyBuddyWorkspaces() {
+    if (!this.state) return
+    const anybuddyRootDir = join(os.homedir(), 'AnyBuddy')
+    if (!existsSync(anybuddyRootDir)) return
+
+    try {
+      const entries = readdirSync(anybuddyRootDir, { withFileTypes: true })
+      const existingPaths = new Set(this.state.workspaces.map(w => w.path))
+      let hasNew = false
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const workspacePath = join(anybuddyRootDir, entry.name)
+          if (!existingPaths.has(workspacePath)) {
+            const now = nowIso()
+            const newWorkspace: Workspace = {
+              id: createId('workspace'),
+              name: entry.name,
+              path: workspacePath,
+              defaultPermissionMode: 'read_write',
+              isArchived: false,
+              createdAt: now,
+              updatedAt: now,
+              lastOpenedAt: now,
+            }
+            this.state.workspaces.unshift(newWorkspace)
+            existingPaths.add(workspacePath)
+            hasNew = true
+          }
+        }
+      }
+
+      if (hasNew) {
+        await this.persist()
+      }
+    } catch (error) {
+      console.warn('[AppService] 扫描 AnyBuddy 工作区目录失败:', error)
     }
   }
 
@@ -290,6 +339,7 @@ export class AppService {
     event?: AgentEvent
     approval?: HumanApproval
     message?: Message
+    task?: Task
   }) {
     this.bus.emitTaskRuntime(taskId, {
       kind: 'patch',
@@ -408,11 +458,42 @@ export class AppService {
 
   /**
    * 创建新任务，同时绑定主工作区和可选的附加工作区。
+   * 若未指定工作区，则自动在用户目录 AnyBuddy 文件夹下创建 "年-月-日 时-分秒" 格式的工作区并绑定。
    */
   async createTask(input: CreateTaskInput): Promise<Task> {
     return this.mutate(state => {
       const now = nowIso()
       const resolvedModelId = this.resolveTaskModelId(input.modelId)
+
+      let primaryWorkspaceId = input.workspaceId?.trim() ? input.workspaceId : undefined
+
+      // 若未指定工作区，自动在用户目录 AnyBuddy 文件夹下创建新工作区（格式：年-月-日 时-分秒）
+      if (!primaryWorkspaceId) {
+        const date = new Date()
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const folderName = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
+        const anybuddyRootDir = join(os.homedir(), 'AnyBuddy')
+        const workspacePath = join(anybuddyRootDir, folderName)
+
+        if (!existsSync(workspacePath)) {
+          mkdirSync(workspacePath, { recursive: true })
+        }
+
+        const newWorkspace: Workspace = {
+          id: createId('workspace'),
+          name: folderName,
+          path: workspacePath,
+          defaultPermissionMode: taskPermissionToWorkspaceAccess(input.permissionMode),
+          isArchived: false,
+          createdAt: now,
+          updatedAt: now,
+          lastOpenedAt: now,
+        }
+
+        state.workspaces.unshift(newWorkspace)
+        primaryWorkspaceId = newWorkspace.id
+      }
+
       const task: Task = {
         id: createId('task'),
         title: input.title,
@@ -420,7 +501,7 @@ export class AppService {
         modelId: resolvedModelId,
         expertIds: input.expertIds,
         activeExpertId: input.activeExpertId ?? input.expertIds[0],
-        primaryWorkspaceId: input.workspaceId,
+        primaryWorkspaceId,
         permissionMode: input.permissionMode,
         connectorIds: input.connectorIds,
         skillIds: input.skillIds,
@@ -431,26 +512,26 @@ export class AppService {
       }
       state.tasks.unshift(task)
 
-      if (input.workspaceId) {
-        state.taskWorkspaces.unshift({
-          id: createId('taskWorkspace'),
-          taskId: task.id,
-          workspaceId: input.workspaceId,
-          role: 'primary',
-          accessMode: taskPermissionToWorkspaceAccess(input.permissionMode),
-          addedAt: now,
-        })
-      }
+      state.taskWorkspaces.unshift({
+        id: createId('taskWorkspace'),
+        taskId: task.id,
+        workspaceId: primaryWorkspaceId,
+        role: 'primary',
+        accessMode: taskPermissionToWorkspaceAccess(input.permissionMode),
+        addedAt: now,
+      })
 
       for (const workspaceId of input.additionalWorkspaceIds ?? []) {
-        state.taskWorkspaces.unshift({
-          id: createId('taskWorkspace'),
-          taskId: task.id,
-          workspaceId,
-          role: 'attached',
-          accessMode: 'read_only',
-          addedAt: now,
-        })
+        if (workspaceId !== primaryWorkspaceId) {
+          state.taskWorkspaces.unshift({
+            id: createId('taskWorkspace'),
+            taskId: task.id,
+            workspaceId,
+            role: 'attached',
+            accessMode: 'read_only',
+            addedAt: now,
+          })
+        }
       }
 
       return task
@@ -461,7 +542,7 @@ export class AppService {
    * 更新任务属性（模式、激活专家、模型、权限等）。
    */
   async updateTask(taskId: string, input: UpdateTaskInput): Promise<Task> {
-    return this.mutate(state => {
+    const updatedTask = await this.mutate(state => {
       const task = state.tasks.find(item => item.id === taskId)
       if (!task) {
         throw new Error(`Task not found: ${taskId}`)
@@ -481,6 +562,73 @@ export class AppService {
       }
       return task
     })
+
+    this.emitTaskRuntimePatch(taskId, { task: updatedTask })
+    return updatedTask
+  }
+
+  /**
+   * 采用 B 方案：在获取到初始对话内容后，后台异步调用大语言模型解析用户意图，自动提炼生成精炼的任务标题。
+   */
+  async generateAndApplyTaskTitle(taskId: string, initialPrompt: string, modelId?: string): Promise<void> {
+    if (!initialPrompt.trim()) return
+
+    try {
+      const resolvedModel = this.modelService.resolveModelConfig(
+        this.listModelConfigs(),
+        modelId,
+      )
+
+      if (!resolvedModel?.apiKey) {
+        return
+      }
+
+      const model = new ChatOpenAI({
+        model: resolvedModel.modelName,
+        apiKey: resolvedModel.apiKey,
+        temperature: 0.3,
+        configuration: {
+          baseURL: resolvedModel.baseUrl,
+        },
+      })
+
+      const prompt = `你是一个专业的任务标题提炼助手。请根据用户发送的初始需求文本，提取或生成一个非常简短精炼的任务标题。
+
+要求：
+1. 字数严格控制在 4 到 15 个字之间；
+2. 保持精炼，只返回标题文本本身，不要出现任何引号、句点、Markdown 语法或前缀说明；
+3. 语言与用户输入的主语言一致。
+
+用户需求：
+${initialPrompt.slice(0, 1000)}
+
+标题：`
+
+      const response = await model.invoke(prompt)
+      const rawText = typeof response.content === 'string'
+        ? response.content
+        : Array.isArray(response.content)
+          ? response.content.map((c: any) => typeof c === 'string' ? c : c.text ?? '').join('')
+          : String(response.content ?? '')
+
+      // 过滤思考模型（如 DeepSeek-R1、Qwen-Reasoning 等）输出的 <think>...</think> 标签与思维链
+      const withoutThink = rawText
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/<think>[\s\S]*/gi, '')
+        .trim()
+
+      const cleanTitle = withoutThink
+        .replace(/^["'「『【\s]+|["'」』】\s]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 30)
+
+      if (cleanTitle && cleanTitle.length >= 2) {
+        await this.updateTask(taskId, { title: cleanTitle })
+      }
+    } catch (error) {
+      console.warn('[AppService] LLM 自动生成任务标题失败，保持原标题:', error)
+    }
   }
 
   /** 彻底删除任务及其关联的消息、草稿、工作区绑定和 Agent 运行记录 */
@@ -604,8 +752,11 @@ export class AppService {
 
   /** 创建新的对话消息并向任务追加引用 */
   async createMessage(taskId: string, input: CreateMessageInput): Promise<Message> {
-    return this.mutate(state => {
-      const message: Message = {
+    const isFirstUserMessage = (input.role === 'user' || !input.role) &&
+      this.snapshot.messages.filter(m => m.taskId === taskId && m.role === 'user').length === 0
+
+    const message = await this.mutate(state => {
+      const msg: Message = {
         id: createId('message'),
         taskId,
         role: input.role ?? 'user',
@@ -614,14 +765,21 @@ export class AppService {
         metadata: input.metadata,
         createdAt: nowIso(),
       }
-      state.messages.push(message)
+      state.messages.push(msg)
       const task = state.tasks.find(item => item.id === taskId)
       if (task) {
-        task.updatedAt = message.createdAt
-        task.unreadEventCount += message.role === 'assistant' ? 1 : 0
+        task.updatedAt = msg.createdAt
+        task.unreadEventCount += msg.role === 'assistant' ? 1 : 0
       }
-      return message
+      return msg
     })
+
+    if (isFirstUserMessage && input.content.trim()) {
+      const task = this.snapshot.tasks.find(t => t.id === taskId)
+      void this.generateAndApplyTaskTitle(taskId, input.content, task?.modelId)
+    }
+
+    return message
   }
 
   /** 删除单条指定消息 */

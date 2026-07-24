@@ -98,6 +98,7 @@ export const IPC_CHANNELS = {
   configReadMcp: 'config:read-mcp',
   configWriteMcp: 'config:write-mcp',
   configListSkills: 'config:list-skills',
+  configImportSkill: 'config:import-skill',
 } as const
 
 export type AnybuddyApi = {
@@ -163,6 +164,7 @@ export type AnybuddyApi = {
     readMcp(): Promise<IpcResult<string>>
     writeMcp(content: string): Promise<IpcResult<void>>
     listSkills(): Promise<IpcResult<string[]>>
+    importSkill(input?: { filePath?: string; autoInstall?: boolean }): Promise<IpcResult<{ name: string; description?: string }>>
   }
 }
 

@@ -315,22 +315,34 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
   const taskRuns = nextRuns.filter(run => run.taskId === taskId)
   const activeRun = taskRuns.find(run => run.id === state.taskDetail?.lastRunId) ?? taskRuns[0]
 
+  let nextTasks = state.tasks
+  if (payload.task) {
+    nextTasks = nextTasks.map(t => t.id === taskId ? { ...t, title: payload.task!.title } : t)
+  } else if (payload.run) {
+    nextTasks = mergeTaskSummary(nextTasks, taskId, payload.run)
+  }
+
+  let nextTaskDetail = state.taskDetail
+  if (payload.task && nextTaskDetail && nextTaskDetail.id === taskId) {
+    nextTaskDetail = { ...nextTaskDetail, ...payload.task }
+  } else if (nextTaskDetail && nextTaskDetail.id === taskId) {
+    nextTaskDetail = {
+      ...nextTaskDetail,
+      status: activeRun?.status ?? nextTaskDetail.status,
+      updatedAt: activeRun?.updatedAt ?? nextTaskDetail.updatedAt,
+      lastRunId: activeRun?.id ?? nextTaskDetail.lastRunId,
+    }
+  }
+
   return {
     agentRuns: nextRuns,
     taskEvents: nextEvents,
     taskApprovals: nextApprovals,
     messages: nextMessages,
-    tasks: payload.run ? mergeTaskSummary(state.tasks, taskId, payload.run) : state.tasks,
+    tasks: nextTasks,
     streamingContentByMessageId: nextStreamingContent,
     streamingMessageIdsByRun: nextStreamingIdsByRun,
-    taskDetail: state.taskDetail && state.taskDetail.id === taskId
-      ? {
-          ...state.taskDetail,
-          status: activeRun?.status ?? state.taskDetail.status,
-          updatedAt: activeRun?.updatedAt ?? state.taskDetail.updatedAt,
-          lastRunId: activeRun?.id ?? state.taskDetail.lastRunId,
-        }
-      : state.taskDetail,
+    taskDetail: nextTaskDetail,
   }
 }
 
@@ -342,6 +354,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
   let nextStreamingContent = state.streamingContentByMessageId
   let nextStreamingIdsByRun = state.streamingMessageIdsByRun
   let taskDetail = state.taskDetail
+  let nextTasks = state.tasks
   let hasRunPatch = false
   let latestRunPatch: AgentRun | null = null
   let hasVisibleMessageChange = false
@@ -411,6 +424,13 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
         nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
       }
     }
+
+    if (payload.task) {
+      if (taskDetail && taskDetail.id === taskId) {
+        taskDetail = { ...taskDetail, ...payload.task }
+      }
+      nextTasks = nextTasks.map(t => t.id === taskId ? { ...t, title: payload.task!.title } : t)
+    }
   }
 
   const nextMessages = hasVisibleMessageChange ? buildVisibleMessages(persistedMessages, nextEvents) : state.messages
@@ -431,7 +451,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     taskEvents: nextEvents,
     taskApprovals: nextApprovals,
     messages: nextMessages,
-    tasks: hasRunPatch && latestRunPatch ? mergeTaskSummary(state.tasks, taskId, latestRunPatch) : state.tasks,
+    tasks: hasRunPatch && latestRunPatch ? mergeTaskSummary(nextTasks, taskId, latestRunPatch) : nextTasks,
     streamingContentByMessageId: nextStreamingContent,
     streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail,
@@ -638,7 +658,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       throw new Error(result.error.message)
     }
     const task = result.data
-    set(state => ({ tasks: [awaitSummary(task, state.workspaces), ...state.tasks] }))
+    const workspacesResult = await clients.workspace.list()
+    const currentWorkspaces = workspacesResult.ok ? workspacesResult.data : get().workspaces
+
+    set(state => ({
+      workspaces: currentWorkspaces,
+      tasks: [awaitSummary(task, currentWorkspaces), ...state.tasks],
+    }))
+
     if (initialMessage) {
       const messageResult = await clients.message.create(task.id, { content: initialMessage, role: 'user' })
       if (!messageResult.ok) {

@@ -157,6 +157,7 @@ export type TaskRuntimePatchPayload = {
   event?: AgentEvent
   approval?: HumanApproval
   message?: Message
+  task?: Task
 }
 
 export type TaskRuntimePayload = TaskRuntimeSnapshotPayload | TaskRuntimePatchPayload

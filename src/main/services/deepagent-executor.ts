@@ -2,7 +2,7 @@ import { tool } from 'langchain';
 import { ChatOpenAI } from '@langchain/openai';
 import { createDeepAgent, LocalShellBackend } from 'deepagents/node';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, stat } from 'node:fs/promises';
+import { cp, mkdir, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
@@ -579,8 +579,28 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   private async resolveSkillSources(runId: string, skillIds: string[], rootDir: string) {
-    const uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
+    let uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
     const skillsRoot = getGlobalSkillsRoot();
+
+    // 如果前端未选择任何技能，自动扫描系统全局技能目录 ~/.anybuddy/skills 下所有包含 SKILL.md 的有效技能
+    if (uniqueSkillIds.length === 0 && existsSync(skillsRoot)) {
+      try {
+        const entries = await readdir(skillsRoot, { withFileTypes: true });
+        const autoScannedSkillIds: string[] = [];
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const skillFile = path.join(skillsRoot, entry.name, 'SKILL.md');
+            if (existsSync(skillFile)) {
+              autoScannedSkillIds.push(entry.name);
+            }
+          }
+        }
+        uniqueSkillIds = autoScannedSkillIds;
+        console.debug('[DeepAgentSkills] 自动扫描并装载全局技能列表:', uniqueSkillIds);
+      } catch (error) {
+        console.debug('[DeepAgentSkills] 自动扫描全局技能目录失败:', error);
+      }
+    }
 
     await this.appService.appendRuntimeEvent(runId, 'run_status', {
       status: 'running',

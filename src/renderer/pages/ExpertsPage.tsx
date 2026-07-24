@@ -9,11 +9,13 @@ import {
   ThunderboltOutlined,
   SearchOutlined,
   CodeOutlined,
-  SaveOutlined
+  SaveOutlined,
+  UploadOutlined
 } from '@ant-design/icons'
 import { useAppStore } from '../stores/app-store.js'
 import { createAnybuddyClients } from '../api/clients.js'
 import type { ExpertPreset } from '../../shared/types.js'
+import ImportSkillModal from '../components/ImportSkillModal.js'
 
 const SKILL_DESCRIPTIONS: Record<string, string> = {
   'frontend-design': '前端整体界面排版与视觉设计技能包',
@@ -45,6 +47,7 @@ export default function ExpertsPage() {
   const [activeTab, setActiveTab] = useState('experts')
   const [skillSearch, setSkillSearch] = useState('')
   const [localSkills, setLocalSkills] = useState<string[]>([])
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
 
   // Custom expert modal
   const [isExpertModalOpen, setIsExpertModalOpen] = useState(false)
@@ -56,17 +59,21 @@ export default function ExpertsPage() {
   // MCP Configuration text
   const [mcpConfigText, setMcpConfigText] = useState(mcpConfigRaw)
 
-  useEffect(() => {
-    setMcpConfigText(mcpConfigRaw)
-  }, [mcpConfigRaw])
-
-  useEffect(() => {
+  const fetchSkills = () => {
     const clients = createAnybuddyClients(window.anybuddy)
     void clients.config.listSkills().then(result => {
       if (result.ok) {
         setLocalSkills(result.data)
       }
     })
+  }
+
+  useEffect(() => {
+    setMcpConfigText(mcpConfigRaw)
+  }, [mcpConfigRaw])
+
+  useEffect(() => {
+    fetchSkills()
   }, [])
 
   const allExperts = useMemo(() => experts, [experts])
@@ -264,15 +271,25 @@ export default function ExpertsPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>本地技能包</div>
-              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 .agents/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 ~/.anybuddy/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
             </div>
-            <Input
-              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-              placeholder="搜索技能..."
-              value={skillSearch}
-              onChange={e => setSkillSearch(e.target.value)}
-              style={{ width: '200px', borderRadius: '6px' }}
-            />
+            <Space>
+              <Input
+                prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                placeholder="搜索技能..."
+                value={skillSearch}
+                onChange={e => setSkillSearch(e.target.value)}
+                style={{ width: '200px', borderRadius: '6px' }}
+              />
+              <Button
+                type="primary"
+                icon={<UploadOutlined />}
+                onClick={() => setIsImportModalOpen(true)}
+                style={{ background: '#0f172a', border: 'none', borderRadius: '6px' }}
+              >
+                导入技能
+              </Button>
+            </Space>
           </div>
           <Row gutter={[16, 16]}>
             {filteredSkills.map(name => (
@@ -296,6 +313,8 @@ export default function ExpertsPage() {
         </div>
       ),
     },
+    /* 暂隐藏外部应用连接器模块 */
+    /*
     {
       key: 'connectors',
       label: (
@@ -325,7 +344,6 @@ export default function ExpertsPage() {
             ))}
           </Row>
 
-          {/* MCP Config Direct Edit Section */}
           <div style={{
             borderTop: '1px solid #f1f5f9',
             paddingTop: '20px',
@@ -368,6 +386,7 @@ export default function ExpertsPage() {
         </div>
       ),
     },
+    */
   ]
 
   return (
@@ -429,6 +448,12 @@ export default function ExpertsPage() {
           </div>
         </div>
       </Modal>
+
+      <ImportSkillModal
+        open={isImportModalOpen}
+        onCancel={() => setIsImportModalOpen(false)}
+        onSuccess={() => fetchSkills()}
+      />
     </div>
   )
 }

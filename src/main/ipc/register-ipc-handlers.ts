@@ -2,12 +2,16 @@ import { ipcMain, dialog } from 'electron'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { IPC_CHANNELS } from '../../shared/ipc.js'
 import type { IpcResult } from '../../shared/types.js'
 import { toIpcError } from './serialize-error.js'
 import type { AppService } from '../services/app-service.js'
 import { AgentRuntimeService } from '../services/agent-runtime-service.js'
 import { logProcessError } from '../runtime/error-logger.js'
+
+const execFileAsync = promisify(execFile)
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
@@ -420,6 +424,114 @@ export function registerIpcHandlers(appService: AppService) {
   ipcMain.handle(IPC_CHANNELS.configListSkills, async () => {
     try {
       return ok(await listLocalSkills())
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.configImportSkill, async (_event, input?: { filePath?: string; autoInstall?: boolean }) => {
+    try {
+      let targetPath = input?.filePath
+      if (!targetPath) {
+        const dialogResult = await dialog.showOpenDialog({
+          title: '选择技能包文件或目录',
+          properties: ['openFile', 'openDirectory'],
+          filters: [{ name: '技能压缩包', extensions: ['zip'] }],
+        })
+        if (dialogResult.canceled || !dialogResult.filePaths[0]) {
+          throw new Error('已取消选择文件')
+        }
+        targetPath = dialogResult.filePaths[0]
+      }
+
+      const stat = await fs.stat(targetPath)
+      const tempDir = path.join(os.tmpdir(), `anybuddy-skill-import-${Date.now()}`)
+      const sourceFolder = tempDir
+
+      try {
+        if (stat.isFile()) {
+          if (!targetPath.toLowerCase().endsWith('.zip')) {
+            throw new Error('仅支持导入 .zip 格式文件或解压后的技能目录')
+          }
+          await fs.mkdir(tempDir, { recursive: true })
+          if (process.platform === 'win32') {
+            await execFileAsync('powershell', [
+              '-NoProfile',
+              '-Command',
+              `Expand-Archive -LiteralPath "${targetPath}" -DestinationPath "${tempDir}" -Force`,
+            ])
+          } else {
+            await execFileAsync('unzip', ['-o', targetPath, '-d', tempDir])
+          }
+        } else if (stat.isDirectory()) {
+          await fs.mkdir(tempDir, { recursive: true })
+          await fs.cp(targetPath, tempDir, { recursive: true })
+        } else {
+          throw new Error('非法的技能包文件或路径')
+        }
+
+        let actualSkillDir = sourceFolder
+        let skillMdPath = path.join(actualSkillDir, 'SKILL.md')
+        let hasSkillMd = false
+
+        try {
+          await fs.access(skillMdPath)
+          hasSkillMd = true
+        } catch {
+          const entries = await fs.readdir(sourceFolder, { withFileTypes: true })
+          for (const entry of entries) {
+            if (entry.isDirectory()) {
+              const subSkillMd = path.join(sourceFolder, entry.name, 'SKILL.md')
+              try {
+                await fs.access(subSkillMd)
+                actualSkillDir = path.join(sourceFolder, entry.name)
+                skillMdPath = subSkillMd
+                hasSkillMd = true
+                break
+              } catch {
+                // continue searching
+              }
+            }
+          }
+        }
+
+        if (!hasSkillMd) {
+          throw new Error('包内未找到 SKILL.md 文件，无法识别为有效技能包')
+        }
+
+        const skillMdContent = await fs.readFile(skillMdPath, 'utf-8')
+        let skillName = path.basename(actualSkillDir)
+        let skillDesc = ''
+
+        const yamlMatch = skillMdContent.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+        if (yamlMatch) {
+          const yamlText = yamlMatch[1]
+          const nameMatch = yamlText.match(/^name:\s*(.+)$/m)
+          if (nameMatch) {
+            skillName = nameMatch[1].trim().replace(/^['"]|['"]$/g, '')
+          }
+          const descMatch = yamlText.match(/^description:\s*(.+)$/m)
+          if (descMatch) {
+            skillDesc = descMatch[1].trim().replace(/^['"]|['"]$/g, '')
+          }
+        }
+
+        const safeSkillId = skillName.replace(/[^\w-]/g, '-').replace(/-+/g, '-').toLowerCase() || `skill-${Date.now()}`
+        const globalSkillsRoot = path.join(os.homedir(), '.anybuddy', 'skills')
+        const finalDestDir = path.join(globalSkillsRoot, safeSkillId)
+
+        await fs.mkdir(globalSkillsRoot, { recursive: true })
+        await fs.rm(finalDestDir, { recursive: true, force: true })
+        await fs.cp(actualSkillDir, finalDestDir, { recursive: true })
+
+        return ok({ name: safeSkillId, description: skillDesc })
+      } finally {
+        try {
+          await fs.rm(tempDir, { recursive: true, force: true })
+        } catch {
+          // ignore clean up errors
+        }
+      }
     } catch (error) {
       return fail(error)
     }

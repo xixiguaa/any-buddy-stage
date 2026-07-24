@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { createAnybuddyClients } from '../api/clients.js'
-import { Input, Select, Button, Space, Divider, Popover, Checkbox, Tooltip, Modal, Tag } from 'antd'
+import { Input, Select, Button, Space, Divider, Checkbox, Tooltip, Modal, Tag } from 'antd'
 import {
   PlusOutlined,
   SendOutlined,
@@ -17,6 +17,8 @@ import {
 import type { CreateTaskInput, ExpertPreset, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
 import { useAppStore } from '../stores/app-store.js'
 import { useNavigate } from 'react-router-dom'
+/* 引入手写的丝滑 Popover 全局弹出层组件 */
+import CustomPopover from './Popover.js'
 
 // Custom icons matching the user's screenshot
 const CraftIcon = () => (
@@ -151,11 +153,11 @@ export default function TaskComposer({
     () => customModels.find(model => model.enabled)?.id ?? customModels[0]?.id ?? '',
     [customModels],
   )
-  const [title, setTitle] = useState('未命名任务')
+  const [title, setTitle] = useState('')
   const [message, setMessage] = useState(draft?.content ?? '')
   const [mode, setMode] = useState<CreateTaskInput['mode']>(defaultMode)
   const [modelId, setModelId] = useState(defaultModelId)
-  const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? workspaceOptions[0]?.id ?? '')
+  const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? '')
   const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
   const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || '')
   const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
@@ -173,7 +175,6 @@ export default function TaskComposer({
   const [showModePopover, setShowModePopover] = useState(false)
   const [showModelPopover, setShowModelPopover] = useState(false)
   const [showSkillsPopover, setShowSkillsPopover] = useState(false)
-  const [showConnectorPopover, setShowConnectorPopover] = useState(false)
   const [showAttachPopover, setShowAttachPopover] = useState(false)
   const [showPermissionPopover, setShowPermissionPopover] = useState(false)
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
@@ -258,11 +259,7 @@ export default function TaskComposer({
     onDraftChangeRef.current = onDraftChange
   }, [onDraftChange])
 
-  useEffect(() => {
-    if (!workspaceId && workspaceOptions[0]) {
-      setWorkspaceId(workspaceOptions[0].id)
-    }
-  }, [workspaceId, workspaceOptions])
+
 
   useEffect(() => {
     setPermissionMode(normalizePermissionMode(defaultPermissionMode))
@@ -393,7 +390,7 @@ export default function TaskComposer({
           activeExpertId,
         })
       } else if (onCreate) {
-        const taskTitle = title.trim() || initialMessage.split('\n')[0]?.slice(0, 80) || '未命名任务'
+        const taskTitle = title.trim() || initialMessage.split('\n')[0]?.trim().slice(0, 50) || '新任务'
         await onCreate(
           {
             title: taskTitle,
@@ -528,7 +525,7 @@ export default function TaskComposer({
 
   const currentWorkspaceName = useMemo(() => {
     const ws = workspaceOptions.find(w => w.id === workspaceId)
-    return ws ? ws.name : '未选择工作空间'
+    return ws ? ws.name : '自动新建 (AnyBuddy/日期文件夹)'
   }, [workspaceId, workspaceOptions])
 
   const filteredWorkspaceOptions = useMemo(() => {
@@ -634,16 +631,16 @@ export default function TaskComposer({
         {/* Configuration Selectors */}
         <Space wrap size={6}>
           {/* Mode Option */}
-            <Popover
-              open={showModePopover}
-              onOpenChange={(open) => {
-                setShowModePopover(open)
-                if (!open) {
-                  setShowRecentExperts(false)
-                }
-              }}
-              classNames={{ root: 'mode-popover-container' }}
-              styles={{ content: { padding: '6px 8px', borderRadius: '12px' } }}
+          <CustomPopover
+            open={showModePopover}
+            onOpenChange={(open: boolean) => {
+              setShowModePopover(open)
+              if (!open) {
+                setShowRecentExperts(false)
+              }
+            }}
+            className="mode-popover-container"
+            contentStyle={{ padding: '6px 8px' }}
             content={
               <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px', position: 'relative' }}>
                 {[
@@ -859,18 +856,18 @@ export default function TaskComposer({
               </div>
             }
             trigger="click"
-            placement="bottomLeft"
+            placement="topLeft"
           >
             <Button className="mode-trigger-btn" size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               ⚡ 模式: {mode.toUpperCase()}
             </Button>
-          </Popover>
+          </CustomPopover>
 
           {/* Model Option */}
-          <Popover
+          <CustomPopover
             open={showModelPopover}
             onOpenChange={setShowModelPopover}
-            styles={{ content: { padding: '6px 8px', borderRadius: '12px' } }}
+            contentStyle={{ padding: '6px 8px' }}
             content={
               <div style={{ width: '260px', padding: '2px 0' }}>
                 {!addingModel ? (
@@ -1036,18 +1033,18 @@ export default function TaskComposer({
               </div>
             }
             trigger="click"
-            placement="bottomLeft"
+            placement="topLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               🤖 模型: {allModels.find(model => model.value === modelId)?.label ?? '未配置'}
             </Button>
-          </Popover>
+          </CustomPopover>
 
           {/* Composable Skills Popover */}
-          <Popover
+          <CustomPopover
             open={showSkillsPopover}
             onOpenChange={setShowSkillsPopover}
-            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
+            contentStyle={{ padding: '6px 8px' }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1104,83 +1101,20 @@ export default function TaskComposer({
                 </div>
             }
             trigger="click"
-            placement="bottomLeft"
+            placement="topLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               🛠️ 技能 ({selectedSkillsList.length})
             </Button>
-          </Popover>
+          </CustomPopover>
 
-          {/* App Connectors Popover */}
-          <Popover
-            open={showConnectorPopover}
-            onOpenChange={setShowConnectorPopover}
-            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
-            content={
-              <div style={{ width: '220px', padding: '2px 0' }}>
-                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
-                  连接外部应用渠道
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '0 4px' }}>
-                  {[
-                    { label: '微信助手 (WeChat)', value: 'wechat', desc: '微信客户端消息推送' },
-                    { label: '钉钉助手 (DingTalk)', value: 'dingtalk', desc: '钉钉机器人通知流水' },
-                    { label: 'MCP 协议 (MCP Server)', value: 'mcp', desc: '大模型上下文协议网关' },
-                    { label: '本地文件 (Filesystem)', value: 'filesystem', desc: '挂载主工作空间读写' },
-                    { label: '网页搜索 (Search)', value: 'web-search', desc: '网页端多渠道搜索' }
-                  ].map(opt => {
-                    const isChecked = selectedConnectorsList.includes(opt.value)
-                    return (
-                      <div
-                        key={opt.value}
-                        onClick={() => {
-                          let nextList
-                          if (!isChecked) {
-                            nextList = [...selectedConnectorsList, opt.value]
-                          } else {
-                            nextList = selectedConnectorsList.filter(c => c !== opt.value)
-                          }
-                          setConnectors(nextList.join(', '))
-                        }}
-                        style={{
-                          padding: '6px 8px',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          background: isChecked ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '2px',
-                          transition: 'background 0.2s'
-                        }}
-                        onMouseEnter={e => !isChecked && (e.currentTarget.style.background = '#f8fafc')}
-                        onMouseLeave={e => !isChecked && (e.currentTarget.style.background = 'transparent')}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ fontSize: '12px', fontWeight: 600, color: isChecked ? '#0f172a' : '#334155' }}>
-                            {opt.label}
-                          </span>
-                          <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
-                        </div>
-                        <span style={{ fontSize: '9px', color: '#94a3b8', lineHeight: '1.2' }}>{opt.desc}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            }
-            trigger="click"
-            placement="bottomLeft"
-          >
-            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
-              🔗 连应用 ({selectedConnectorsList.length})
-            </Button>
-          </Popover>
+
 
           {/* Attached Workspaces Check List */}
-          <Popover
+          <CustomPopover
             open={showAttachPopover}
             onOpenChange={setShowAttachPopover}
-            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
+            contentStyle={{ padding: '6px 8px' }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1227,18 +1161,18 @@ export default function TaskComposer({
               </div>
             }
             trigger="click"
-            placement="bottomLeft"
+            placement="topLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               📂 关联 ({attachedWorkspaceIds.length})
             </Button>
-          </Popover>
+          </CustomPopover>
 
           {/* Permission Mode Popover */}
-          <Popover
+          <CustomPopover
             open={showPermissionPopover}
             onOpenChange={setShowPermissionPopover}
-            styles={{ content: { padding: '6px 8px', borderRadius: '10px' } }}
+            contentStyle={{ padding: '6px 8px' }}
             content={
               <div style={{ width: '220px', padding: '2px 0' }}>
                 <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
@@ -1281,12 +1215,12 @@ export default function TaskComposer({
               </div>
             }
             trigger="click"
-            placement="bottomLeft"
+            placement="topLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
               🛡️ 权限: {permissionMode === 'full_access' ? '完全' : '读写'}
             </Button>
-          </Popover>
+          </CustomPopover>
         </Space>
 
         {/* Right Action buttons */}
@@ -1306,11 +1240,12 @@ export default function TaskComposer({
 
       {/* Bottom Workspace Selector Bar */}
       {!hideWorkspacePicker && (
-        <Popover
+        <CustomPopover
           open={showWorkspacePicker}
           onOpenChange={setShowWorkspacePicker}
           trigger="click"
-          placement="bottomLeft"
+          placement="topLeft"
+          contentStyle={{ padding: '6px 8px' }}
           content={
             <div style={{ padding: '4px', width: '240px' }}>
               <div style={{ fontWeight: 600, fontSize: '12px', color: '#475569', marginBottom: '8px' }}>切换主工作空间</div>
@@ -1322,6 +1257,23 @@ export default function TaskComposer({
                 style={{ marginBottom: '8px', borderRadius: '4px' }}
               />
               <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
+                <Button
+                  type={!workspaceId ? 'primary' : 'text'}
+                  block
+                  size="small"
+                  style={{
+                    textAlign: 'left',
+                    background: !workspaceId ? '#0f172a' : 'transparent',
+                    color: !workspaceId ? '#ffffff' : '#334155',
+                    borderRadius: '4px',
+                  }}
+                  onClick={() => {
+                    setWorkspaceId('')
+                    setShowWorkspacePicker(false)
+                  }}
+                >
+                  ✨ 自动新建 (AnyBuddy/日期文件夹)
+                </Button>
                 {filteredWorkspaceOptions.map(ws => (
                   <Button
                     key={ws.id}
@@ -1385,7 +1337,7 @@ export default function TaskComposer({
             </div>
             <span style={{ fontSize: '11px', color: '#94a3b8' }}>点击切换 ▾</span>
           </div>
-        </Popover>
+        </CustomPopover>
       )}
     </div>
   )

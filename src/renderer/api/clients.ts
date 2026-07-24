@@ -214,6 +214,10 @@ class ConfigClient {
   listSkills() {
     return this.api.config.listSkills()
   }
+
+  importSkill(input?: Parameters<AnybuddyApi['config']['importSkill']>[0]) {
+    return this.api.config.importSkill(input)
+  }
 }
 
 export type AnybuddyClients = {

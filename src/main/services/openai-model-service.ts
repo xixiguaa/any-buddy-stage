@@ -109,7 +109,9 @@ export class OpenAIModelService {
   }
 
   /**
-   * 解析模型的 API Key：根据配置的环境变量引用名称 (apiKeyRef)，从 process.env 中动态读取密钥。
+   * 解析模型的 API Key：
+   * 优先从 process.env[ref] 读取环境变量中的密钥；
+   * 若环境变量未配置，则直接将 ref 本身作为明文 API Key 兜底使用（兼容直接填入 sk-xxx 密钥的情况）。
    */
   private resolveApiKey(model: ModelConfig) {
     const ref = model.apiKeyRef?.trim();
@@ -117,7 +119,7 @@ export class OpenAIModelService {
       return null;
     }
 
-    // 配置里只保存环境变量名，避免把真实密钥直接存进应用数据库或配置文件。
-    return process.env[ref] ?? null;
+    // 优先读取环境变量；若环境变量中不存在，则将输入内容作为明文 API Key 使用
+    return process.env[ref] ?? ref;
   }
 }
