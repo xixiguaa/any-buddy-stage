@@ -76,6 +76,7 @@ export class AppStateRepository {
       CREATE TABLE IF NOT EXISTS drafts (
         taskId TEXT PRIMARY KEY,
         content TEXT NOT NULL,
+        selectedMode TEXT,
         selectedSkillIds TEXT NOT NULL,
         selectedConnectorIds TEXT NOT NULL,
         selectedExpertIds TEXT NOT NULL DEFAULT '[]',
@@ -211,6 +212,9 @@ export class AppStateRepository {
       db.prepare('ALTER TABLE drafts ADD COLUMN selectedExpertId TEXT').run()
       db.prepare("UPDATE drafts SET selectedExpertId = json_extract(selectedExpertIds, '$[0]') WHERE selectedExpertId IS NULL AND selectedExpertIds IS NOT NULL AND selectedExpertIds != '[]'").run()
     }
+    if (!draftColumns.some(column => column.name === 'selectedMode')) {
+      db.prepare('ALTER TABLE drafts ADD COLUMN selectedMode TEXT').run()
+    }
     if (!draftColumns.some(column => column.name === 'selectedExpertTeamId')) {
       db.prepare('ALTER TABLE drafts ADD COLUMN selectedExpertTeamId TEXT').run()
     }
@@ -286,6 +290,7 @@ export class AppStateRepository {
     const drafts: TaskDraft[] = draftsRows.map(row => ({
       taskId: row.taskId,
       content: row.content,
+      selectedMode: row.selectedMode || undefined,
       selectedSkillIds: JSON.parse(row.selectedSkillIds),
       selectedConnectorIds: JSON.parse(row.selectedConnectorIds),
       selectedExpertIds: row.selectedExpertIds ? JSON.parse(row.selectedExpertIds) : [],
@@ -529,13 +534,14 @@ export class AppStateRepository {
 
       // Insert drafts
       const insertDraft = db.prepare(`
-        INSERT INTO drafts (taskId, content, selectedSkillIds, selectedConnectorIds, selectedExpertIds, selectedExpertId, selectedExpertTeamId, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO drafts (taskId, content, selectedMode, selectedSkillIds, selectedConnectorIds, selectedExpertIds, selectedExpertId, selectedExpertTeamId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const d of s.drafts) {
         insertDraft.run(
           d.taskId,
           d.content,
+          d.selectedMode || null,
           JSON.stringify(d.selectedSkillIds),
           JSON.stringify(d.selectedConnectorIds),
           JSON.stringify(d.selectedExpertIds ?? []),

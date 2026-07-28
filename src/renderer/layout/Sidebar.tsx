@@ -743,10 +743,6 @@ export default function Sidebar() {
           }}>
             <Dropdown menu={userMenuItems} trigger={['click']} placement="topRight">
               <div
-                onClick={() => {
-                  // 点击左下角入口打开设置弹出框
-                  setShowSettingsModal(true)
-                }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -762,7 +758,7 @@ export default function Sidebar() {
                 <Avatar size={32} icon={<SettingOutlined />} style={{ backgroundColor: '#0f172a', color: '#ffffff' }} />
                 {!collapsed && (
                   <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flex: 1 }}>
-                    {/* 侧边栏左下角仅保留设置标题，已移除邮箱/账号副信息 */}
+                    {/* 侧边栏左下角点击弹出菜单，包含系统设置和检查更新 */}
                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       设置
                     </span>

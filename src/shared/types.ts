@@ -97,6 +97,7 @@ export type Message = {
 export type TaskDraft = {
   taskId: string
   content: string
+  selectedMode?: TaskMode
   selectedSkillIds: string[]
   selectedConnectorIds: string[]
   selectedExpertIds: string[]

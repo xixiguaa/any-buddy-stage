@@ -104,7 +104,7 @@ const getExpertAvatar = (name: string) => {
   return <BoyAvatar />
 }
 
-const MODE_OPTIONS: CreateTaskInput['mode'][] = ['ask', 'plan', 'craft']
+const MODE_OPTIONS: CreateTaskInput['mode'][] = ['plan', 'craft', 'ask']
 
 export default function TaskComposer({
   workspaces,
@@ -351,6 +351,7 @@ export default function TaskComposer({
     const nextExpertTeamId = draft.selectedExpertTeamId ?? ''
     if (
       draft.content === message &&
+      draft.selectedMode === mode &&
       nextSkills === skills &&
       nextConnectors === connectors &&
       nextExpertId === (activeExpertId ?? '') &&
@@ -360,6 +361,9 @@ export default function TaskComposer({
     }
 
     setMessage(draft.content)
+    if (draft.selectedMode) {
+      setMode(draft.selectedMode)
+    }
     setSkills(nextSkills)
     setConnectors(nextConnectors)
     setActiveExpertId(draft.selectedExpertId ?? draft.selectedExpertIds?.[0])
@@ -375,13 +379,14 @@ export default function TaskComposer({
   useEffect(() => {
     onDraftChangeRef.current?.({
       content: message,
+      selectedMode: mode,
       selectedSkillIds: selectedSkillsList,
       selectedConnectorIds: selectedConnectorsList,
       selectedExpertIds: activeExpertId ? [activeExpertId] : [],
       selectedExpertId: activeExpertId,
       selectedExpertTeamId: activeExpertTeamId,
     })
-  }, [activeExpertId, activeExpertTeamId, selectedConnectorsList, message, selectedSkillsList])
+  }, [activeExpertId, activeExpertTeamId, mode, selectedConnectorsList, message, selectedSkillsList])
 
   async function handlePickWorkspace() {
     const workspace = await onPickWorkspace?.()
@@ -709,9 +714,9 @@ export default function TaskComposer({
             content={
               <div style={{ width: '180px', display: 'flex', flexDirection: 'column', gap: '2px', position: 'relative' }}>
                 {[
+                  { value: 'plan', label: 'Plan', icon: <PlanIcon />, desc: 'PLAN (规划模式): 生成分步方案，确认后继续执行' },
                   { value: 'craft', label: 'Craft', icon: <CraftIcon />, desc: 'CRAFT (执行模式): 完全自主的代码改写与写入' },
-                  { value: 'ask', label: 'Ask', icon: <AskIcon />, desc: 'ASK (问答模式): 快速问答与检索，不改动代码' },
-                  { value: 'plan', label: 'Plan', icon: <PlanIcon />, desc: 'PLAN (规划模式): 生成分步方案，确认后继续执行' }
+                  { value: 'ask', label: 'Ask', icon: <AskIcon />, desc: 'ASK (问答模式): 快速问答与检索，不改动代码' }
                 ].map(opt => {
                   const isSelected = mode === opt.value
                   const isHovered = hoveredItem === opt.value

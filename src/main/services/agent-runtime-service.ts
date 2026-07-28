@@ -1,4 +1,5 @@
 import type { AgentRun, CreateAgentRunInput, ExpertPreset, ExpertTeamPreset } from '../../shared/types.js';
+import { BASE_AGENT_SYSTEM_PROMPT, MODE_POLICY_PROMPTS } from '../../shared/prompts/index.js';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor } from './agent-executor.js';
 import { DeepAgentExecutor } from './deepagent-executor.js';
@@ -218,10 +219,7 @@ export class AgentRuntimeService {
       `工作区数量: ${context.run.workspaceIds.length}`,
       `模型: ${context.model?.name ?? '未配置默认模型'}`,
       `网络开关: ${context.settings.networkEnabled ? '开启' : '关闭'}`,
-      '说明: 当前为桌面 Agent runtime，会根据上下文持续规划、执行工具并写回事件流。',
-      '【输出要求】默认优先直接在聊天中给出完整答复、方案、正文或示例，不要把普通问答、写作、总结、方案设计等内容直接写成工作区文件。只有当用户明确要求"保存为文件""输出到工作区""生成 markdown/md 文档""落盘"或类似意思时，才允许调用 write_file 或 edit_file 产出文件。',
-      '【工具说明】可用的内置工具包括：ls（列出目录）、read_file（读取文件）、write_file、edit_file、grep（在工作区内搜索文本）、glob（按模式匹配文件名）、execute（执行本地 shell 命令）、task（调度子 Agent 协作）。read_write 权限下 execute 会先等待用户确认；full_access 权限下 execute 可直接执行。此外项目挂载的 web_search 用于在设置中开启 Web 搜索后调用。',
-      '【反馈要求】你在调用任何工具之前或期间，必须先向用户输出一句简短的中文规划或说明反馈（例如："好的，收到任务，我先调用 ls 查看目录..."、"已找到匹配，使用 grep 搜索内容..."），绝不允许静默调用工具。',
+      BASE_AGENT_SYSTEM_PROMPT,
     ].join('\n');
   }
 
@@ -229,27 +227,7 @@ export class AgentRuntimeService {
    * 根据任务模式 (Ask / Plan / Craft) 生成对应的行动策略约束指令。
    */
   private buildModeInstruction(mode: RuntimeContext['task']['mode']) {
-    if (mode === 'ask') {
-      return [
-        'Mode policy: ASK.',
-        'Only answer, explain, inspect, search, or read context.',
-        'You may use tools to inspect context, but do not edit files or write files.',
-      ].join('\n');
-    }
-
-    if (mode === 'plan') {
-      return [
-        'Mode policy: PLAN.',
-        'First analyze the request and produce a concrete step-by-step execution plan, then stop.',
-        'You may inspect files, search, and run commands needed to understand the task, but do not write files or edit files before the user approves the plan.',
-        'The plan must clearly list what will be done first, second, and later. After the plan is produced, the app will show Confirm and Cancel buttons. Only a confirmed plan may continue in Craft mode.',
-      ].join('\n');
-    }
-
-    return [
-      'Mode policy: CRAFT.',
-      'Execute the approved or requested work. You may edit files and run necessary commands while respecting the configured permission mode.',
-    ].join('\n');
+    return MODE_POLICY_PROMPTS[mode] ?? MODE_POLICY_PROMPTS.craft;
   }
 
   /**

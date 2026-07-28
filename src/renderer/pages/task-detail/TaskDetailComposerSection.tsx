@@ -7,7 +7,7 @@ import { useTaskDetail } from './TaskDetailContext.js'
  * 包裹 TaskComposer 并处理草稿保存、发送消息及更新 Task 配置
  */
 export default function TaskDetailComposerSection() {
-  const { taskId, task, workspaces, drafts, saveDraft, clearDraft, sendMessage } = useTaskDetail()
+  const { taskId, task, workspaces, drafts, saveDraft, clearDraft, sendMessage, selectTask } = useTaskDetail()
 
   // 路由切换期间不使用上一任务的数据初始化当前编辑器。
   if (!task || !taskId || task.id !== taskId) return null
@@ -28,6 +28,7 @@ export default function TaskDetailComposerSection() {
         onDraftChange={(draft) => {
           void saveDraft(taskId, {
             content: draft.content,
+            selectedMode: draft.selectedMode,
             selectedSkillIds: draft.selectedSkillIds,
             selectedConnectorIds: draft.selectedConnectorIds,
             selectedExpertIds: draft.selectedExpertIds,
@@ -51,6 +52,8 @@ export default function TaskDetailComposerSection() {
           if (!updateResult.ok) {
             throw new Error(updateResult.error.message)
           }
+          // 刷新任务详情，保证头部 Task Mode 状态与选定模式 100% 同步
+          await selectTask(taskId)
           await sendMessage(taskId, content)
           await clearDraft(taskId)
         }}

@@ -182,13 +182,18 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         createdAt,
       };
     }
-    case 'tool_called':
+    case 'tool_called': {
+      const toolName = String(event.payload.toolName ?? 'unknown');
+      // 跳过内部 task 调度的工具事件（已有 subagent_started / subagent_completed 专门高级卡片）以及 unknown 事件
+      if (toolName === 'task' || toolName.endsWith('task') || toolName === 'unknown') {
+        return null;
+      }
       return {
         id: `event-${event.id}`,
         taskId: event.taskId,
         runId: event.runId,
         role: 'tool',
-        content: `调用工具: ${String(event.payload.toolName ?? 'unknown')}`,
+        content: `调用工具: ${toolName}`,
         metadata: {
           synthetic: true,
           sourceEventId: event.id,
@@ -200,13 +205,18 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         },
         createdAt,
       };
-    case 'tool_result':
+    }
+    case 'tool_result': {
+      const toolName = String(event.payload.toolName ?? 'unknown');
+      if (toolName === 'task' || toolName.endsWith('task') || toolName === 'unknown') {
+        return null;
+      }
       return {
         id: `event-${event.id}`,
         taskId: event.taskId,
         runId: event.runId,
         role: 'tool',
-        content: `工具结果: ${String(event.payload.toolName ?? 'unknown')}`,
+        content: `工具结果: ${toolName}`,
         metadata: {
           synthetic: true,
           sourceEventId: event.id,
@@ -218,6 +228,7 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         },
         createdAt,
       };
+    }
     case 'approval_requested':
       return {
         id: `event-${event.id}`,

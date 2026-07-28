@@ -583,13 +583,14 @@ export class DeepAgentExecutor implements AgentExecutor {
           `团队定位: ${activeExpertTeam.description}`,
           `团队成员:`,
           activeExpertTeam.members.map(m => `- ${m.name} (${m.role}): ${m.specialty}`).join('\n'),
-          activeExpertTeam.systemPrompt ? `团队主指令:\n${activeExpertTeam.systemPrompt}` : '',
-          '专家团协作规则（必须严格执行）：',
-          '1. 本轮中每一位已选团队成员都必须至少被 task 工具调用一次，不能由 Leader 自行替代或跳过。',
-          ...activeExpertTeam.members.map((member, index) => (
-            `${index + 2}. 必须调用 task 工具，并将 subagent_type 精确设置为 "${member.name}"，委派与其 ${member.role} 职责相符的独立工作。`
-          )),
-          '在收到所有成员的 Markdown 输出前，不得生成最终结论；最后综合各成员结果并标明取舍。',
+          activeExpertTeam.systemPrompt ? `【团队专属指令与流程规范】:\n${activeExpertTeam.systemPrompt}` : '',
+          '专家团智能调度规则（必须严格遵守）：',
+          '1. 优先遵循【团队专属指令】以及用户对话中明确指定的专家协作顺序或并发方式。',
+          '2. 若未显式指定，请根据成员职责与任务依赖自动选择最佳调度模式：',
+          '   - 【串行/流水线模式】：若成员职责存在上下游依赖（如：先设计后编码、先调研后总结），必须按顺序依次调用 task 工具，并将上一专家的成果作为输入传递给下一专家。',
+          '   - 【并行/并发模式】：若成员职责相互独立（如：多视角并行评审、独立模块同时开发），可以在单次响应中同时发起多个 task 工具调用。',
+          '3. 委派成员时，必须调用 task 工具并将 subagent_type 精确设置为对应的成员名称。',
+          '4. 收集完所有相关成员的 Markdown 输出后，综合各专家意见进行评估归纳，得出最终结论。',
           '---',
           systemPrompt,
           fileExecutionConstraintPrompt,
@@ -727,7 +728,7 @@ export class DeepAgentExecutor implements AgentExecutor {
                   const rawArgs = toolCallArgsMap.get(toolCallId) ?? '';
                   let parsedArgs: Record<string, unknown> = {};
                   const isTaskTool = toolName === 'task' || toolName.endsWith('task');
-                  let argsComplete = !isTaskTool && !rawArgs.trim();
+                  let argsComplete = false;
                   if (rawArgs.trim()) {
                     try {
                       parsedArgs = JSON.parse(rawArgs) as Record<string, unknown>;
@@ -736,6 +737,9 @@ export class DeepAgentExecutor implements AgentExecutor {
                       // 工具参数可能跨多个 chunk，完整 JSON 到达前继续累积。
                       argsComplete = false;
                     }
+                  } else if (chunk.args !== undefined && (chunk.args.trim() === '{}' || (isTaskTool && !chunk.args))) {
+                    parsedArgs = {};
+                    argsComplete = true;
                   }
                   if (!argsComplete) continue;
 

@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Empty, Spin, Tabs, Table, Tooltip } from 'antd'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { renderAsync as renderDocx } from 'docx-preview'
 import * as XLSX from 'xlsx'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -25,6 +23,7 @@ import {
   Video,
 } from 'lucide-react'
 import type { WorkspaceArtifact } from '../../../shared/types.js'
+import { renderMarkdown } from '../../utils/markdown.js'
 import { useTaskDetail } from './TaskDetailContext.js'
 
 /**
@@ -550,7 +549,10 @@ function MarkdownPreviewer({ file }: { file: WorkspaceArtifact }) {
 
   return (
     <div style={{ padding: '24px 32px', height: '100%', overflow: 'auto', background: '#ffffff', boxSizing: 'border-box' }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      {/* 成果预览统一采用与对话消息一致的 Markdown 格式与样式 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', color: '#334155', fontSize: '14px', lineHeight: '1.6' }}>
+        {renderMarkdown(text)}
+      </div>
     </div>
   )
 }
