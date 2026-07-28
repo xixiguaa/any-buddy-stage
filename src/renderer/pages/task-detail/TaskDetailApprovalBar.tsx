@@ -1,7 +1,7 @@
 import { AlertCircle, Edit2, Play, Terminal, XCircle } from 'lucide-react'
 import { Button, Input, Modal } from 'antd'
 import { getPlanApprovalText, useTaskDetail } from './TaskDetailContext.js'
-import { renderMarkdown } from './TaskDetailMessageList.js'
+import { renderMarkdown } from '../../utils/markdown.js'
 
 /**
  * 任务审批与恢复控制栏/弹窗组件

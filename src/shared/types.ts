@@ -19,6 +19,26 @@ export type ExpertPreset = {
   updatedAt: string
 }
 
+export type ExpertTeamMember = {
+  id: string
+  name: string
+  role: string
+  specialty: string
+  skills: string[]
+  systemPrompt?: string
+}
+
+export type ExpertTeamPreset = {
+  id: string
+  name: string
+  description: string
+  members: ExpertTeamMember[]
+  systemPrompt?: string
+  isCustom?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export type Workspace = {
   id: string
   name: string
@@ -38,6 +58,7 @@ export type Task = {
   modelId: string
   expertIds: string[]
   activeExpertId?: string
+  activeExpertTeamId?: string
   primaryWorkspaceId?: string
   permissionMode: PermissionMode
   connectorIds: string[]
@@ -80,6 +101,7 @@ export type TaskDraft = {
   selectedConnectorIds: string[]
   selectedExpertIds: string[]
   selectedExpertId?: string
+  selectedExpertTeamId?: string
   updatedAt: string
 }
 
@@ -115,6 +137,7 @@ export type HumanApproval = {
   decision: ApprovalDecision
   decidedAt?: string
   createdAt: string
+  updatedAt?: string
 }
 
 export type AgentEventType =
@@ -122,6 +145,7 @@ export type AgentEventType =
   | 'run_status'
   | 'agent_message'
   | 'subagent_started'
+  | 'subagent_progress'
   | 'subagent_completed'
   | 'tool_called'
   | 'tool_result'
@@ -198,6 +222,7 @@ export type AppState = {
   agentEvents: AgentEvent[]
   approvals: HumanApproval[]
   experts: ExpertPreset[]
+  expertTeams: ExpertTeamPreset[]
   modelConfigs: ModelConfig[]
   mcpConfigRaw: string
   settings: AppSettings
@@ -252,12 +277,13 @@ export type CreateTaskInput = {
   modelId: string
   expertIds: string[]
   activeExpertId?: string
+  activeExpertTeamId?: string
   permissionMode: PermissionMode
   connectorIds: string[]
   skillIds: string[]
 }
 
-export type UpdateTaskInput = Partial<Pick<Task, 'title' | 'mode' | 'modelId' | 'expertIds' | 'activeExpertId' | 'permissionMode' | 'connectorIds' | 'skillIds' | 'status'>>
+export type UpdateTaskInput = Partial<Pick<Task, 'title' | 'mode' | 'modelId' | 'expertIds' | 'activeExpertId' | 'activeExpertTeamId' | 'permissionMode' | 'connectorIds' | 'skillIds' | 'status'>>
 
 export type CreateWorkspaceInput = {
   name: string
@@ -279,3 +305,26 @@ export type CreateAgentRunInput = {
   parentRunId?: string
   expertId?: string
 }
+
+/** 工作区扫描出的产物文件对象 */
+export interface WorkspaceArtifact {
+  /** 成果唯一标识 (可由相对路径或 hash 生成) */
+  id: string
+  /** 文件显示名称，例如 "GPT-5.5产品调研报告.docx" */
+  name: string
+  /** 相对工作区根目录的路径，例如 "reports/GPT-5.5产品调研报告.docx" */
+  relativePath: string
+  /** 磁盘绝对路径 */
+  absolutePath: string
+  /** 文件小写扩展名 (不含点)，例如 "docx", "pdf", "xlsx", "md", "png" */
+  extension: string
+  /** 文件字节大小 */
+  size: number
+  /** 最后修改时间 (ISO 字符串) */
+  updatedAt: string
+  /** 所属工作区 ID */
+  workspaceId?: string
+  /** 所属工作区名称 */
+  workspaceName?: string
+}
+

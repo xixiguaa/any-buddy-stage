@@ -1,95 +1,9 @@
 import React, { memo, useEffect, useMemo, useState } from 'react'
+import { ChevronRight } from 'lucide-react'
 import type { Message } from '../../../shared/types.js'
 import { useAppStore } from '../../stores/app-store.js'
 import { useTaskDetail } from './TaskDetailContext.js'
-
-/**
- * 解析内联 Markdown 格式（粗体与代码块）
- */
-function parseInlineMarkdown(text: string): React.ReactNode[] {
-  const regex = /(\*\*.*?\*\*|`.*?`)/g
-  const splitParts = text.split(regex)
-
-  return splitParts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} style={{ fontWeight: 600, color: '#1e293b' }}>{part.slice(2, -2)}</strong>
-    }
-    if (part.startsWith('`') && part.endsWith('`')) {
-      return (
-        <code
-          key={i}
-          style={{
-            background: '#f1f5f9',
-            color: '#e11d48',
-            padding: '2px 6px',
-            borderRadius: '4px',
-            fontFamily: `Consolas, 'Fira Code', monospace`,
-            fontSize: '12px',
-            border: '1px solid #e2e8f0',
-          }}
-        >
-          {part.slice(1, -1)}
-        </code>
-      )
-    }
-    return part
-  })
-}
-
-/**
- * 渲染简单 Markdown 格式标题、列表及引用
- */
-export function renderMarkdown(content: string) {
-  const lines = content.split('\n')
-  return lines.map((line, index) => {
-    if (line.startsWith('### ')) {
-      return <h3 key={index} style={{ margin: '8px 0 4px 0', fontSize: '14px', fontWeight: 600, color: '#1e293b' }}>{parseInlineMarkdown(line.slice(4))}</h3>
-    }
-    if (line.startsWith('## ')) {
-      return <h2 key={index} style={{ margin: '12px 0 6px 0', fontSize: '15px', fontWeight: 600, color: '#0f172a' }}>{parseInlineMarkdown(line.slice(3))}</h2>
-    }
-    if (line.startsWith('# ')) {
-      return <h1 key={index} style={{ margin: '14px 0 8px 0', fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>{parseInlineMarkdown(line.slice(2))}</h1>
-    }
-
-    if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
-      const indent = line.search(/\S/)
-      return (
-        <div key={index} style={{ display: 'flex', gap: '6px', paddingLeft: `${indent * 8 + 8}px`, margin: '4px 0', alignItems: 'flex-start' }}>
-          <span style={{ color: '#6366f1', userSelect: 'none' }}>•</span>
-          <span style={{ flex: 1 }}>{parseInlineMarkdown(line.trim().slice(2))}</span>
-        </div>
-      )
-    }
-
-    if (line.trim().startsWith('> ')) {
-      return (
-        <blockquote key={index} style={{ borderLeft: '4px solid #cbd5e1', paddingLeft: '12px', margin: '8px 0', color: '#64748b', fontStyle: 'italic' }}>
-          {parseInlineMarkdown(line.trim().slice(2))}
-        </blockquote>
-      )
-    }
-
-    if (!line.trim()) {
-      return <div key={index} style={{ height: '8px' }} />
-    }
-
-    return (
-      <p key={index} style={{ margin: '4px 0', minHeight: '1.2em' }}>
-        {parseInlineMarkdown(line)}
-      </p>
-    )
-  })
-}
-
-function isPersistedFinalAssistantMessage(message: Message, runId?: string) {
-  return (
-    message.role === 'assistant' &&
-    message.runId === runId &&
-    !message.metadata?.synthetic &&
-    message.metadata?.source !== 'runtime_tool_progress'
-  )
-}
+import { renderMarkdown } from '../../utils/markdown.js'
 
 /**
  * 可折叠工具调用与结果展示卡片
@@ -125,13 +39,15 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
     }
   }
 
+  const subagentName = typeof message.metadata?.subagentName === 'string' ? message.metadata.subagentName : undefined
   const scopePrefix = isInternal ? '⚙️ deepagent · ' : ''
+  const subagentPrefix = subagentName ? `[子 Agent: ${subagentName}] ` : ''
   let displayTitle = ''
   if (eventType === 'tool_called') {
-    displayTitle = `${scopePrefix}调用工具 · ${toolName}${argContext ? ` (${argContext})` : ''}`
+    displayTitle = `${scopePrefix}${subagentPrefix}调用工具 · ${toolName}${argContext ? ` (${argContext})` : ''}`
   } else if (eventType === 'tool_result') {
     const summary = String(payload?.summary || '执行成功')
-    displayTitle = `${scopePrefix}工具结果 · ${toolName} : ${summary}`
+    displayTitle = `${scopePrefix}${subagentPrefix}工具结果 · ${toolName} : ${summary}`
   } else {
     displayTitle = message.content
   }
@@ -251,10 +167,13 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
 const MessageItem = memo(function MessageItem({
   message,
   streamingContent,
+  isLastInRun = false,
 }: {
   message: Message
   streamingContent?: string
+  isLastInRun?: boolean
 }) {
+  const { artifacts, openArtifactPreview } = useTaskDetail()
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
   const isSystem = message.role === 'system'
@@ -263,11 +182,11 @@ const MessageItem = memo(function MessageItem({
   const displayContent = streamingContent ?? message.content
 
   const renderedMarkdown = useMemo(() => {
-    if (isStreamingAssistant || !isAssistant) {
+    if (!isAssistant) {
       return null
     }
     return renderMarkdown(displayContent)
-  }, [displayContent, isStreamingAssistant, isAssistant])
+  }, [displayContent, isAssistant])
 
   if (isSystem) {
     const isError = message.metadata?.eventType === 'run_failed'
@@ -325,17 +244,22 @@ const MessageItem = memo(function MessageItem({
         </div>
       )
     }
+    const isSubagentEvent = ['subagent_started', 'subagent_progress', 'subagent_completed'].includes(String(message.metadata?.eventType ?? ''))
+    const isCompleted = message.metadata?.eventType === 'subagent_completed'
+    const isProgress = message.metadata?.eventType === 'subagent_progress'
+
     return (
       <div key={message.id} style={{ display: 'flex', justifyContent: 'center', margin: '8px 0', width: '100%' }}>
         <div
           style={{
-            background: '#f1f5f9',
-            color: '#64748b',
+            background: isSubagentEvent ? (isCompleted ? '#f0fdf4' : isProgress ? '#f0f9ff' : '#eff6ff') : '#f1f5f9',
+            color: isSubagentEvent ? (isCompleted ? '#15803d' : isProgress ? '#0284c7' : '#1d4ed8') : '#64748b',
             padding: '6px 16px',
             borderRadius: '12px',
             fontSize: '12px',
             fontWeight: 500,
-            border: '1px solid #e2e8f0',
+            border: isSubagentEvent ? (isCompleted ? '1px solid #bbf7d0' : '1px solid #bae6fd') : '1px solid #e2e8f0',
+            boxShadow: isSubagentEvent ? '0 2px 6px rgba(0,0,0,0.03)' : 'none',
           }}
         >
           {message.content}
@@ -348,16 +272,22 @@ const MessageItem = memo(function MessageItem({
     return <CollapsibleToolMessage key={message.id} message={message} />
   }
 
+  const subagentName = typeof message.metadata?.subagentName === 'string' ? message.metadata.subagentName : undefined
+  const expertName = String(message.metadata?.expertTeamName ?? message.metadata?.expertName ?? 'AnyBuddy')
+  const senderTitle = isUser
+    ? '用户'
+    : isAssistant
+      ? subagentName
+        ? `[子 Agent: ${subagentName}] ${expertName}`
+        : isStreamingAssistant
+          ? `${expertName} 正在输出`
+          : expertName
+      : '工具调用'
+
   return (
     <div key={message.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start', width: '100%' }}>
       <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px', padding: '0 4px' }}>
-        {isUser
-          ? '用户'
-          : isAssistant
-            ? isStreamingAssistant
-              ? `${String(message.metadata?.expertName ?? 'AnyBuddy')} 正在输出`
-              : String(message.metadata?.expertName ?? 'AnyBuddy')
-            : '工具调用'}
+        {senderTitle}
       </div>
       <div
         style={{
@@ -369,6 +299,7 @@ const MessageItem = memo(function MessageItem({
           border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
           fontSize: '14px',
           lineHeight: '1.6',
+          borderRadius: '12px',
           fontFamily: isTool ? 'Consolas, Courier New, monospace' : 'inherit',
         }}
       >
@@ -380,6 +311,36 @@ const MessageItem = memo(function MessageItem({
           <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>
         )}
       </div>
+
+      {/* 消息气泡外部的无背景按钮：仅在每轮 Agent Run 的最后一条输出展示 */}
+      {isAssistant && isLastInRun && artifacts.length > 0 && (
+        <div
+          onClick={() => openArtifactPreview()}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '4px',
+            marginTop: '6px',
+            padding: '2px 4px',
+            background: 'transparent',
+            color: '#475569',
+            fontSize: '13px',
+            fontWeight: 500,
+            cursor: 'pointer',
+            userSelect: 'none',
+            transition: 'color 0.15s ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = '#2563eb'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = '#475569'
+          }}
+        >
+          <span>查看所有成果 ({artifacts.length})</span>
+          <ChevronRight size={16} />
+        </div>
+      )}
     </div>
   )
 })
@@ -388,7 +349,7 @@ const MessageItem = memo(function MessageItem({
  * 流式消息独立渲染通道组件
  */
 const StreamingMessageList = memo(function StreamingMessageList() {
-  const { scrollContainerRef, shouldAutoScrollRef } = useTaskDetail()
+  const { activeExpert, activeExpertTeam, scrollContainerRef, shouldAutoScrollRef } = useTaskDetail()
 
   const streamingDataKey = useAppStore((state) => {
     const ids = Object.values(state.streamingMessageIdsByRun).flat()
@@ -402,17 +363,8 @@ const StreamingMessageList = memo(function StreamingMessageList() {
 
   const streamingEntries = useMemo(() => {
     const state = useAppStore.getState()
-    const completedRuns = new Set(
-      state.messages
-        .filter((message) => isPersistedFinalAssistantMessage(message, message.runId))
-        .map((message) => message.runId)
-        .filter((runId): runId is string => Boolean(runId))
-    )
     const result: Array<{ id: string; runId: string; content: string }> = []
     for (const runId of Object.keys(state.streamingMessageIdsByRun)) {
-      if (completedRuns.has(runId)) {
-        continue
-      }
       for (const id of state.streamingMessageIdsByRun[runId] ?? []) {
         const content = state.streamingContentByMessageId[id]
         if (content !== undefined) {
@@ -439,7 +391,7 @@ const StreamingMessageList = memo(function StreamingMessageList() {
 
   return (
     <>
-      {streamingEntries.map((entry) => (
+      {streamingEntries.map((entry, index) => (
         <MessageItem
           key={entry.id}
           message={{
@@ -448,10 +400,15 @@ const StreamingMessageList = memo(function StreamingMessageList() {
             runId: entry.runId,
             role: 'assistant',
             content: entry.content,
-            metadata: { streaming: true },
+            metadata: {
+              streaming: true,
+              expertName: activeExpert?.name,
+              expertTeamName: activeExpertTeam?.name,
+            },
             createdAt: new Date().toISOString(),
           }}
           streamingContent={entry.content}
+          isLastInRun={index === streamingEntries.length - 1}
         />
       ))}
     </>
@@ -462,11 +419,49 @@ const StreamingMessageList = memo(function StreamingMessageList() {
  * 消息流列表容器组件
  */
 export default function TaskDetailMessageList() {
-  const { messages, isAgentWorking, activeExpert, currentRun, scrollContainerRef, handleMessageScroll } = useTaskDetail()
+  const { messages, isAgentWorking, activeExpert, activeExpertTeam, currentRun, scrollContainerRef, handleMessageScroll } = useTaskDetail()
+
+  // 计算每一轮 Agent Run 的最后一条 Assistant 消息 ID 集合
+  const lastAssistantMessageIds = useMemo(() => {
+    const ids = new Set<string>()
+    const lastByRunId = new Map<string, string>()
+    let currentTurnLastAssistantId: string | null = null
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      if (msg.role === 'user') {
+        if (currentTurnLastAssistantId) {
+          ids.add(currentTurnLastAssistantId)
+          currentTurnLastAssistantId = null
+        }
+      } else if (msg.role === 'assistant') {
+        if (msg.runId) {
+          lastByRunId.set(msg.runId, msg.id)
+        }
+        currentTurnLastAssistantId = msg.id
+      }
+    }
+
+    if (currentTurnLastAssistantId) {
+      ids.add(currentTurnLastAssistantId)
+    }
+
+    for (const id of lastByRunId.values()) {
+      ids.add(id)
+    }
+
+    return ids
+  }, [messages])
 
   const renderedMessages = useMemo(() => {
-    return messages.map((message) => <MessageItem key={message.id} message={message} />)
-  }, [messages])
+    return messages.map((message) => (
+      <MessageItem
+        key={message.id}
+        message={message}
+        isLastInRun={lastAssistantMessageIds.has(message.id)}
+      />
+    ))
+  }, [messages, lastAssistantMessageIds])
 
   return (
     <div
@@ -485,6 +480,8 @@ export default function TaskDetailMessageList() {
     >
       {renderedMessages}
       <StreamingMessageList />
+
+
 
       {isAgentWorking && (
         <div
@@ -516,7 +513,7 @@ export default function TaskDetailMessageList() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             <span style={{ fontSize: '12px', fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {activeExpert?.name ?? 'AnyBuddy'} 正在执行中
+              {activeExpertTeam?.name ?? activeExpert?.name ?? 'AnyBuddy'} 正在执行中
             </span>
             <span style={{ fontSize: '11px', color: '#64748b' }}>
               {(() => {

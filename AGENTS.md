@@ -13,7 +13,7 @@
 - `pnpm run dev` 或 `pnpm start` 启动 Electron 开发应用。
 - `pnpm run lint` 执行 TypeScript 类型检查：`tsc --noEmit`。用户要求跳过本地检查时，不要自动运行该命令。
 - `pnpm run package` 仅生成已打包的应用目录；`pnpm run make` 生成所有配置的发布物；`pnpm run make:zip` 仅生成 Windows ZIP 便携包；`pnpm run make:squirrel` 仅生成 Windows Squirrel 安装包。
-- 打包会耗时且写入 `out/`。除非用户明确要求，不要运行 `package` 或 `make` 系列命令。
+- 打包会耗时且写入 `out/`。除非用户明确要求，不要运行 `package` 或 `make`还有`lint` 系列命令。
 - `pnpm-workspace.yaml` 允许 `better-sqlite3`、`electron`、`electron-winstaller` 和 `esbuild` 执行安装构建脚本；不要无故收紧这些规则，否则原生依赖或打包工具可能无法工作。
 
 ## 测试与验证

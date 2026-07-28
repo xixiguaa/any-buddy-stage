@@ -6,11 +6,13 @@ import type {
   AgentRun,
   HumanApproval,
   ExpertPreset,
+  ExpertTeamPreset,
   Message,
   Task,
   TaskDraft,
   TaskWorkspaceContext,
   WorkspaceSummary,
+  WorkspaceArtifact,
 } from '../../../shared/types.js'
 import { createAnybuddyClients } from '../../api/clients.js'
 import { useAppStore } from '../../stores/app-store.js'
@@ -71,6 +73,7 @@ export interface TaskDetailContextValue {
   taskEvents: AgentEvent[]
   taskApprovals: HumanApproval[]
   experts: ExpertPreset[]
+  expertTeams: ExpertTeamPreset[]
   workspaces: WorkspaceSummary[]
 
   // 计算衍生数据
@@ -78,6 +81,7 @@ export interface TaskDetailContextValue {
   primaryWorkspace?: WorkspaceSummary
   currentRun?: AgentRun
   activeExpert?: ExpertPreset
+  activeExpertTeam?: ExpertTeamPreset
   availableExperts: ExpertPreset[]
   attachedWorkspaces: TaskWorkspaceContext[]
   pendingPlanApprovals: HumanApproval[]
@@ -86,6 +90,19 @@ export interface TaskDetailContextValue {
   pendingInterrupts: HumanApproval[]
   pendingApprovalCount: number
   isAgentWorking: boolean
+
+  // 成果产物与侧边栏状态
+  artifacts: WorkspaceArtifact[]
+  isArtifactsPanelOpen: boolean
+  selectedArtifact: WorkspaceArtifact | null
+  openedArtifacts: WorkspaceArtifact[]
+  isScanningArtifacts: boolean
+  setIsArtifactsPanelOpen: (open: boolean) => void
+  setSelectedArtifact: (artifact: WorkspaceArtifact | null) => void
+  closeArtifactTab: (artifactId: string) => void
+  scanArtifacts: () => Promise<WorkspaceArtifact[]>
+  toggleArtifactsPanel: (open?: boolean) => void
+  openArtifactPreview: (artifact?: WorkspaceArtifact) => void
 
   // 页面局部状态
   editApprovalId: string | null
@@ -153,6 +170,7 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
   const taskEvents = useAppStore((state) => state.taskEvents)
   const taskApprovals = useAppStore((state) => state.taskApprovals)
   const experts = useAppStore((state) => state.experts)
+  const expertTeams = useAppStore((state) => state.expertTeams)
   const selectTask = useAppStore((state) => state.selectTask)
   const sendMessage = useAppStore((state) => state.sendMessage)
   const saveDraft = useAppStore((state) => state.saveDraft)
@@ -212,6 +230,11 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
 
   const currentRun = agentRuns[0]
   const activeExpert = useMemo(() => experts.find((expert) => expert.id === task?.activeExpertId), [experts, task?.activeExpertId])
+  const activeExpertTeam = useMemo(
+    () => expertTeams.find((team) => team.id === task?.activeExpertTeamId),
+    [expertTeams, task?.activeExpertTeamId]
+  )
+
   const availableExperts = useMemo(() => experts.filter((expert) => task?.expertIds.includes(expert.id)), [experts, task?.expertIds])
 
   const attachedWorkspaces = useMemo(() => taskWorkspaces.filter((workspace) => workspace.role === 'attached'), [taskWorkspaces])
@@ -342,6 +365,80 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // 工作区成果扫描与侧栏状态
+  const [artifacts, setArtifacts] = useState<WorkspaceArtifact[]>([])
+  const [isArtifactsPanelOpen, setIsArtifactsPanelOpen] = useState(false)
+  const [selectedArtifact, setSelectedArtifact] = useState<WorkspaceArtifact | null>(null)
+  const [openedArtifacts, setOpenedArtifacts] = useState<WorkspaceArtifact[]>([])
+  const [isScanningArtifacts, setIsScanningArtifacts] = useState(false)
+
+  // 选中某成果产物，并将其加入已打开的标签页列表
+  const handleSelectArtifact = (artifact: WorkspaceArtifact | null) => {
+    setSelectedArtifact(artifact)
+    if (artifact && !openedArtifacts.some((item) => item.id === artifact.id)) {
+      setOpenedArtifacts((prev) => [...prev, artifact])
+    }
+  }
+
+  // 关闭指定产物标签页，若标签全部关闭则退回到概览与产物列表视图
+  const closeArtifactTab = (artifactId: string) => {
+    const nextOpened = openedArtifacts.filter((item) => item.id !== artifactId)
+    setOpenedArtifacts(nextOpened)
+    if (selectedArtifact?.id === artifactId) {
+      if (nextOpened.length > 0) {
+        setSelectedArtifact(nextOpened[nextOpened.length - 1])
+      } else {
+        setSelectedArtifact(null)
+      }
+    }
+  }
+
+  // 扫描当前任务绑定的工作区成果文件
+  const scanArtifacts = async (): Promise<WorkspaceArtifact[]> => {
+    if (!taskId) return []
+    setIsScanningArtifacts(true)
+    try {
+      const res = await window.anybuddy.workspace.scanArtifacts(taskId)
+      if (res.ok) {
+        setArtifacts(res.data)
+        return res.data
+      }
+    } catch (err) {
+      console.error('扫描工作区产物失败:', err)
+    } finally {
+      setIsScanningArtifacts(false)
+    }
+    return []
+  }
+
+  // 切换成果面板显隐
+  const toggleArtifactsPanel = (open?: boolean) => {
+    const nextOpen = open !== undefined ? open : !isArtifactsPanelOpen
+    setIsArtifactsPanelOpen(nextOpen)
+    if (nextOpen) {
+      scanArtifacts()
+    }
+  }
+
+  // 打开特定成果预览（若未指定特定产物则仅打开面板，展示图 2 的概览与列表）
+  const openArtifactPreview = async (artifact?: WorkspaceArtifact) => {
+    let currentArtifacts = artifacts
+    if (currentArtifacts.length === 0) {
+      currentArtifacts = await scanArtifacts()
+    }
+    if (artifact) {
+      handleSelectArtifact(artifact)
+    }
+    setIsArtifactsPanelOpen(true)
+  }
+
+  // 任务变更或 Agent 运行结束时扫描产物
+  useEffect(() => {
+    if (taskId) {
+      scanArtifacts()
+    }
+  }, [taskId, isAgentWorking])
+
   const handleRejectPlanWithFeedback = async (approvalId: string) => {
     try {
       await handleRejectPlan(approvalId)
@@ -365,12 +462,14 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     taskEvents,
     taskApprovals,
     experts,
+    expertTeams,
     workspaces,
 
     agentRuns,
     primaryWorkspace,
     currentRun,
     activeExpert,
+    activeExpertTeam,
     availableExperts,
     attachedWorkspaces,
     pendingPlanApprovals,
@@ -379,6 +478,18 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     pendingInterrupts,
     pendingApprovalCount,
     isAgentWorking,
+
+    artifacts,
+    isArtifactsPanelOpen,
+    selectedArtifact,
+    openedArtifacts,
+    isScanningArtifacts,
+    setIsArtifactsPanelOpen,
+    setSelectedArtifact: handleSelectArtifact,
+    closeArtifactTab,
+    scanArtifacts,
+    toggleArtifactsPanel,
+    openArtifactPreview,
 
     editApprovalId,
     setEditApprovalId,

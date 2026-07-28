@@ -10,6 +10,7 @@ import type {
   CreateTaskInput,
   CreateWorkspaceInput,
   ExpertPreset,
+  ExpertTeamPreset,
   HumanApproval,
   IpcResult,
   Message,
@@ -60,6 +61,8 @@ const anybuddyApi: AnybuddyApi = {
     openFolder: workspaceId => invoke<void>(IPC_CHANNELS.workspacesOpenFolder, workspaceId),
     listTasks: (workspaceId, filter) => invoke<TaskSummary[]>(IPC_CHANNELS.workspacesListTasks, workspaceId, filter),
     setDefault: workspaceId => invoke<AppSettings>(IPC_CHANNELS.workspacesSetDefault, workspaceId),
+    scanArtifacts: taskId => invoke(IPC_CHANNELS.workspacesScanArtifacts, taskId),
+    readFile: (absolutePath, encoding) => invoke(IPC_CHANNELS.workspacesReadFile, absolutePath, encoding),
   },
   settings: {
     get: () => invoke<AppSettings>(IPC_CHANNELS.settingsGet),
@@ -69,6 +72,9 @@ const anybuddyApi: AnybuddyApi = {
     list: () => invoke<ExpertPreset[]>(IPC_CHANNELS.expertsList),
     create: input => invoke<ExpertPreset>(IPC_CHANNELS.expertsCreate, input),
     delete: expertId => invoke<void>(IPC_CHANNELS.expertsDelete, expertId),
+  },
+  expertTeam: {
+    list: () => invoke<ExpertTeamPreset[]>(IPC_CHANNELS.expertTeamsList),
   },
   agentRun: {
     listActive: () => invoke<AgentRun[]>(IPC_CHANNELS.agentRunsListActive),

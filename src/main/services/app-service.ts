@@ -7,7 +7,7 @@ import os from 'node:os'
 import { AppEventBus } from '../runtime/event-bus.js'
 import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
-import { DEFAULT_EXPERTS } from '../../renderer/data/experts.js'
+import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js'
 import { OpenAIModelService } from './openai-model-service.js'
 import { ChatOpenAI } from '@langchain/openai'
 import type {
@@ -22,6 +22,7 @@ import type {
   HumanApproval,
   Message,
   ExpertPreset,
+  ExpertTeamPreset,
   Task,
   TaskDraft,
   TaskFilter,
@@ -39,11 +40,22 @@ import { createId, nowIso } from '../../shared/utils.js'
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 
+// 默认工作区存储目录名称
+const ANYBUDDY_WORKSPACES_DIRNAME = 'AnyBuddy'
+
+/** 获取系统用户目录下 AnyBuddy 工作区根目录路径 (~/AnyBuddy) */
+function getAnyBuddyRootDir(): string {
+  return join(os.homedir(), ANYBUDDY_WORKSPACES_DIRNAME)
+}
+
 // 默认空 MCP 配置文件结构
 const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
 
 // 流式文本 Patch 防抖刷盘延迟时间 (毫秒)
 const STREAM_EVENT_FLUSH_MS = 50
+
+/** 运行结束时需要保留的非最终流式消息段。 */
+type RuntimeIntermediateMessage = Pick<Message, 'content' | 'metadata'>
 
 /**
  * 判断事件是否为流式生成中的 Agent 助手消息事件。
@@ -130,7 +142,7 @@ export class AppService {
   constructor(
     private readonly repository: AppStateRepository,
     private readonly bus: AppEventBus,
-  ) {}
+  ) { }
 
   /**
    * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置、同步扫描 AnyBuddy 工作区目录，并清理上次未正常关机残留卡住的活跃运行。
@@ -138,9 +150,10 @@ export class AppService {
   async init() {
     this.state = await this.repository.load(createDefaultState())
     await this.ensureDefaultExperts()
+    await this.ensureDefaultExpertTeams()
     await this.hydrateConfigStateFromFiles()
     await this.syncAnyBuddyWorkspaces()
-    
+
     // 应用启动时清理异常卡在活跃状态（running/queued等）的任务与运行
     let changed = false
     for (const run of this.state.agentRuns) {
@@ -168,7 +181,7 @@ export class AppService {
    */
   private async syncAnyBuddyWorkspaces() {
     if (!this.state) return
-    const anybuddyRootDir = join(os.homedir(), 'AnyBuddy')
+    const anybuddyRootDir = getAnyBuddyRootDir()
     if (!existsSync(anybuddyRootDir)) return
 
     try {
@@ -217,6 +230,29 @@ export class AppService {
     await this.mutate(state => {
       state.experts = [...state.experts, ...missingExperts]
     })
+  }
+
+  /** 确保系统预设的默认专家团 (ExpertTeamPresets) 已注入持久化状态中 */
+  private async ensureDefaultExpertTeams() {
+    const existingIds = new Set((this.snapshot.expertTeams ?? []).map(team => team.id))
+    const missingTeams = DEFAULT_EXPERT_TEAMS.filter(team => !existingIds.has(team.id))
+    if (missingTeams.length === 0) {
+      return
+    }
+
+    await this.mutate(state => {
+      state.expertTeams = [...(state.expertTeams ?? []), ...missingTeams]
+    })
+  }
+
+  /** 获取所有专家团列表 */
+  listExpertTeams(): ExpertTeamPreset[] {
+    return this.snapshot.expertTeams ?? DEFAULT_EXPERT_TEAMS
+  }
+
+  /** 根据 ID 查询特定专家团 */
+  getExpertTeam(teamId: string): ExpertTeamPreset | undefined {
+    return (this.snapshot.expertTeams ?? DEFAULT_EXPERT_TEAMS).find(t => t.id === teamId)
   }
 
   /** 将当前内存中的全局状态写入底层持久化 SQLite 仓储（排除流式中间吐字的暂态事件） */
@@ -368,6 +404,17 @@ export class AppService {
     }, STREAM_EVENT_FLUSH_MS)
   }
 
+  /**
+   * 运行结束后，已由持久化消息接管展示的流式 Patch 无需再补发。
+   */
+  private discardPendingStreamEventPatches(runId: string) {
+    for (const [key, pending] of this.pendingStreamEventPatches) {
+      if (pending.event.runId === runId) {
+        this.pendingStreamEventPatches.delete(key)
+      }
+    }
+  }
+
   /** 创建 AgentEvent 数据工厂 */
   private createAgentEvent(run: AgentRun, type: AgentEvent['type'], payload: Record<string, unknown>): AgentEvent {
     return {
@@ -410,18 +457,18 @@ export class AppService {
     const summaries = tasks.map(task => {
       const primary = taskWorkspaces.find(item => item.taskId === task.id && item.role === 'primary')
       const workspaceName = primary ? workspaces.find(workspace => workspace.id === primary.workspaceId)?.name : undefined
-        return {
-          id: task.id,
-          title: task.title,
-          mode: task.mode,
-          status: task.status,
-          unreadEventCount: task.unreadEventCount,
-          primaryWorkspaceId: task.primaryWorkspaceId,
-          primaryWorkspaceName: workspaceName,
-          expertIds: task.expertIds,
-          updatedAt: task.updatedAt,
-        }
-      })
+      return {
+        id: task.id,
+        title: task.title,
+        mode: task.mode,
+        status: task.status,
+        unreadEventCount: task.unreadEventCount,
+        primaryWorkspaceId: task.primaryWorkspaceId,
+        primaryWorkspaceName: workspaceName,
+        expertIds: task.expertIds,
+        updatedAt: task.updatedAt,
+      }
+    })
 
     return summaries.filter(task => {
       if (filter.keyword) {
@@ -472,7 +519,7 @@ export class AppService {
         const date = new Date()
         const pad = (n: number) => String(n).padStart(2, '0')
         const folderName = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
-        const anybuddyRootDir = join(os.homedir(), 'AnyBuddy')
+        const anybuddyRootDir = getAnyBuddyRootDir()
         const workspacePath = join(anybuddyRootDir, folderName)
 
         if (!existsSync(workspacePath)) {
@@ -501,6 +548,7 @@ export class AppService {
         modelId: resolvedModelId,
         expertIds: input.expertIds,
         activeExpertId: input.activeExpertId ?? input.expertIds[0],
+        activeExpertTeamId: input.activeExpertTeamId,
         primaryWorkspaceId,
         permissionMode: input.permissionMode,
         connectorIds: input.connectorIds,
@@ -804,6 +852,7 @@ ${initialPrompt.slice(0, 1000)}
         selectedConnectorIds: draft.selectedConnectorIds,
         selectedExpertIds: draft.selectedExpertIds ?? [],
         selectedExpertId: draft.selectedExpertId ?? draft.selectedExpertIds?.[0],
+        selectedExpertTeamId: draft.selectedExpertTeamId,
         updatedAt: draft.updatedAt ?? nowIso(),
       }
       const index = state.drafts.findIndex(item => item.taskId === taskId)
@@ -1178,11 +1227,17 @@ ${initialPrompt.slice(0, 1000)}
   /**
    * 正常结束 runtime run，并补一条最终助手消息。
    */
-  async completeRuntimeRun(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
+  async completeRuntimeRun(
+    runId: string,
+    content: string,
+    metadata?: Record<string, unknown>,
+    intermediateMessages: ReadonlyArray<RuntimeIntermediateMessage> = [],
+  ): Promise<void> {
     let taskId = ''
     let completedRun: AgentRun | null = null
     let runStatusEvent: AgentEvent | null = null
     let runCompletedEvent: AgentEvent | null = null
+    let persistedIntermediateMessages: Message[] = []
     let assistantMessage: Message | null = null
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -1208,6 +1263,18 @@ ${initialPrompt.slice(0, 1000)}
         status: 'completed',
       })
       state.agentEvents.push(runCompletedEvent)
+      persistedIntermediateMessages = intermediateMessages
+        .filter(message => message.content.trim().length > 0)
+        .map(message => ({
+          id: createId('message'),
+          taskId: run.taskId,
+          runId,
+          role: 'assistant' as const,
+          content: message.content,
+          metadata: message.metadata ? { ...message.metadata } : undefined,
+          createdAt: nowIso(),
+        }))
+      state.messages.push(...persistedIntermediateMessages)
       assistantMessage = {
         id: createId('message'),
         taskId: run.taskId,
@@ -1221,6 +1288,7 @@ ${initialPrompt.slice(0, 1000)}
       completedRun = { ...run }
     })
 
+    this.discardPendingStreamEventPatches(runId)
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
       if (completedRun) {
@@ -1232,6 +1300,9 @@ ${initialPrompt.slice(0, 1000)}
       if (runCompletedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
       }
+      for (const intermediateMessage of persistedIntermediateMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
+      }
       if (assistantMessage) {
         this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
       }
@@ -1241,11 +1312,17 @@ ${initialPrompt.slice(0, 1000)}
   /**
    * 以等待方案确认 (Plan Approval) 的状态完成单次运行。
    */
-  async completeRuntimeRunWithPlanApproval(runId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
+  async completeRuntimeRunWithPlanApproval(
+    runId: string,
+    content: string,
+    metadata?: Record<string, unknown>,
+    intermediateMessages: ReadonlyArray<RuntimeIntermediateMessage> = [],
+  ): Promise<void> {
     let taskId = ''
     let waitingRun: AgentRun | null = null
     let runStatusEvent: AgentEvent | null = null
     let runCompletedEvent: AgentEvent | null = null
+    let persistedIntermediateMessages: Message[] = []
     let assistantMessage: Message | null = null
     let approval: HumanApproval | null = null
     let approvalRequestedEvent: AgentEvent | null = null
@@ -1278,6 +1355,19 @@ ${initialPrompt.slice(0, 1000)}
         awaiting: 'plan_confirmation',
       })
       state.agentEvents.push(runCompletedEvent)
+
+      persistedIntermediateMessages = intermediateMessages
+        .filter(message => message.content.trim().length > 0)
+        .map(message => ({
+          id: createId('message'),
+          taskId: run.taskId,
+          runId,
+          role: 'assistant' as const,
+          content: message.content,
+          metadata: message.metadata ? { ...message.metadata } : undefined,
+          createdAt: nowIso(),
+        }))
+      state.messages.push(...persistedIntermediateMessages)
 
       assistantMessage = {
         id: createId('message'),
@@ -1319,6 +1409,7 @@ ${initialPrompt.slice(0, 1000)}
       waitingRun = { ...run }
     })
 
+    this.discardPendingStreamEventPatches(runId)
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
       if (waitingRun) {
@@ -1329,6 +1420,9 @@ ${initialPrompt.slice(0, 1000)}
       }
       if (runCompletedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
+      }
+      for (const intermediateMessage of persistedIntermediateMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
       }
       if (assistantMessage) {
         this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
@@ -1395,6 +1489,7 @@ ${initialPrompt.slice(0, 1000)}
     let taskId = ''
     let failedRun: AgentRun | null = null
     let failedEvent: AgentEvent | null = null
+    let persistedStreamMessages: Message[] = []
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
@@ -1414,9 +1509,46 @@ ${initialPrompt.slice(0, 1000)}
         message: error instanceof Error ? error.message : 'Unknown runtime failure',
       })
       state.agentEvents.push(failedEvent)
+
+      // 失败前已经展示过的流式段也必须转为历史消息，避免刷新或切换任务后丢失。
+      const persistedStreamEventIds = new Set(
+        state.messages
+          .map(message => message.metadata?.streamEventId)
+          .filter((streamEventId): streamEventId is string => typeof streamEventId === 'string'),
+      )
+      for (const event of state.agentEvents) {
+        if (
+          event.runId !== runId ||
+          !isStreamingAgentMessageEvent(event) ||
+          persistedStreamEventIds.has(event.id)
+        ) {
+          continue
+        }
+        const content = event.payload.content
+        if (typeof content !== 'string' || content.trim().length === 0) {
+          continue
+        }
+        persistedStreamMessages.push({
+          id: createId('message'),
+          taskId: run.taskId,
+          runId,
+          role: 'assistant',
+          content,
+          metadata: {
+            ...event.payload,
+            source: 'runtime_stream',
+            streamEventId: event.id,
+            streaming: false,
+            final: false,
+          },
+          createdAt: event.createdAt,
+        })
+      }
+      state.messages.push(...persistedStreamMessages)
       failedRun = { ...run }
     })
 
+    this.discardPendingStreamEventPatches(runId)
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
       if (failedRun) {
@@ -1424,6 +1556,9 @@ ${initialPrompt.slice(0, 1000)}
       }
       if (failedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: failedEvent })
+      }
+      for (const streamMessage of persistedStreamMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: streamMessage })
       }
     }
   }

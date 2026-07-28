@@ -2,20 +2,20 @@ import { useState, useMemo, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Tabs, Card, Tag, Button, Space, Modal, Input, Row, Col, Empty, Tooltip, Select } from 'antd'
 import {
-  LinkOutlined,
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
   ThunderboltOutlined,
   SearchOutlined,
-  CodeOutlined,
-  SaveOutlined,
-  UploadOutlined
+  UploadOutlined,
+  TeamOutlined,
+  UserOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons'
-import { useAppStore } from '../stores/app-store.js'
-import { createAnybuddyClients } from '../api/clients.js'
-import type { ExpertPreset } from '../../shared/types.js'
-import ImportSkillModal from '../components/ImportSkillModal.js'
+import { useAppStore } from '../../stores/app-store.js'
+import { createAnybuddyClients } from '../../api/clients.js'
+import type { ExpertPreset, ExpertTeamPreset } from '../../../shared/types.js'
+import ImportSkillModal from '../../components/ImportSkillModal.js'
 
 const SKILL_DESCRIPTIONS: Record<string, string> = {
   'frontend-design': '前端整体界面排版与视觉设计技能包',
@@ -23,28 +23,22 @@ const SKILL_DESCRIPTIONS: Record<string, string> = {
   'doc-coauthoring': '多人联合文档与文本自动润色校对技能包',
   'writing-plans': '系统架构分解、步骤计划排期输出技能包',
   'systematic-debugging': '复杂代码报错精准定位与底层调试技能包',
-  'web-search': '聚合网络多渠道精准搜集与总结要点技能包'
+  'web-search': '聚合网络多渠道精准搜集与总结要点技能包',
 }
-
-const CONNECTORS_LIST = [
-  { id: 'wechat', name: '微信助手连接器', desc: '用于将 Agent 推送通知或在微信端执行异步响应' },
-  { id: 'dingtalk', name: '钉钉助手连接器', desc: '集成钉钉机器人 Webhook 以同步会话记录和执行报告' },
-  { id: 'mcp', name: 'MCP 连接器', desc: '符合模型上下文协议的标准外部服务网关' },
-  { id: 'filesystem', name: '本地文件系统', desc: '直接挂载并操作受控工作空间文件夹的连接层' },
-  { id: 'web-search', name: '搜索引擎连接器', desc: '对接 Google/Bing 搜索接口提供时效性信息的接口' }
-]
 
 export default function ExpertsPage() {
   const navigate = useNavigate()
   const saveDraft = useAppStore(state => state.saveDraft)
   const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
+  const setSummonedExpertTeam = useAppStore(state => state.setSummonedExpertTeam)
   const experts = useAppStore(state => state.experts)
+  const expertTeams = useAppStore(state => state.expertTeams)
   const createExpert = useAppStore(state => state.createExpert)
   const deleteExpert = useAppStore(state => state.deleteExpert)
   const mcpConfigRaw = useAppStore(state => state.mcpConfigRaw)
-  const saveMcpConfig = useAppStore(state => state.saveMcpConfig)
 
   const [activeTab, setActiveTab] = useState('experts')
+  const [expertSubTab, setExpertSubTab] = useState('single')
   const [skillSearch, setSkillSearch] = useState('')
   const [localSkills, setLocalSkills] = useState<string[]>([])
   const [isImportModalOpen, setIsImportModalOpen] = useState(false)
@@ -56,8 +50,8 @@ export default function ExpertsPage() {
   const [expertSkills, setExpertSkills] = useState<string[]>([])
   const [editingExpertId, setEditingExpertId] = useState<string | null>(null)
 
-  // MCP Configuration text
-  const [mcpConfigText, setMcpConfigText] = useState(mcpConfigRaw)
+  // Viewing team details
+  const [viewingTeam, setViewingTeam] = useState<ExpertTeamPreset | null>(null)
 
   const fetchSkills = () => {
     const clients = createAnybuddyClients(window.anybuddy)
@@ -67,10 +61,6 @@ export default function ExpertsPage() {
       }
     })
   }
-
-  useEffect(() => {
-    setMcpConfigText(mcpConfigRaw)
-  }, [mcpConfigRaw])
 
   useEffect(() => {
     fetchSkills()
@@ -89,6 +79,7 @@ export default function ExpertsPage() {
 
   const handleStartTask = async (expert: ExpertPreset) => {
     setSummonedExpert(expert, { addToRecent: true })
+    setSummonedExpertTeam(null)
     const defaultPrompt = `帮我创建一个 ${expert.name}，擅长 ${expert.description}。我的经验是：[请在此补充您的行业背景与相关经验]`
     await saveDraft('__new_task__', {
       content: defaultPrompt,
@@ -96,6 +87,22 @@ export default function ExpertsPage() {
       selectedConnectorIds: ['mcp'],
       selectedExpertIds: [expert.id],
       selectedExpertId: expert.id,
+      selectedExpertTeamId: undefined,
+    })
+    navigate('/tasks/new')
+  }
+
+  const handleStartTeamTask = async (team: ExpertTeamPreset) => {
+    setSummonedExpertTeam(team)
+    setSummonedExpert(null)
+    const defaultPrompt = `帮我通过 ${team.name} 解决问题：[请在此补充您的具体开发与架构需求]`
+    await saveDraft('__new_task__', {
+      content: defaultPrompt,
+      selectedSkillIds: [],
+      selectedConnectorIds: ['mcp'],
+      selectedExpertIds: [],
+      selectedExpertId: undefined,
+      selectedExpertTeamId: team.id,
     })
     navigate('/tasks/new')
   }
@@ -139,7 +146,7 @@ export default function ExpertsPage() {
       name: expertName,
       description: expertDesc,
       skills: expertSkills,
-      isCustom: true
+      isCustom: true,
     })
     if (!tempExpert) {
       Modal.error({ title: '提示', content: isEditing ? '编辑专家失败' : '创建专家失败' })
@@ -151,6 +158,7 @@ export default function ExpertsPage() {
       return
     }
     setSummonedExpert(tempExpert, { addToRecent: true })
+    setSummonedExpertTeam(null)
     const prompt = `帮我创建一个 ${expertName}，擅长 ${expertDesc}。我的经验是：[请在此补充您的行业背景与相关经验]`
     await saveDraft('__new_task__', {
       content: prompt,
@@ -158,28 +166,19 @@ export default function ExpertsPage() {
       selectedConnectorIds: ['mcp'],
       selectedExpertIds: [tempExpert.id],
       selectedExpertId: tempExpert.id,
+      selectedExpertTeamId: undefined,
     })
     resetExpertModal()
     navigate('/tasks/new')
   }
 
-  const handleSaveMcp = async () => {
-    try {
-      JSON.parse(mcpConfigText)
-      await saveMcpConfig(mcpConfigText)
-      Modal.success({ title: '保存成功', content: 'MCP 配置文件已更新写入 ~/.anybuddy/mcp.json' })
-    } catch (err) {
-      Modal.error({ title: '保存失败', content: '非法的 JSON 格式，请检查语法' })
-    }
-  }
-
-  const items = [
+  const expertSubTabItems = [
     {
-      key: 'experts',
+      key: 'single',
       label: (
         <span>
-          <ThunderboltOutlined style={{ marginRight: 6 }} />
-          专家
+          <UserOutlined style={{ marginRight: 6 }} />
+          单专家
         </span>
       ),
       children: (
@@ -205,23 +204,23 @@ export default function ExpertsPage() {
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                       <strong style={{ fontSize: '14px', color: '#0f172a' }}>{expert.name}</strong>
-                        {expert.isCustom ? (
-                          <Space>
-                            <Tag color="orange">自定义</Tag>
-                            <Tooltip title="编辑专家">
-                              <Button
-                                type="text"
-                                size="small"
-                                icon={<EditOutlined />}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  openEditExpertModal(expert)
-                                }}
-                              />
-                            </Tooltip>
+                      {expert.isCustom ? (
+                        <Space>
+                          <Tag color="orange">自定义</Tag>
+                          <Tooltip title="编辑专家">
                             <Button
-                              danger
                               type="text"
+                              size="small"
+                              icon={<EditOutlined />}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                openEditExpertModal(expert)
+                              }}
+                            />
+                          </Tooltip>
+                          <Button
+                            danger
+                            type="text"
                             size="small"
                             icon={<DeleteOutlined />}
                             onClick={(e) => { e.stopPropagation(); void deleteExpert(expert.id) }}
@@ -256,6 +255,101 @@ export default function ExpertsPage() {
             ))}
           </Row>
         </div>
+      ),
+    },
+    {
+      key: 'team',
+      label: (
+        <span>
+          <TeamOutlined style={{ marginRight: 6 }} />
+          专家团
+        </span>
+      ),
+      children: (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <div>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>专家团队列表</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>专家团是由多位不同角色 Agent 协同配合构成的多智能体团队。</div>
+            </div>
+          </div>
+
+          <Row gutter={[16, 16]}>
+            {expertTeams.map(team => (
+              <Col xs={24} sm={12} md={12} key={team.id}>
+                <Card
+                  hoverable
+                  style={{ height: '100%', borderRadius: 12, border: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column' }}
+                  styles={{ body: { padding: 20, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                      <strong style={{ fontSize: '16px', color: '#0f172a' }}>{team.name}</strong>
+                      <Tag color="purple">内置团队</Tag>
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#475569', lineHeight: '1.6', margin: '0 0 16px 0' }}>
+                      {team.description}
+                    </p>
+
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <TeamOutlined /> 团队成员组成 ({team.members.length}人):
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {team.members.map(member => (
+                          <div key={member.id} style={{ fontSize: '12px', color: '#334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600 }}>{member.name} <span style={{ color: '#64748b', fontWeight: 400 }}>({member.role})</span></span>
+                            <Tag style={{ margin: 0, fontSize: '10px' }} color="geekblue">{member.specialty}</Tag>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                    <Button
+                      type="default"
+                      icon={<InfoCircleOutlined />}
+                      onClick={() => setViewingTeam(team)}
+                      style={{ borderRadius: 6 }}
+                    >
+                      查看详情
+                    </Button>
+                    <Button
+                      type="primary"
+                      icon={<ThunderboltOutlined />}
+                      onClick={() => handleStartTeamTask(team)}
+                      style={{ flex: 1, borderRadius: 6, fontWeight: 500, background: '#0f172a', border: 'none' }}
+                    >
+                      基于专家团发起任务
+                    </Button>
+                  </div>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        </div>
+      ),
+    },
+  ]
+
+  const items = [
+    {
+      key: 'experts',
+      label: (
+        <span>
+          <ThunderboltOutlined style={{ marginRight: 6 }} />
+          专家
+        </span>
+      ),
+      children: (
+        <Tabs
+          activeKey={expertSubTab}
+          onChange={setExpertSubTab}
+          items={expertSubTabItems}
+          type="card"
+          style={{ marginTop: 8 }}
+        />
       ),
     },
     {
@@ -313,80 +407,6 @@ export default function ExpertsPage() {
         </div>
       ),
     },
-    /* 暂隐藏外部应用连接器模块 */
-    /*
-    {
-      key: 'connectors',
-      label: (
-        <span>
-          <LinkOutlined style={{ marginRight: 6 }} />
-          连接器
-        </span>
-      ),
-      children: (
-        <div>
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>外部应用连接器</div>
-            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>连接器是 MCP Server 或外部应用通知钩子，允许 Agent 获取或写入外部数据。</div>
-          </div>
-          <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-            {CONNECTORS_LIST.map(conn => (
-              <Col xs={24} sm={12} md={8} key={conn.id}>
-                <Card style={{ borderRadius: 10, border: '1px solid #f1f5f9', height: '100%' }} styles={{ body: { padding: 16 } }}>
-                  <strong style={{ fontSize: '14px', color: '#0f172a', display: 'block', marginBottom: 8 }}>
-                    {conn.name}
-                  </strong>
-                  <p style={{ fontSize: '12px', color: '#64748b', margin: 0, lineHeight: '1.5' }}>
-                    {conn.desc}
-                  </p>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-
-          <div style={{
-            borderTop: '1px solid #f1f5f9',
-            paddingTop: '20px',
-            marginTop: '20px'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-              <div>
-                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1e293b', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <CodeOutlined />
-                  <span>MCP 配置文件直编 (~/.anybuddy/mcp.json)</span>
-                </div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                  直接在此编辑 MCP 服务网关参数，点击保存将同步更新到磁盘。
-                </div>
-              </div>
-              <Button
-                type="primary"
-                icon={<SaveOutlined />}
-                style={{ background: '#0f172a', border: 'none' }}
-                onClick={handleSaveMcp}
-              >
-                保存配置
-              </Button>
-            </div>
-            <Input.TextArea
-              value={mcpConfigText}
-              onChange={e => setMcpConfigText(e.target.value)}
-              rows={12}
-              style={{
-                fontFamily: 'Consolas, Monaco, monospace',
-                fontSize: '12px',
-                background: '#0f172a',
-                color: '#38bdf8',
-                borderRadius: '8px',
-                border: '1px solid #1e293b',
-                padding: '12px'
-              }}
-            />
-          </div>
-        </div>
-      ),
-    },
-    */
   ]
 
   return (
@@ -447,6 +467,77 @@ export default function ExpertsPage() {
             />
           </div>
         </div>
+      </Modal>
+
+      {/* Expert Team Detail Modal */}
+      <Modal
+        open={Boolean(viewingTeam)}
+        onCancel={() => setViewingTeam(null)}
+        footer={[
+          <Button key="close" onClick={() => setViewingTeam(null)}>
+            关闭
+          </Button>,
+          <Button
+            key="start"
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            style={{ background: '#0f172a', border: 'none' }}
+            onClick={() => {
+              if (viewingTeam) {
+                const team = viewingTeam
+                setViewingTeam(null)
+                void handleStartTeamTask(team)
+              }
+            }}
+          >
+            基于专家团发起任务
+          </Button>,
+        ]}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <TeamOutlined style={{ color: '#6366f1' }} />
+            <span>{viewingTeam?.name} 详情</span>
+            <Tag color="purple">内置团队 (不可编辑)</Tag>
+          </div>
+        }
+        width={640}
+      >
+        {viewingTeam && (
+          <div style={{ padding: '12px 0' }}>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 4 }}>团队描述</div>
+              <div style={{ fontSize: '14px', color: '#1e293b', background: '#f8fafc', padding: 12, borderRadius: 8 }}>
+                {viewingTeam.description}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 8 }}>Agent 团队组成人员及分工</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {viewingTeam.members.map(member => (
+                  <Card key={member.id} size="small" style={{ borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <span style={{ fontWeight: 700, fontSize: '14px', color: '#0f172a' }}>
+                        {member.name} <Tag color="blue" style={{ marginLeft: 6 }}>{member.role}</Tag>
+                      </span>
+                      <Tag color="cyan">{member.specialty}</Tag>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 6 }}>
+                      <strong>提示词摘要：</strong>{member.systemPrompt}
+                    </div>
+                    {member.skills && member.skills.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {member.skills.map(skill => (
+                          <Tag key={skill} style={{ margin: 0, fontSize: '10px' }}>{skill}</Tag>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <ImportSkillModal

@@ -1,7 +1,8 @@
+import React, { useState } from 'react'
 import { AlertCircle, Edit2, Play, ShieldAlert, Terminal, XCircle } from 'lucide-react'
 import { Button, Tag } from 'antd'
 import { getPlanApprovalText, getStatusLabelAndColor, useTaskDetail } from './TaskDetailContext.js'
-import { renderMarkdown } from './TaskDetailMessageList.js'
+import { renderMarkdown } from '../../utils/markdown.js'
 
 function formatAccessMode(value: 'read_only' | 'read_write') {
   return value === 'read_only' ? '只读' : '读写'
@@ -32,6 +33,7 @@ export default function TaskDetailRuntimeSidebar() {
     isAgentWorking,
     taskEvents,
     activeExpert,
+    activeExpertTeam,
     availableExperts,
     pendingApprovalCount,
     pendingPlanApprovals,
@@ -152,14 +154,14 @@ export default function TaskDetailRuntimeSidebar() {
         </div>
       )}
 
-      {/* 当前专家卡片 */}
+      {/* 当前专家或专家团卡片 */}
       <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
-        <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>当前专家</div>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>{activeExpertTeam ? '当前专家团' : '当前专家'}</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div>
-            <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{activeExpert?.name ?? '通用助手'}</div>
+            <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{activeExpertTeam?.name ?? activeExpert?.name ?? '通用助手'}</div>
             <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px', lineHeight: 1.6 }}>
-              {activeExpert?.description ?? '当前未指定专家，使用默认 AnyBuddy persona。'}
+              {activeExpertTeam?.description ?? activeExpert?.description ?? '当前未指定专家，使用默认 AnyBuddy persona。'}
             </div>
           </div>
           {availableExperts.length > 0 && (

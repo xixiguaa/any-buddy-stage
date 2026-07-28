@@ -106,6 +106,14 @@ class WorkspaceClient {
   setDefault(workspaceId: string) {
     return this.api.workspace.setDefault(workspaceId)
   }
+
+  scanArtifacts(taskId: string) {
+    return this.api.workspace.scanArtifacts(taskId)
+  }
+
+  readFile(absolutePath: string, encoding?: 'utf8' | 'base64') {
+    return this.api.workspace.readFile(absolutePath, encoding)
+  }
 }
 
 class SettingsClient {
@@ -133,6 +141,14 @@ class ExpertClient {
 
   delete(expertId: string) {
     return this.api.expert.delete(expertId)
+  }
+}
+
+class ExpertTeamClient {
+  constructor(private readonly api: AnybuddyApi) {}
+
+  list() {
+    return this.api.expertTeam.list()
   }
 }
 
@@ -227,6 +243,7 @@ export type AnybuddyClients = {
   workspace: WorkspaceClient
   settings: SettingsClient
   expert: ExpertClient
+  expertTeam: ExpertTeamClient
   agentRun: AgentRunClient
   config: ConfigClient
 }
@@ -239,6 +256,7 @@ export function createAnybuddyClients(api: AnybuddyApi): AnybuddyClients {
     workspace: new WorkspaceClient(api),
     settings: new SettingsClient(api),
     expert: new ExpertClient(api),
+    expertTeam: new ExpertTeamClient(api),
     agentRun: new AgentRunClient(api),
     config: new ConfigClient(api),
   }

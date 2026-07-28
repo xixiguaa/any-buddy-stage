@@ -12,7 +12,9 @@ import {
   InfoCircleOutlined,
   CloseOutlined,
   RightOutlined,
-  CompassOutlined
+  CompassOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons'
 import type { CreateTaskInput, ExpertPreset, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
 import { useAppStore } from '../stores/app-store.js'
@@ -110,7 +112,10 @@ export default function TaskComposer({
   onSend,
   defaultWorkspaceId,
   defaultMode = 'plan',
+  defaultModelId,
   defaultPermissionMode,
+  defaultActiveExpertId,
+  defaultActiveExpertTeamId,
   draft,
   onDraftChange,
   onClearDraft,
@@ -129,10 +134,14 @@ export default function TaskComposer({
     permissionMode: 'read_write' | 'full_access'
     expertIds: string[]
     activeExpertId?: string
+    activeExpertTeamId?: string
   }) => Promise<void>
   defaultWorkspaceId?: string
   defaultMode?: CreateTaskInput['mode']
+  defaultModelId?: string
   defaultPermissionMode?: CreateTaskInput['permissionMode']
+  defaultActiveExpertId?: string
+  defaultActiveExpertTeamId?: string
   draft?: TaskDraft
   onDraftChange?: (draft: Omit<TaskDraft, 'taskId' | 'updatedAt'>) => Promise<void> | void
   onClearDraft?: () => Promise<void> | void
@@ -146,22 +155,23 @@ export default function TaskComposer({
   const customModels = useAppStore(state => state.customModels)
   const saveCustomModels = useAppStore(state => state.saveCustomModels)
   const recentExperts = useAppStore(state => state.recentExperts)
-  const summonedExpert = useAppStore(state => state.summonedExpert)
-  const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
   const experts = useAppStore(state => state.experts)
-  const defaultModelId = useMemo(
+  const expertTeams = useAppStore(state => state.expertTeams)
+  const fallbackModelId = useMemo(
     () => customModels.find(model => model.enabled)?.id ?? customModels[0]?.id ?? '',
     [customModels],
   )
+  const effectiveModelId = defaultModelId || fallbackModelId
   const [title, setTitle] = useState('')
   const [message, setMessage] = useState(draft?.content ?? '')
   const [mode, setMode] = useState<CreateTaskInput['mode']>(defaultMode)
-  const [modelId, setModelId] = useState(defaultModelId)
+  const [modelId, setModelId] = useState(effectiveModelId)
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? '')
-  const [attachedWorkspaceIds, setAttachedWorkspaceIds] = useState<string[]>([])
+  /* 已移除关联工作区相关 state */
   const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || '')
   const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
-  const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0])
+  const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0] ?? defaultActiveExpertId)
+  const [activeExpertTeamId, setActiveExpertTeamId] = useState<string | undefined>(draft?.selectedExpertTeamId ?? defaultActiveExpertTeamId)
   const normalizePermissionMode = (value?: CreateTaskInput['permissionMode']): 'read_write' | 'full_access' => {
     if (value === 'read_write' || value === 'full_access') {
       return value
@@ -175,7 +185,7 @@ export default function TaskComposer({
   const [showModePopover, setShowModePopover] = useState(false)
   const [showModelPopover, setShowModelPopover] = useState(false)
   const [showSkillsPopover, setShowSkillsPopover] = useState(false)
-  const [showAttachPopover, setShowAttachPopover] = useState(false)
+  /* 已移除 showAttachPopover 状态 */
   const [showPermissionPopover, setShowPermissionPopover] = useState(false)
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const [hoveredItem, setHoveredItem] = useState<string | null>(null)
@@ -270,17 +280,29 @@ export default function TaskComposer({
   }, [defaultMode])
 
   useEffect(() => {
-    const hasCurrent = customModels.some(model => model.id === modelId)
-    if (!hasCurrent) {
+    if (defaultModelId) {
       setModelId(defaultModelId)
     }
-  }, [customModels, defaultModelId, modelId])
+  }, [defaultModelId])
 
-  const expertSelected = Boolean(activeExpertId) || Boolean(summonedExpert)
+  useEffect(() => {
+    if (modelId) {
+      const hasCurrent = customModels.some(model => model.id === modelId)
+      if (!hasCurrent && effectiveModelId) {
+        setModelId(effectiveModelId)
+      }
+    } else if (effectiveModelId) {
+      setModelId(effectiveModelId)
+    }
+  }, [customModels, effectiveModelId, modelId])
+
+  // 召唤状态以当前任务或草稿中的 ID 为准，避免不同任务共享全局选择。
+  const summonedExpert = useMemo(() => experts.find(expert => expert.id === activeExpertId), [activeExpertId, experts])
+  const summonedExpertTeam = useMemo(() => expertTeams.find(team => team.id === activeExpertTeamId), [activeExpertTeamId, expertTeams])
+  const expertSelected = Boolean(summonedExpert)
 
   function applyExpertSelection(expert: ExpertPreset | null) {
     if (!expert) {
-      setSummonedExpert(null)
       setActiveExpertId(undefined)
       setSkills('')
       if (onCreate) {
@@ -291,8 +313,8 @@ export default function TaskComposer({
       return
     }
 
-    setSummonedExpert(expert)
     setActiveExpertId(expert.id)
+    setActiveExpertTeamId(undefined)
     setSkills(expert.skills.join(', '))
     if (onCreate) {
       setMessage(`帮我创建一个 ${expert.name}，擅长 ${expert.description}。`)
@@ -303,12 +325,11 @@ export default function TaskComposer({
     setActiveExpertId(prev => {
       const next = prev === expert.id ? undefined : expert.id
       if (!next) {
-        setSummonedExpert(null)
         setSkills('')
         return undefined
       }
 
-      setSummonedExpert(expert)
+      setActiveExpertTeamId(undefined)
       setSkills(expert.skills.join(', '))
       return next
     })
@@ -327,11 +348,13 @@ export default function TaskComposer({
     const nextSkills = draft.selectedSkillIds.join(', ')
     const nextConnectors = draft.selectedConnectorIds.join(', ')
     const nextExpertId = draft.selectedExpertId ?? draft.selectedExpertIds?.[0] ?? ''
+    const nextExpertTeamId = draft.selectedExpertTeamId ?? ''
     if (
       draft.content === message &&
       nextSkills === skills &&
       nextConnectors === connectors &&
-      nextExpertId === (activeExpertId ?? '')
+      nextExpertId === (activeExpertId ?? '') &&
+      nextExpertTeamId === (activeExpertTeamId ?? '')
     ) {
       return
     }
@@ -340,16 +363,14 @@ export default function TaskComposer({
     setSkills(nextSkills)
     setConnectors(nextConnectors)
     setActiveExpertId(draft.selectedExpertId ?? draft.selectedExpertIds?.[0])
+    setActiveExpertTeamId(draft.selectedExpertTeamId)
+  }, [draft?.taskId, draft?.updatedAt])
 
-    if (draft.selectedExpertId || draft.selectedExpertIds?.length) {
-      const firstExpert = experts.find(e => e.id === (draft.selectedExpertId ?? draft.selectedExpertIds?.[0]))
-      if (firstExpert) {
-        setSummonedExpert(firstExpert)
-      }
-    } else {
-      setSummonedExpert(null)
-    }
-  }, [draft?.taskId, draft?.updatedAt, experts])
+  useEffect(() => {
+    if (draft) return
+    setActiveExpertId(defaultActiveExpertId)
+    setActiveExpertTeamId(defaultActiveExpertTeamId)
+  }, [defaultActiveExpertId, defaultActiveExpertTeamId, draft])
 
   useEffect(() => {
     onDraftChangeRef.current?.({
@@ -358,8 +379,9 @@ export default function TaskComposer({
       selectedConnectorIds: selectedConnectorsList,
       selectedExpertIds: activeExpertId ? [activeExpertId] : [],
       selectedExpertId: activeExpertId,
+      selectedExpertTeamId: activeExpertTeamId,
     })
-  }, [activeExpertId, selectedConnectorsList, message, selectedSkillsList])
+  }, [activeExpertId, activeExpertTeamId, selectedConnectorsList, message, selectedSkillsList])
 
   async function handlePickWorkspace() {
     const workspace = await onPickWorkspace?.()
@@ -388,6 +410,7 @@ export default function TaskComposer({
           permissionMode,
           expertIds: activeExpertId ? [activeExpertId] : [],
           activeExpertId,
+          activeExpertTeamId,
         })
       } else if (onCreate) {
         const taskTitle = title.trim() || initialMessage.split('\n')[0]?.trim().slice(0, 50) || '新任务'
@@ -397,12 +420,13 @@ export default function TaskComposer({
             mode,
             modelId,
             workspaceId: workspaceId || undefined,
-            additionalWorkspaceIds: attachedWorkspaceIds,
+            additionalWorkspaceIds: [],
             permissionMode,
             connectorIds: selectedConnectorsList,
             skillIds: selectedSkillsList,
             expertIds: activeExpertId ? [activeExpertId] : [],
             activeExpertId,
+            activeExpertTeamId,
           },
           initialMessage,
         )
@@ -549,7 +573,7 @@ export default function TaskComposer({
         <div style={{ display: 'flex', alignItems: 'center', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
           <Input
             variant="borderless"
-            placeholder="给你的任务起个名字..."
+            placeholder="我想创作一个关于环保主题的短视频脚本，时长30秒左右，面向年轻人群，风格轻松幽默..."
             value={title}
             onChange={event => setTitle(event.target.value)}
             style={{
@@ -559,6 +583,47 @@ export default function TaskComposer({
               padding: 0
             }}
           />
+        </div>
+      )}
+
+      {/* Summoned Expert / Expert Team Tag Badge */}
+      {(summonedExpert || summonedExpertTeam) && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '8px 12px',
+          background: '#ffffff',
+          borderRadius: '8px',
+          border: '1px solid #f1f5f9'
+        }}>
+          <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 500 }}>已召唤:</span>
+          {summonedExpert && (
+            <Tag
+              closable
+              onClose={() => {
+                setActiveExpertId(undefined)
+              }}
+              color="blue"
+              icon={<ThunderboltOutlined />}
+              style={{ borderRadius: '12px', padding: '2px 10px', fontSize: '12px', fontWeight: 600, margin: 0 }}
+            >
+              专家: {summonedExpert.name}
+            </Tag>
+          )}
+          {summonedExpertTeam && (
+            <Tag
+              closable
+              onClose={() => {
+                setActiveExpertTeamId(undefined)
+              }}
+              color="purple"
+              icon={<TeamOutlined />}
+              style={{ borderRadius: '12px', padding: '2px 10px', fontSize: '12px', fontWeight: 600, margin: 0 }}
+            >
+              专家团: {summonedExpertTeam.name} ({summonedExpertTeam.members.map(m => m.name).join(' / ')})
+            </Tag>
+          )}
         </div>
       )}
 
@@ -678,13 +743,13 @@ export default function TaskComposer({
                       </span>
                       {isSelected && <CheckIcon />}
                       <Tooltip title={opt.desc} placement="right" mouseEnterDelay={0.5}>
-                        <InfoCircleOutlined 
-                          style={{ 
-                            color: '#94a3b8', 
-                            fontSize: '14px', 
-                            cursor: 'help' 
-                          }} 
-                          onClick={(e) => e.stopPropagation()} 
+                        <InfoCircleOutlined
+                          style={{
+                            color: '#94a3b8',
+                            fontSize: '14px',
+                            cursor: 'help'
+                          }}
+                          onClick={(e) => e.stopPropagation()}
                         />
                       </Tooltip>
                     </div>
@@ -998,8 +1063,8 @@ export default function TaskComposer({
                     />
 
                     <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', marginTop: '6px' }}>
-                      <Button 
-                        size="small" 
+                      <Button
+                        size="small"
                         onClick={() => {
                           setAddingModel(false)
                           setNewModelEndpoint('')
@@ -1007,22 +1072,22 @@ export default function TaskComposer({
                           setSelectedModelId('')
                           setNewModelApiMode('auto')
                           setNewModelName('')
-                        }} 
+                        }}
                         style={{ borderRadius: '4px', fontSize: '11px' }}
                       >
                         取消
                       </Button>
-                      <Button 
-                        size="small" 
-                        type="primary" 
+                      <Button
+                        size="small"
+                        type="primary"
                         disabled={!newModelEndpoint.trim() || !selectedModelId.trim()}
-                        style={{ 
-                          background: (newModelEndpoint.trim() && selectedModelId.trim()) ? '#0f172a' : '#cbd5e1', 
-                          border: 'none', 
-                          borderRadius: '4px', 
+                        style={{
+                          background: (newModelEndpoint.trim() && selectedModelId.trim()) ? '#0f172a' : '#cbd5e1',
+                          border: 'none',
+                          borderRadius: '4px',
                           fontSize: '11px',
                           color: '#ffffff'
-                        }} 
+                        }}
                         onClick={handleAddLocalModel}
                       >
                         保存
@@ -1098,7 +1163,7 @@ export default function TaskComposer({
                     <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无匹配技能</div>
                   )}
                 </div>
-                </div>
+              </div>
             }
             trigger="click"
             placement="topLeft"
@@ -1110,63 +1175,7 @@ export default function TaskComposer({
 
 
 
-          {/* Attached Workspaces Check List */}
-          <CustomPopover
-            open={showAttachPopover}
-            onOpenChange={setShowAttachPopover}
-            contentStyle={{ padding: '6px 8px' }}
-            content={
-              <div style={{ width: '220px', padding: '2px 0' }}>
-                <div style={{ fontWeight: 600, fontSize: '11px', color: '#94a3b8', padding: '2px 8px 6px 8px', borderBottom: '1px solid #f1f5f9', marginBottom: '8px' }}>
-                  挂载其他关联空间
-                </div>
-                {workspaceOptions.filter(w => w.id !== workspaceId).length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '0 4px' }}>
-                    {workspaceOptions.filter(w => w.id !== workspaceId).map(w => {
-                      const isChecked = attachedWorkspaceIds.includes(w.id)
-                      return (
-                        <div
-                          key={w.id}
-                          onClick={() => {
-                            let nextList
-                            if (!isChecked) {
-                              nextList = [...attachedWorkspaceIds, w.id]
-                            } else {
-                              nextList = attachedWorkspaceIds.filter(id => id !== w.id)
-                            }
-                            setAttachedWorkspaceIds(nextList)
-                          }}
-                          style={{
-                            padding: '6px 8px',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            background: isChecked ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            transition: 'background 0.2s'
-                          }}
-                          onMouseEnter={e => !isChecked && (e.currentTarget.style.background = '#f8fafc')}
-                          onMouseLeave={e => !isChecked && (e.currentTarget.style.background = 'transparent')}
-                        >
-                          <span style={{ fontSize: '12px', color: isChecked ? '#0f172a' : '#475569' }}>📁 {w.name}</span>
-                          <Checkbox checked={isChecked} style={{ pointerEvents: 'none' }} />
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <div style={{ fontSize: '11px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>无可用的其他空间</div>
-                )}
-              </div>
-            }
-            trigger="click"
-            placement="topLeft"
-          >
-            <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
-              📂 关联 ({attachedWorkspaceIds.length})
-            </Button>
-          </CustomPopover>
+          {/* 已删除关联工作区按钮及关联空间选择列表 Popover */}
 
           {/* Permission Mode Popover */}
           <CustomPopover
@@ -1328,8 +1337,8 @@ export default function TaskComposer({
             transition: 'background 0.2s',
             userSelect: 'none'
           }}
-          onMouseEnter={e => e.currentTarget.style.background = '#e2e8f0'}
-          onMouseLeave={e => e.currentTarget.style.background = '#f1f5f9'}
+            onMouseEnter={e => e.currentTarget.style.background = '#e2e8f0'}
+            onMouseLeave={e => e.currentTarget.style.background = '#f1f5f9'}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#334155' }}>
               <FolderOpenOutlined style={{ color: '#64748b' }} />

@@ -1,4 +1,4 @@
-import type { AgentRun, CreateAgentRunInput, ExpertPreset } from '../../shared/types.js';
+import type { AgentRun, CreateAgentRunInput, ExpertPreset, ExpertTeamPreset } from '../../shared/types.js';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor } from './agent-executor.js';
 import { DeepAgentExecutor } from './deepagent-executor.js';
@@ -182,15 +182,17 @@ export class AgentRuntimeService {
     const systemPrompt = this.buildTaskContextPrompt(context, tools);
     // 3. 解析当前激活的专家 Preset（Persona）
     const activeExpert = this.resolveActiveExpert(context, this.appService.listExperts());
+    const activeExpertTeam = this.resolveActiveExpertTeam(context, this.appService.listExpertTeams());
 
     // 4. 调用底层 DeepAgentExecutor 引擎推进 Agent 轮次
     const handledByDeepAgent = await this.deepAgentExecutor.execute({
       context,
       systemPrompt,
       activeExpert,
+      activeExpertTeam,
       tools,
       toolExecutionContext: this.createToolExecutionContext(context),
-      assistantMetadata: this.buildAssistantMetadata(context, activeExpert),
+      assistantMetadata: this.buildAssistantMetadata(context, activeExpert, activeExpertTeam),
     });
 
     if (!handledByDeepAgent) {
@@ -283,16 +285,34 @@ export class AgentRuntimeService {
   }
 
   /**
+   * 解析当前 Agent 轮次对应的激活专家团 (ExpertTeamPreset)。
+   */
+  private resolveActiveExpertTeam(context: RuntimeContext, allExpertTeams: ExpertTeamPreset[]) {
+    const teamId = context.task.activeExpertTeamId;
+    if (!teamId) {
+      return null;
+    }
+
+    return allExpertTeams.find(team => team.id === teamId) ?? null;
+  }
+
+  /**
    * 构建附加在 Assistant 消息事件元数据上的描述信息（包含引擎类型、专家 ID、专家名称等）。
    */
-  private buildAssistantMetadata(context: RuntimeContext, expert: ExpertPreset | null) {
+  private buildAssistantMetadata(context: RuntimeContext, expert: ExpertPreset | null, expertTeam?: ExpertTeamPreset | null) {
     return {
       runtimeEngine: 'deepagents',
-      personaSource: expert ? 'task_active_expert' : 'default',
+      personaSource: expertTeam ? 'task_active_expert_team' : expert ? 'task_active_expert' : 'default',
       ...(expert
         ? {
             expertId: expert.id,
             expertName: expert.name,
+          }
+        : {}),
+      ...(expertTeam
+        ? {
+            expertTeamId: expertTeam.id,
+            expertTeamName: expertTeam.name,
           }
         : {}),
       runKind: context.run.kind,

@@ -5,6 +5,8 @@ import type {
   AppSettings,
   ModelConfig,
   ExpertPreset,
+  ExpertTeamPreset,
+  ExpertTeamMember,
   CreateAgentRunInput,
   CreateMessageInput,
   CreateTaskInput,
@@ -21,6 +23,7 @@ import type {
   Workspace,
   WorkspaceSummary,
   UpdateTaskInput,
+  WorkspaceArtifact,
 } from './types.js'
 
 export type {
@@ -30,6 +33,8 @@ export type {
   AppSettings,
   ModelConfig,
   ExpertPreset,
+  ExpertTeamPreset,
+  ExpertTeamMember,
   CreateAgentRunInput,
   CreateMessageInput,
   CreateTaskInput,
@@ -48,6 +53,7 @@ export type {
   UpdateTaskInput,
   Workspace,
   WorkspaceSummary,
+  WorkspaceArtifact,
 } from './types.js'
 
 export const IPC_CHANNELS = {
@@ -75,11 +81,14 @@ export const IPC_CHANNELS = {
   workspacesOpenFolder: 'workspace:open-folder',
   workspacesListTasks: 'workspace:list-tasks',
   workspacesSetDefault: 'workspace:set-default',
+  workspacesScanArtifacts: 'workspace:scan-artifacts',
+  workspacesReadFile: 'workspace:read-file',
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
   expertsList: 'experts:list',
   expertsCreate: 'experts:create',
   expertsDelete: 'experts:delete',
+  expertTeamsList: 'expert-teams:list',
   agentRunsListActive: 'agent-run:list-active',
   agentRunsStart: 'agent-run:start',
   agentRunsPause: 'agent-run:pause',
@@ -133,6 +142,8 @@ export type AnybuddyApi = {
     openFolder(workspaceId: string): Promise<IpcResult<void>>
     listTasks(workspaceId: string, filter?: TaskFilter): Promise<IpcResult<TaskSummary[]>>
     setDefault(workspaceId: string): Promise<IpcResult<AppSettings>>
+    scanArtifacts(taskId: string): Promise<IpcResult<WorkspaceArtifact[]>>
+    readFile(absolutePath: string, encoding?: 'utf8' | 'base64'): Promise<IpcResult<string>>
   }
   settings: {
     get(): Promise<IpcResult<AppSettings>>
@@ -142,6 +153,9 @@ export type AnybuddyApi = {
     list(): Promise<IpcResult<ExpertPreset[]>>
     create(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<IpcResult<ExpertPreset>>
     delete(expertId: string): Promise<IpcResult<void>>
+  }
+  expertTeam: {
+    list(): Promise<IpcResult<ExpertTeamPreset[]>>
   }
   agentRun: {
     listActive(): Promise<IpcResult<AgentRun[]>>

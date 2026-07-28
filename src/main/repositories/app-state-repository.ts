@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig, ExpertPreset } from '../../shared/types.js'
+import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig, ExpertPreset, ExpertTeamPreset } from '../../shared/types.js'
 
 export class AppStateRepository {
   private db: Database.Database | null = null
@@ -41,6 +41,7 @@ export class AppStateRepository {
         modelId TEXT NOT NULL,
         expertIds TEXT NOT NULL,
         activeExpertId TEXT,
+        activeExpertTeamId TEXT,
         primaryWorkspaceId TEXT,
         permissionMode TEXT NOT NULL,
         connectorIds TEXT NOT NULL,
@@ -79,6 +80,7 @@ export class AppStateRepository {
         selectedConnectorIds TEXT NOT NULL,
         selectedExpertIds TEXT NOT NULL DEFAULT '[]',
         selectedExpertId TEXT,
+        selectedExpertTeamId TEXT,
         updatedAt TEXT NOT NULL
       );
 
@@ -134,6 +136,17 @@ export class AppStateRepository {
         updatedAt TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS expert_teams (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        members TEXT NOT NULL,
+        systemPrompt TEXT,
+        isCustom INTEGER NOT NULL DEFAULT 0,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -182,6 +195,9 @@ export class AppStateRepository {
       db.prepare('ALTER TABLE tasks ADD COLUMN activeExpertId TEXT').run()
       db.prepare("UPDATE tasks SET activeExpertId = json_extract(expertIds, '$[0]') WHERE activeExpertId IS NULL AND expertIds IS NOT NULL AND expertIds != '[]'").run()
     }
+    if (!taskColumns.some(column => column.name === 'activeExpertTeamId')) {
+      db.prepare('ALTER TABLE tasks ADD COLUMN activeExpertTeamId TEXT').run()
+    }
     const agentRunColumns = db.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>
     if (!agentRunColumns.some(column => column.name === 'expertId')) {
       db.prepare('ALTER TABLE agent_runs ADD COLUMN expertId TEXT').run()
@@ -194,6 +210,9 @@ export class AppStateRepository {
     if (!draftColumns.some(column => column.name === 'selectedExpertId')) {
       db.prepare('ALTER TABLE drafts ADD COLUMN selectedExpertId TEXT').run()
       db.prepare("UPDATE drafts SET selectedExpertId = json_extract(selectedExpertIds, '$[0]') WHERE selectedExpertId IS NULL AND selectedExpertIds IS NOT NULL AND selectedExpertIds != '[]'").run()
+    }
+    if (!draftColumns.some(column => column.name === 'selectedExpertTeamId')) {
+      db.prepare('ALTER TABLE drafts ADD COLUMN selectedExpertTeamId TEXT').run()
     }
 
     // Check if the database has any tasks or workspaces, if not, seed with initial state
@@ -226,6 +245,7 @@ export class AppStateRepository {
       modelId: row.modelId,
       expertIds: row.expertIds ? JSON.parse(row.expertIds) : row.expertId ? [row.expertId] : [],
       activeExpertId: row.activeExpertId || (row.expertIds ? JSON.parse(row.expertIds)?.[0] : row.expertId || undefined),
+      activeExpertTeamId: row.activeExpertTeamId || undefined,
       primaryWorkspaceId: row.primaryWorkspaceId || undefined,
       permissionMode: row.permissionMode as any,
       connectorIds: JSON.parse(row.connectorIds),
@@ -270,6 +290,7 @@ export class AppStateRepository {
       selectedConnectorIds: JSON.parse(row.selectedConnectorIds),
       selectedExpertIds: row.selectedExpertIds ? JSON.parse(row.selectedExpertIds) : [],
       selectedExpertId: row.selectedExpertId || (row.selectedExpertIds ? JSON.parse(row.selectedExpertIds)?.[0] : undefined),
+      selectedExpertTeamId: row.selectedExpertTeamId || undefined,
       updatedAt: row.updatedAt,
     }))
 
@@ -332,6 +353,18 @@ export class AppStateRepository {
       updatedAt: row.updatedAt,
     }))
 
+    const expertTeamRows = db.prepare('SELECT * FROM expert_teams').all() as any[]
+    const expertTeams: ExpertTeamPreset[] = expertTeamRows.map(row => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      members: JSON.parse(row.members),
+      systemPrompt: row.systemPrompt || undefined,
+      isCustom: Boolean(row.isCustom),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }))
+
     // Load settings
     const settingsRows = db.prepare('SELECT * FROM settings').all() as { key: string, value: string }[]
     const settingsMap: Record<string, string> = {}
@@ -389,6 +422,7 @@ export class AppStateRepository {
       agentEvents,
       approvals,
       experts: experts.length ? experts : initialState.experts,
+      expertTeams: expertTeams.length ? expertTeams : initialState.expertTeams,
       modelConfigs: modelConfigs.length ? modelConfigs : initialState.modelConfigs,
       mcpConfigRaw: appConfigMap.mcpConfigRaw || initialState.mcpConfigRaw,
       settings,
@@ -409,6 +443,7 @@ export class AppStateRepository {
       db.prepare('DELETE FROM agent_events').run()
       db.prepare('DELETE FROM approvals').run()
       db.prepare('DELETE FROM experts').run()
+      db.prepare('DELETE FROM expert_teams').run()
       db.prepare('DELETE FROM settings').run()
       db.prepare('DELETE FROM model_configs').run()
       db.prepare('DELETE FROM app_config').run()
@@ -434,8 +469,8 @@ export class AppStateRepository {
 
       // Insert tasks
       const insertTask = db.prepare(`
-        INSERT INTO tasks (id, title, mode, modelId, expertIds, activeExpertId, primaryWorkspaceId, permissionMode, connectorIds, skillIds, status, unreadEventCount, lastRunId, createdAt, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tasks (id, title, mode, modelId, expertIds, activeExpertId, activeExpertTeamId, primaryWorkspaceId, permissionMode, connectorIds, skillIds, status, unreadEventCount, lastRunId, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const t of s.tasks) {
         insertTask.run(
@@ -445,6 +480,7 @@ export class AppStateRepository {
           t.modelId,
           JSON.stringify(t.expertIds ?? []),
           t.activeExpertId || null,
+          t.activeExpertTeamId || null,
           t.primaryWorkspaceId || null,
           t.permissionMode,
           JSON.stringify(t.connectorIds),
@@ -493,8 +529,8 @@ export class AppStateRepository {
 
       // Insert drafts
       const insertDraft = db.prepare(`
-        INSERT INTO drafts (taskId, content, selectedSkillIds, selectedConnectorIds, selectedExpertIds, selectedExpertId, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO drafts (taskId, content, selectedSkillIds, selectedConnectorIds, selectedExpertIds, selectedExpertId, selectedExpertTeamId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
       for (const d of s.drafts) {
         insertDraft.run(
@@ -504,6 +540,7 @@ export class AppStateRepository {
           JSON.stringify(d.selectedConnectorIds),
           JSON.stringify(d.selectedExpertIds ?? []),
           d.selectedExpertId || null,
+          d.selectedExpertTeamId || null,
           d.updatedAt
         )
       }
@@ -584,6 +621,23 @@ export class AppStateRepository {
           expert.systemPrompt || null,
           expert.createdAt,
           expert.updatedAt,
+        )
+      }
+
+      const insertExpertTeam = db.prepare(`
+        INSERT INTO expert_teams (id, name, description, members, isCustom, systemPrompt, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const team of s.expertTeams ?? []) {
+        insertExpertTeam.run(
+          team.id,
+          team.name,
+          team.description,
+          JSON.stringify(team.members),
+          team.isCustom ? 1 : 0,
+          team.systemPrompt || null,
+          team.createdAt,
+          team.updatedAt,
         )
       }
 

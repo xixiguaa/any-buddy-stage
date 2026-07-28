@@ -1,10 +1,10 @@
 import { Empty } from 'antd'
-import { TaskDetailProvider, useTaskDetail } from './task-detail/TaskDetailContext.js'
-import TaskDetailApprovalBar from './task-detail/TaskDetailApprovalBar.js'
-import TaskDetailComposerSection from './task-detail/TaskDetailComposerSection.js'
-import TaskDetailHeader from './task-detail/TaskDetailHeader.js'
-import TaskDetailMessageList from './task-detail/TaskDetailMessageList.js'
-import TaskDetailRuntimeSidebar from './task-detail/TaskDetailRuntimeSidebar.js'
+import { TaskDetailProvider, useTaskDetail } from './TaskDetailContext.js'
+import TaskDetailApprovalBar from './TaskDetailApprovalBar.js'
+import TaskDetailComposerSection from './TaskDetailComposerSection.js'
+import TaskDetailHeader from './TaskDetailHeader.js'
+import TaskDetailMessageList from './TaskDetailMessageList.js'
+import TaskDetailArtifactsSidebar from './TaskDetailArtifactsSidebar.js'
 
 /**
  * 任务详情页主内容区域组件
@@ -30,8 +30,8 @@ function TaskDetailContent() {
         <TaskDetailComposerSection />
       </div>
 
-      {/* 右侧 Runtime 侧边栏 */}
-      <TaskDetailRuntimeSidebar />
+      {/* 右侧工作区成果 (产物) 侧边栏 (参照 WorkBuddy) */}
+      <TaskDetailArtifactsSidebar />
     </div>
   )
 }

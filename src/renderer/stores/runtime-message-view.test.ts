@@ -79,6 +79,7 @@ test('buildVisibleMessages does not duplicate a persisted final assistant messag
       runId: 'run-1',
       role: 'assistant',
       content: 'final answer',
+      metadata: { final: true },
       createdAt: '2026-01-01T00:00:02.000Z',
     }),
   ];
@@ -112,6 +113,81 @@ test('buildVisibleMessages does not duplicate a persisted final assistant messag
 
   assert.equal(visibleMessages.length, 1);
   assert.equal(visibleMessages[0]?.id, 'message-1');
+});
+
+test('buildVisibleMessages keeps streaming text when persisted assistant message is not final', () => {
+  const visibleMessages = buildVisibleMessages([
+    createMessage({
+      id: 'message-progress',
+      taskId: 'task-1',
+      runId: 'run-1',
+      role: 'assistant',
+      content: 'intermediate note',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }),
+  ], [
+    createEvent({
+      id: 'event-stream',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'agent_message',
+      payload: {
+        role: 'assistant',
+        content: '# Markdown output',
+      },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    }),
+  ]);
+
+  assert.equal(visibleMessages.length, 2);
+  assert.equal(visibleMessages[1]?.content, '# Markdown output');
+  assert.equal(visibleMessages[1]?.metadata?.streaming, true);
+});
+
+test('buildVisibleMessages keeps streaming text when the final assistant message is empty', () => {
+  const visibleMessages = buildVisibleMessages([
+    createMessage({
+      id: 'message-final-empty',
+      taskId: 'task-1',
+      runId: 'run-1',
+      role: 'assistant',
+      content: '',
+      metadata: { final: true },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }),
+  ], [
+    createEvent({
+      id: 'event-stream',
+      taskId: 'task-1',
+      runId: 'run-1',
+      type: 'agent_message',
+      payload: {
+        role: 'assistant',
+        content: '## 已显示的 Markdown',
+      },
+      createdAt: '2026-01-01T00:00:01.000Z',
+    }),
+  ]);
+
+  const streamingMessage = visibleMessages.find(message => message.id === 'event-event-stream');
+  assert.equal(streamingMessage?.content, '## 已显示的 Markdown');
+  assert.equal(streamingMessage?.metadata?.streaming, true);
+});
+
+test('summarizeRuntimeEvent shows the resolved expert team member name once', () => {
+  const message = summarizeRuntimeEvent(createEvent({
+    id: 'event-subagent-completed',
+    taskId: 'task-1',
+    runId: 'run-1',
+    type: 'subagent_completed',
+    payload: {
+      subagentName: '前端专家 (前端界面与交互)',
+      summary: '协作流程已执行完毕',
+    },
+    createdAt: '2026-01-01T00:00:02.000Z',
+  }));
+
+  assert.equal(message?.content, '✅ 子 Agent [前端专家 (前端界面与交互)] 完成: 协作流程已执行完毕');
 });
 
 test('buildVisibleMessages only shows the latest streaming event when run is active', () => {

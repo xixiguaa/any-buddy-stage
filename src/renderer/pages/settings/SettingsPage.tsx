@@ -1,5 +1,5 @@
 import { Form, Switch, InputNumber, Select, Card, Spin } from 'antd'
-import { useAppStore } from '../stores/app-store.js'
+import { useAppStore } from '../../stores/app-store.js'
 
 export default function SettingsPage() {
   const settings = useAppStore(state => state.settings)

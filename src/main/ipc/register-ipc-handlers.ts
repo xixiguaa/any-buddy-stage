@@ -5,13 +5,69 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { IPC_CHANNELS } from '../../shared/ipc.js'
-import type { IpcResult } from '../../shared/types.js'
+import type { IpcResult, WorkspaceArtifact } from '../../shared/types.js'
 import { toIpcError } from './serialize-error.js'
 import type { AppService } from '../services/app-service.js'
 import { AgentRuntimeService } from '../services/agent-runtime-service.js'
 import { logProcessError } from '../runtime/error-logger.js'
 
 const execFileAsync = promisify(execFile)
+
+/** 目标成果文件后缀扩展名集合 */
+const TARGET_ARTIFACT_EXTENSIONS = new Set([
+  'md', 'markdown', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',
+  'docx', 'pdf', 'xlsx', 'xls', 'csv', 'txt', 'json', 'pptx', 'html',
+])
+
+/** 自动排除的系统及生成文件目录名称集合 */
+const EXCLUDE_DIR_NAMES = new Set([
+  'node_modules', '.git', '.system-skill-cache', '.vite', '.agents',
+  '.tmp-tests', '.vscode', '.idea', 'dist', 'out', 'build', '.gemini',
+])
+
+/** 递归扫描指定目录下的成果文件列表 */
+async function scanDirectoryForArtifacts(
+  dirPath: string,
+  workspaceId?: string,
+  workspaceName?: string,
+  basePath: string = dirPath,
+  depth: number = 0,
+): Promise<WorkspaceArtifact[]> {
+  if (depth > 6) return []
+  const artifacts: WorkspaceArtifact[] = []
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue
+      const fullPath = path.join(dirPath, entry.name)
+      if (entry.isDirectory()) {
+        if (EXCLUDE_DIR_NAMES.has(entry.name)) continue
+        const subArtifacts = await scanDirectoryForArtifacts(fullPath, workspaceId, workspaceName, basePath, depth + 1)
+        artifacts.push(...subArtifacts)
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase().replace(/^\./, '')
+        if (TARGET_ARTIFACT_EXTENSIONS.has(ext)) {
+          const relPath = path.relative(basePath, fullPath).replace(/\\/g, '/')
+          const stat = await fs.stat(fullPath)
+          artifacts.push({
+            id: Buffer.from(relPath).toString('hex'),
+            name: entry.name,
+            relativePath: relPath,
+            absolutePath: fullPath,
+            extension: ext,
+            size: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            workspaceId,
+            workspaceName,
+          })
+        }
+      }
+    }
+  } catch {
+    // 忽略权限报错或不可读目录
+  }
+  return artifacts
+}
 
 function ok<T>(data: T): IpcResult<T> {
   return { ok: true, data }
@@ -256,6 +312,49 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  ipcMain.handle(IPC_CHANNELS.workspacesScanArtifacts, async (_event, taskId: string) => {
+    try {
+      const taskWorkspaces = appService.listTaskWorkspaces(taskId)
+      const allArtifacts: WorkspaceArtifact[] = []
+      const scannedPaths = new Set<string>()
+
+      if (taskWorkspaces.length > 0) {
+        for (const tw of taskWorkspaces) {
+          if (tw.workspace?.path && !scannedPaths.has(tw.workspace.path)) {
+            scannedPaths.add(tw.workspace.path)
+            const list = await scanDirectoryForArtifacts(tw.workspace.path, tw.workspace.id, tw.workspace.name)
+            allArtifacts.push(...list)
+          }
+        }
+      } else {
+        // 若无绑定的工作区，扫描系统默认工作区列表
+        const defaultWorkspaces = appService.listWorkspaces()
+        for (const ws of defaultWorkspaces) {
+          if (ws.path && !scannedPaths.has(ws.path)) {
+            scannedPaths.add(ws.path)
+            const list = await scanDirectoryForArtifacts(ws.path, ws.id, ws.name)
+            allArtifacts.push(...list)
+          }
+        }
+      }
+
+      // 按更新时间倒序排列 (最新的产物置顶)
+      allArtifacts.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      return ok(allArtifacts)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.workspacesReadFile, async (_event, absolutePath: string, encoding: 'utf8' | 'base64' = 'utf8') => {
+    try {
+      const content = await fs.readFile(absolutePath, { encoding: encoding === 'base64' ? 'base64' : 'utf8' })
+      return ok(content)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.settingsGet, async () => {
     try {
       return ok(appService.getSettings())
@@ -292,6 +391,14 @@ export function registerIpcHandlers(appService: AppService) {
     try {
       await appService.deleteExpert(expertId)
       return ok(undefined)
+    } catch (error) {
+      return fail(error)
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.expertTeamsList, async () => {
+    try {
+      return ok(appService.listExpertTeams())
     } catch (error) {
       return fail(error)
     }

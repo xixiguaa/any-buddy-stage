@@ -69,13 +69,12 @@ export default function Sidebar() {
   const location = useLocation()
   const tasks = useAppStore(state => state.tasks)
   const workspaces = useAppStore(state => state.workspaces)
-  const runs = useAppStore(state => state.agentRuns)
   const search = useAppStore(state => state.sidebarSearch)
   const statusFilter = useAppStore(state => state.sidebarStatusFilter)
   const timeRange = useAppStore(state => state.sidebarTimeRange)
   const settings = useAppStore(state => state.settings)
   const customModels = useAppStore(state => state.customModels)
-  
+
   const setSidebarSearch = useAppStore(state => state.setSidebarSearch)
   const setSidebarStatusFilter = useAppStore(state => state.setSidebarStatusFilter)
   const setSidebarTimeRange = useAppStore(state => state.setSidebarTimeRange)
@@ -87,7 +86,7 @@ export default function Sidebar() {
   const [showFilterPopover, setShowFilterPopover] = useState(false)
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Record<string, boolean>>({})
   const [collapsed, setCollapsed] = useState(false)
-  
+
   const [tasksCollapsed, setTasksCollapsed] = useState(false)
   const [workspacesCollapsed, setWorkspacesCollapsed] = useState(false)
   const [hoveredWorkspaceId, setHoveredWorkspaceId] = useState<string | null>(null)
@@ -97,7 +96,7 @@ export default function Sidebar() {
   // Settings Modal States
   const [showSettingsModal, setShowSettingsModal] = useState(false)
   const [activeSettingsTab, setActiveSettingsTab] = useState('account')
-  
+
   // Custom Model Form States
   const [newModelName, setNewModelName] = useState('')
   const [newModelEndpoint, setNewModelEndpoint] = useState('')
@@ -140,19 +139,7 @@ export default function Sidebar() {
     })
   }, [search, statusFilter, tasks, timeRange])
 
-  const activeRuns = useMemo(() => {
-    return runs.filter(run => ['queued', 'running', 'paused', 'waiting_approval'].includes(run.status))
-  }, [runs])
 
-  const runningTasks = useMemo(() => {
-    const taskMap = new Map(tasks.map(task => [task.id, task]))
-    return activeRuns
-      .map(run => ({
-        run,
-        task: taskMap.get(run.taskId),
-      }))
-      .filter((item): item is { run: typeof activeRuns[number]; task: typeof tasks[number] } => Boolean(item.task))
-  }, [activeRuns, tasks])
 
   const tasksByWorkspace = useMemo(() => {
     return workspaces.map(workspace => ({
@@ -168,28 +155,24 @@ export default function Sidebar() {
     }))
   }
 
+  // 处理用户菜单或偏好项点击事件
   const handleUserMenuClick = (info: { key: string }) => {
     if (info.key === 'settings') {
       setShowSettingsModal(true)
-      setActiveSettingsTab('account')
+      setActiveSettingsTab('system')
     } else if (info.key === 'update') {
       Modal.info({
         title: '检查更新',
         content: '当前已是最新版本 v1.1.5',
       })
-    } else if (info.key === 'logout') {
-      Modal.warning({
-        title: '提示',
-        content: '当前版本暂为个人工作台，无需登录',
-      })
     }
   }
 
+  // 侧边栏底部偏好菜单配置（已移除退出登录选项）
   const userMenuItems = {
     items: [
       { key: 'settings', label: '系统设置', icon: <SettingOutlined /> },
       { key: 'update', label: '检查更新', icon: <SyncOutlined /> },
-      { key: 'logout', label: '退出登录', icon: <InfoCircleOutlined /> },
     ],
     onClick: handleUserMenuClick,
   }
@@ -436,9 +419,9 @@ export default function Sidebar() {
               })}
             >
               <PlusOutlined style={{ fontSize: '14px' }} />
-              {!collapsed && <span>新建任务</span>}
+              {!collapsed && <span>开始创作</span>}
             </NavLink>
-            
+
             <NavLink
               to="/experts"
               className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
@@ -455,65 +438,13 @@ export default function Sidebar() {
               })}
             >
               <Award size={16} />
-              {!collapsed && <span>专家</span>}
+              {!collapsed && <span>创作资源</span>}
             </NavLink>
           </div>
 
           {!collapsed && (
             <>
-              <div style={{ marginBottom: '16px' }}>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '4px 8px',
-                  fontSize: '11px',
-                  color: '#94a3b8',
-                  fontWeight: 600,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                  userSelect: 'none',
-                }}>
-                  <Space size={4}>
-                    <span>运行中任务</span>
-                    <Badge count={runningTasks.length} size="small" style={{ backgroundColor: '#dbeafe', color: '#1d4ed8', boxShadow: 'none' }} />
-                  </Space>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px', paddingLeft: '4px' }}>
-                  {runningTasks.map(({ run, task }) => (
-                    <NavLink
-                      key={run.id}
-                      to={`/tasks/${task.id}`}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '2px',
-                        padding: '8px 10px',
-                        borderRadius: '8px',
-                        background: '#ffffff',
-                        border: '1px solid #e2e8f0',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
-                          {task.title}
-                        </span>
-                        <Tag color={run.status === 'waiting_approval' ? 'warning' : run.status === 'paused' ? 'default' : 'processing'} style={{ margin: 0, fontSize: '10px' }}>
-                          {run.status === 'waiting_approval' ? 'paused' : run.status}
-                        </Tag>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8' }}>
-                        <span>{run.agentName}</span>
-                        <span>{run.currentNode ?? 'idle'}</span>
-                      </div>
-                    </NavLink>
-                  ))}
-                  {!runningTasks.length && (
-                    <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px', textAlign: 'center' }}>暂无运行中的任务</div>
-                  )}
-                </div>
-              </div>
+              {/* 任务折叠菜单 */}
 
               {/* Tasks Accordion */}
               <div style={{ marginBottom: '16px' }}>
@@ -802,7 +733,7 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Sidebar Footer User Profile */}
+        {/* 侧边栏底部设置与个人信息入口 */}
         <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '12px', marginTop: 'auto' }}>
           <div style={{
             display: 'flex',
@@ -811,22 +742,29 @@ export default function Sidebar() {
             padding: '4px'
           }}>
             <Dropdown menu={userMenuItems} trigger={['click']} placement="topRight">
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                cursor: 'pointer',
-                overflow: 'hidden',
-                width: '100%'
-              }}>
-                <Avatar size={32} icon={<UserOutlined />} style={{ backgroundColor: '#0f172a' }} />
+              <div
+                onClick={() => {
+                  // 点击左下角入口打开设置弹出框
+                  setShowSettingsModal(true)
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  cursor: 'pointer',
+                  overflow: 'hidden',
+                  width: '100%',
+                  padding: '6px 8px',
+                  borderRadius: '8px',
+                  transition: 'background 0.2s',
+                }}
+              >
+                <Avatar size={32} icon={<SettingOutlined />} style={{ backgroundColor: '#0f172a', color: '#ffffff' }} />
                 {!collapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flex: 1 }}>
+                    {/* 侧边栏左下角仅保留设置标题，已移除邮箱/账号副信息 */}
                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      syang
-                    </span>
-                    <span style={{ fontSize: '10px', color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      Developer
+                      设置
                     </span>
                   </div>
                 )}
@@ -959,21 +897,13 @@ export default function Sidebar() {
                 <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', marginBottom: '24px' }}>账户管理</h2>
                 <Card style={{ borderRadius: '12px', background: '#f8fafc', border: '1px solid #e2e8f0' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    {/* 本地账户信息显示区块 */}
                     <Avatar size={64} icon={<UserOutlined />} style={{ backgroundColor: '#0f172a' }} />
                     <div>
-                      <div style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>syang</div>
-                      <div style={{ fontSize: '13px', color: '#64748b', marginTop: '2px' }}>Developer</div>
+                      <div style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>本地用户</div>
                       <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>本地工作台运行状态：正常</div>
                     </div>
                   </div>
-                  <Divider />
-                  <Button
-                    type="primary"
-                    danger
-                    onClick={() => Modal.warning({ title: '提示', content: '个人工作台暂无登录系统，无需退出。' })}
-                  >
-                    退出当前账号
-                  </Button>
                 </Card>
               </div>
             )}

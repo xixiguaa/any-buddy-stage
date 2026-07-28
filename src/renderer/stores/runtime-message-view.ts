@@ -72,6 +72,18 @@ function describeRunStatus(payload: Record<string, unknown>) {
   }
 }
 
+/** 只有带有可展示内容的最终消息才能替换对应的流式文本。 */
+export function isPersistedFinalAssistantMessage(message: Message, runId?: string) {
+  return (
+    message.role === 'assistant' &&
+    message.runId === runId &&
+    message.content.trim().length > 0 &&
+    message.metadata?.final === true &&
+    !message.metadata?.synthetic &&
+    message.metadata?.source !== 'runtime_tool_progress'
+  )
+}
+
 export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent[]): Message[] {
   const visibleMessages = [...baseMessages]
 
@@ -95,7 +107,7 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
   // 2. 去重与流式状态管理
   const persistedAssistantMessages = baseMessages.filter(m => m.role === 'assistant');
   const persistedFinalAssistantMessages = persistedAssistantMessages.filter(
-    message => message.metadata?.source !== 'runtime_tool_progress'
+    message => isPersistedFinalAssistantMessage(message, message.runId)
   );
   const persistedRunsWithFinalAssistant = new Set(persistedFinalAssistantMessages.map(m => m.runId));
 
@@ -144,6 +156,7 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
     })
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
+
 export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
   const createdAt = event.createdAt;
 
@@ -220,6 +233,66 @@ export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
         },
         createdAt,
       };
+    case 'subagent_started': {
+      const subagentName = String(event.payload.subagentName ?? event.payload.expertId ?? '子 Agent');
+      const reason = String(event.payload.reason ?? '已启动协作子任务');
+      return {
+        id: `event-${event.id}`,
+        taskId: event.taskId,
+        runId: event.runId,
+        role: 'system',
+        content: `🤖 子 Agent [${subagentName}] 启动: ${reason}`,
+        metadata: {
+          synthetic: true,
+          sourceEventId: event.id,
+          eventType: event.type,
+          subagentName,
+          payload: event.payload,
+          runtimeScope: 'internal',
+        },
+        createdAt,
+      };
+    }
+    case 'subagent_progress': {
+      const subagentName = String(event.payload.subagentName ?? event.payload.expertId ?? '子 Agent');
+      const stepDescription = String(event.payload.stepDescription ?? '正在处理');
+      return {
+        id: `event-${event.id}`,
+        taskId: event.taskId,
+        runId: event.runId,
+        role: 'system',
+        content: `⚡ 子 Agent [${subagentName}] 进度: ${stepDescription}`,
+        metadata: {
+          synthetic: true,
+          sourceEventId: event.id,
+          eventType: event.type,
+          subagentName,
+          payload: event.payload,
+          runtimeScope: 'internal',
+        },
+        createdAt,
+      };
+    }
+    case 'subagent_completed': {
+      const subagentName = String(event.payload.subagentName ?? event.payload.expertId ?? '子 Agent');
+      const summary = String(event.payload.summary ?? '已完成协作');
+      return {
+        id: `event-${event.id}`,
+        taskId: event.taskId,
+        runId: event.runId,
+        role: 'system',
+        content: `✅ 子 Agent [${subagentName}] 完成: ${summary}`,
+        metadata: {
+          synthetic: true,
+          sourceEventId: event.id,
+          eventType: event.type,
+          subagentName,
+          payload: event.payload,
+          runtimeScope: 'internal',
+        },
+        createdAt,
+      };
+    }
     case 'run_failed':
       return {
         id: `event-${event.id}`,
@@ -303,9 +376,22 @@ export function buildRuntimeEventCard(event: AgentEvent): RuntimeEventCard {
         id: event.id,
         taskId: event.taskId,
         runId: event.runId,
-        title: `子 Agent 启动 · ${String(event.payload.expertId ?? 'default-expert')}`,
+        title: `子 Agent 启动 · ${String(event.payload.subagentName ?? event.payload.expertId ?? 'default-expert')}`,
         description: String(event.payload.reason ?? '已启动协作子任务'),
         tone: 'info',
+        createdAt: event.createdAt,
+        eventType: event.type,
+      };
+    case 'subagent_progress':
+      return {
+        id: event.id,
+        taskId: event.taskId,
+        runId: event.runId,
+        title: `子 Agent 进度 · ${String(event.payload.subagentName ?? event.payload.expertId ?? 'default-expert')}`,
+        description: String(event.payload.stepDescription ?? '正在处理步骤'),
+        tone: 'info',
+        detail: stringifyPayload(event.payload),
+        status: 'running',
         createdAt: event.createdAt,
         eventType: event.type,
       };
@@ -314,14 +400,15 @@ export function buildRuntimeEventCard(event: AgentEvent): RuntimeEventCard {
         id: event.id,
         taskId: event.taskId,
         runId: event.runId,
-        title: `子 Agent 结束 · ${String(event.payload.expertId ?? 'default-expert')}`,
-        description: String(event.payload.status ?? 'completed'),
+        title: `子 Agent 结束 · ${String(event.payload.subagentName ?? event.payload.expertId ?? 'default-expert')}`,
+        description: String(event.payload.summary ?? event.payload.status ?? 'completed'),
         tone: String(event.payload.status) === 'failed'
           ? 'error'
           : String(event.payload.status) === 'cancelled'
             ? 'warning'
             : 'success',
         detail: stringifyPayload(event.payload.summary ?? event.payload.reason ?? event.payload.error),
+        status: 'completed',
         createdAt: event.createdAt,
         eventType: event.type,
       };

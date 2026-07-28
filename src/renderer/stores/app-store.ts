@@ -8,6 +8,7 @@ import type {
   HumanApproval,
   Message,
   ExpertPreset,
+  ExpertTeamPreset,
   ModelConfig,
   Task,
   TaskDraft,
@@ -18,7 +19,7 @@ import type {
 } from '../../shared/types.js'
 import { createAnybuddyClients } from '../api/clients.js'
 import { useAnybuddyClients } from '../api/context.js'
-import { buildVisibleMessages } from './runtime-message-view.js'
+import { buildVisibleMessages, isPersistedFinalAssistantMessage } from './runtime-message-view.js'
 
 function sanitizeModelConfigs(models: ModelConfig[]) {
   return models.filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
@@ -33,10 +34,7 @@ type AppStoreState = {
   taskDetail?: Task | null
   taskWorkspaces: TaskWorkspaceContext[]
   messages: Message[]
-  // 流式 assistant 输出的实时内容，单独存放避免 messages 引用频繁变化。
-  // key: event.id（agent_message event id，前端生成 event-${id} 作 message key）
   streamingContentByMessageId: Record<string, string>
-  // 流式消息按 run 排序的 id 列表（用于在 UI 上保持出现顺序）。
   streamingMessageIdsByRun: Record<string, string[]>
   drafts: Record<string, TaskDraft>
   workspaces: WorkspaceSummary[]
@@ -45,6 +43,7 @@ type AppStoreState = {
   taskEvents: AgentEvent[]
   taskApprovals: HumanApproval[]
   experts: ExpertPreset[]
+  expertTeams: ExpertTeamPreset[]
   sidebarSearch: string
   sidebarStatusFilter: 'all' | 'active' | 'waiting_approval' | 'failed'
   sidebarTimeRange: SidebarTimeRange
@@ -74,14 +73,17 @@ type AppStoreState = {
   loadCustomModels(): Promise<void>
   saveCustomModels(models: ModelConfig[]): Promise<void>
   loadExperts(): Promise<void>
+  loadExpertTeams(): Promise<void>
   createExpert(input: Omit<ExpertPreset, 'createdAt' | 'updatedAt'>): Promise<ExpertPreset | undefined>
   deleteExpert(expertId: string): Promise<void>
   deleteTask(taskId: string): Promise<void>
   loadMcpConfig(): Promise<void>
   saveMcpConfig(content: string): Promise<void>
   summonedExpert: ExpertPreset | null
+  summonedExpertTeam: ExpertTeamPreset | null
   recentExperts: ExpertPreset[]
   setSummonedExpert(expert: ExpertPreset | null, options?: { addToRecent?: boolean }): void
+  setSummonedExpertTeam(team: ExpertTeamPreset | null): void
   clearRecentExperts(): void
 }
 
@@ -147,20 +149,59 @@ function isStreamingAgentMessageEvent(event: AgentEvent) {
   return event.type === 'agent_message' && event.payload?.streaming === true
 }
 
-function isPersistedFinalAssistantMessage(message: Message, runId?: string) {
-  return (
-    message.role === 'assistant' &&
-    message.runId === runId &&
-    !message.metadata?.synthetic &&
-    message.metadata?.source !== 'runtime_tool_progress'
-  )
-}
-
 function hasPersistedFinalAssistantForRun(messages: Message[], runId?: string) {
   if (!runId) {
     return false
   }
   return messages.some(message => isPersistedFinalAssistantMessage(message, runId))
+}
+
+function readStreamEventId(message: Message) {
+  const streamEventId = message.metadata?.streamEventId
+  return typeof streamEventId === 'string' && streamEventId.trim().length > 0
+    ? streamEventId
+    : undefined
+}
+
+function hasPersistedStreamReplacement(messages: Message[], streamEventId: string) {
+  return messages.some(message => readStreamEventId(message) === streamEventId)
+}
+
+function hasPersistedStreamReplacementsForRun(
+  messages: Message[],
+  streamingIdsByRun: Record<string, string[]>,
+  runId: string,
+) {
+  return (streamingIdsByRun[runId] ?? []).every(streamEventId => (
+    hasPersistedStreamReplacement(messages, streamEventId)
+  ))
+}
+
+function removeStreamingMessage(
+  streamingContent: Record<string, string>,
+  streamingIdsByRun: Record<string, string[]>,
+  runId: string,
+  streamEventId: string,
+) {
+  const hasContent = streamingContent[streamEventId] !== undefined
+  const runStreamIds = streamingIdsByRun[runId] ?? []
+  if (!hasContent && !runStreamIds.includes(streamEventId)) {
+    return {
+      nextStreamingContent: streamingContent,
+      nextStreamingIdsByRun: streamingIdsByRun,
+    }
+  }
+
+  const { [streamEventId]: _omit, ...nextStreamingContent } = streamingContent
+  const nextRunStreamIds = runStreamIds.filter(id => id !== streamEventId)
+  const nextStreamingIdsByRun = nextRunStreamIds.length > 0
+    ? { ...streamingIdsByRun, [runId]: nextRunStreamIds }
+    : (() => {
+        const { [runId]: _removed, ...rest } = streamingIdsByRun
+        return rest
+      })()
+
+  return { nextStreamingContent, nextStreamingIdsByRun }
 }
 
 function removeStreamingRun(
@@ -204,9 +245,25 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
   if (payload.kind === 'snapshot') {
     const messages = buildVisibleMessages(payload.messages, payload.events)
     const activeRun = payload.runs.find(run => run.id === state.taskDetail?.lastRunId) ?? payload.runs[0]
-    // snapshot 通常是初始全量，从持久化消息恢复 streaming 临时态。
+    // snapshot 通常是初始全量，同时从流式事件恢复仍未被持久化消息替换的临时态。
     const streamingContentByMessageId: Record<string, string> = {}
     const streamingMessageIdsByRun: Record<string, string[]> = {}
+
+    for (const event of payload.events) {
+      if (!isStreamingAgentMessageEvent(event) || hasPersistedStreamReplacement(payload.messages, event.id)) {
+        continue
+      }
+      const content = event.payload.content
+      if (typeof content !== 'string' || content.length === 0) {
+        continue
+      }
+      streamingContentByMessageId[event.id] = content
+      const existingIds = streamingMessageIdsByRun[event.runId] ?? []
+      if (!existingIds.includes(event.id)) {
+        streamingMessageIdsByRun[event.runId] = [...existingIds, event.id]
+      }
+    }
+
     for (const message of payload.messages) {
       if (message.role === 'assistant' && message.metadata?.streaming && message.runId) {
         streamingContentByMessageId[message.id] = message.content
@@ -270,14 +327,22 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
 
   if (payload.event && isStreamingAgentMessageEvent(payload.event)) {
     const runId = payload.event.runId
-    if (runId && hasPersistedFinalAssistantForRun(persistedMessages, runId)) {
+    const eventId = payload.event.id
+    if (
+      runId &&
+      hasPersistedFinalAssistantForRun(persistedMessages, runId) &&
+      hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, runId)
+    ) {
       const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
       nextStreamingContent = cleared.nextStreamingContent
       nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+    } else if (runId && hasPersistedStreamReplacement(persistedMessages, eventId)) {
+      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, runId, eventId)
+      nextStreamingContent = removed.nextStreamingContent
+      nextStreamingIdsByRun = removed.nextStreamingIdsByRun
     } else {
       const streamingContent = payload.event.payload?.content
       if (typeof streamingContent === 'string' && streamingContent.length > 0) {
-        const eventId = payload.event.id
         if (nextStreamingContent[eventId] !== streamingContent) {
           nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
         }
@@ -296,13 +361,18 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
 
   if (payload.message) {
     persistedMessages = upsertById(persistedMessages, payload.message)
-    const completedId = payload.message.id
-    if (nextStreamingContent[completedId] !== undefined) {
-      const { [completedId]: _omit, ...rest } = nextStreamingContent
-      nextStreamingContent = rest
-    }
     const completedRunId = payload.message.runId
-    if (completedRunId && nextStreamingIdsByRun[completedRunId]) {
+    const streamEventId = readStreamEventId(payload.message)
+    if (completedRunId && streamEventId) {
+      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, completedRunId, streamEventId)
+      nextStreamingContent = removed.nextStreamingContent
+      nextStreamingIdsByRun = removed.nextStreamingIdsByRun
+    }
+    if (
+      completedRunId &&
+      isPersistedFinalAssistantMessage(payload.message, completedRunId) &&
+      hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, completedRunId)
+    ) {
       const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
       nextStreamingContent = cleared.nextStreamingContent
       nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
@@ -380,14 +450,22 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
       }
       if (isStreamingAgentMessageEvent(payload.event)) {
         const runId = payload.event.runId
-        if (runId && hasPersistedFinalAssistantForRun(persistedMessages, runId)) {
+        const eventId = payload.event.id
+        if (
+          runId &&
+          hasPersistedFinalAssistantForRun(persistedMessages, runId) &&
+          hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, runId)
+        ) {
           const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
           nextStreamingContent = cleared.nextStreamingContent
           nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
+        } else if (runId && hasPersistedStreamReplacement(persistedMessages, eventId)) {
+          const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, runId, eventId)
+          nextStreamingContent = removed.nextStreamingContent
+          nextStreamingIdsByRun = removed.nextStreamingIdsByRun
         } else {
           const streamingContent = payload.event.payload?.content
           if (typeof streamingContent === 'string' && streamingContent.length > 0) {
-            const eventId = payload.event.id
             if (nextStreamingContent[eventId] !== streamingContent) {
               nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
             }
@@ -412,13 +490,18 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     if (payload.message) {
       persistedMessages = upsertById(persistedMessages, payload.message)
       hasVisibleMessageChange = true
-      const completedId = payload.message.id
-      if (nextStreamingContent[completedId] !== undefined) {
-        const { [completedId]: _omit, ...rest } = nextStreamingContent
-        nextStreamingContent = rest
-      }
       const completedRunId = payload.message.runId
-      if (completedRunId && nextStreamingIdsByRun[completedRunId]) {
+      const streamEventId = readStreamEventId(payload.message)
+      if (completedRunId && streamEventId) {
+        const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, completedRunId, streamEventId)
+        nextStreamingContent = removed.nextStreamingContent
+        nextStreamingIdsByRun = removed.nextStreamingIdsByRun
+      }
+      if (
+        completedRunId &&
+        isPersistedFinalAssistantMessage(payload.message, completedRunId) &&
+        hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, completedRunId)
+      ) {
         const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
         nextStreamingContent = cleared.nextStreamingContent
         nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
@@ -517,6 +600,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   taskEvents: [],
   taskApprovals: [],
   experts: [],
+  expertTeams: [],
   sidebarSearch: '',
   sidebarStatusFilter: 'all',
   sidebarTimeRange: 'all',
@@ -524,6 +608,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   mcpConfigRaw: '{}',
   recentExperts: parseRecentExpertsFromStorage(),
   summonedExpert: null,
+  summonedExpertTeam: null,
   setSummonedExpert(expert, options) {
     set(state => {
       const shouldAddToRecent = options?.addToRecent ?? false
@@ -540,6 +625,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         recentExperts,
       }
     })
+  },
+  setSummonedExpertTeam(team) {
+    set({ summonedExpertTeam: team })
   },
   clearRecentExperts() {
     saveRecentExpertsToStorage([])
@@ -591,6 +679,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await Promise.all([
       get().loadCustomModels(),
       get().loadExperts(),
+      get().loadExpertTeams(),
       get().loadMcpConfig(),
     ])
   },
@@ -750,7 +839,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       current &&
       current.content === draft.content &&
       JSON.stringify(current.selectedSkillIds) === JSON.stringify(draft.selectedSkillIds) &&
-      JSON.stringify(current.selectedConnectorIds) === JSON.stringify(draft.selectedConnectorIds)
+      JSON.stringify(current.selectedConnectorIds) === JSON.stringify(draft.selectedConnectorIds) &&
+      JSON.stringify(current.selectedExpertIds) === JSON.stringify(draft.selectedExpertIds) &&
+      current.selectedExpertId === draft.selectedExpertId &&
+      current.selectedExpertTeamId === draft.selectedExpertTeamId
     ) {
       return
     }
@@ -833,8 +925,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   setSidebarSearch(value: string) {
     set({ sidebarSearch: value })
   },
-  setSidebarStatusFilter(value: string) {
-    set({ sidebarStatusFilter: value as AppStoreState['sidebarStatusFilter'] })
+  setSidebarStatusFilter(value: AppStoreState['sidebarStatusFilter']) {
+    set({ sidebarStatusFilter: value })
   },
   setSidebarTimeRange(value: SidebarTimeRange) {
     set({ sidebarTimeRange: value })
@@ -856,6 +948,13 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const result = await clients.expert.list()
     if (result.ok) {
       set({ experts: result.data })
+    }
+  },
+  async loadExpertTeams() {
+    const clients = createAnybuddyClients(window.anybuddy)
+    const result = await clients.expertTeam.list()
+    if (result.ok) {
+      set({ expertTeams: result.data })
     }
   },
   async createExpert(input) {

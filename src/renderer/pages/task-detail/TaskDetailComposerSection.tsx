@@ -9,7 +9,8 @@ import { useTaskDetail } from './TaskDetailContext.js'
 export default function TaskDetailComposerSection() {
   const { taskId, task, workspaces, drafts, saveDraft, clearDraft, sendMessage } = useTaskDetail()
 
-  if (!task || !taskId) return null
+  // 路由切换期间不使用上一任务的数据初始化当前编辑器。
+  if (!task || !taskId || task.id !== taskId) return null
 
   return (
     <div style={{ padding: '16px 24px', borderTop: '1px solid #f1f5f9', background: '#ffffff' }}>
@@ -17,7 +18,10 @@ export default function TaskDetailComposerSection() {
         workspaces={workspaces}
         draft={drafts[taskId]}
         defaultMode={task.mode}
+        defaultModelId={task.modelId}
         defaultPermissionMode={task.permissionMode}
+        defaultActiveExpertId={task.activeExpertId}
+        defaultActiveExpertTeamId={task.activeExpertTeamId}
         hideTitle={true}
         hideWorkspacePicker={true}
         buttonLabel="发送"
@@ -28,6 +32,7 @@ export default function TaskDetailComposerSection() {
             selectedConnectorIds: draft.selectedConnectorIds,
             selectedExpertIds: draft.selectedExpertIds,
             selectedExpertId: draft.selectedExpertId,
+            selectedExpertTeamId: draft.selectedExpertTeamId,
           })
         }}
         onClearDraft={() => clearDraft(taskId)}
@@ -40,6 +45,7 @@ export default function TaskDetailComposerSection() {
             connectorIds: options.connectorIds,
             expertIds: options.expertIds ?? [],
             activeExpertId: options.activeExpertId,
+            activeExpertTeamId: options.activeExpertTeamId,
             permissionMode: options.permissionMode,
           })
           if (!updateResult.ok) {

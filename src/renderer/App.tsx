@@ -1,10 +1,10 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { ConfigProvider } from 'antd'
 import AppShell from './layout/AppShell.js'
-import NewTaskPage from './pages/NewTaskPage.js'
-import TaskDetailPage from './pages/TaskDetailPage.js'
-import ExpertsPage from './pages/ExpertsPage.js'
-import SettingsPage from './pages/SettingsPage.js'
+import NewTaskPage from './pages/new-task/index.js'
+import TaskDetailPage from './pages/task-detail/index.js'
+import ExpertsPage from './pages/experts/index.js'
+import SettingsPage from './pages/settings/index.js'
 
 export default function App() {
   return (
