@@ -5,25 +5,27 @@ import NewTaskPage from './pages/new-task/index.js'
 import TaskDetailPage from './pages/task-detail/index.js'
 import ExpertsPage from './pages/experts/index.js'
 import SettingsPage from './pages/settings/index.js'
+import InspirationPage from './pages/inspiration/index.js'
 
 export default function App() {
   return (
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: '#0f172a',
+          /* 全局主色：紫色 #6F2BDC */
+          colorPrimary: '#6F2BDC',
           borderRadius: 10,
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif',
-          colorLink: '#0f172a',
-          colorLinkHover: '#334155',
+          colorLink: '#6F2BDC',
+          colorLinkHover: '#5B21B6',
           colorBgLayout: '#f8fafc',
         },
         components: {
           Button: {
             borderRadius: 8,
-            colorPrimary: '#0f172a',
-            colorPrimaryHover: '#334155',
-            colorPrimaryActive: '#020617',
+            colorPrimary: '#6F2BDC',
+            colorPrimaryHover: '#5B21B6',
+            colorPrimaryActive: '#4C1D95',
             controlHeight: 36,
           },
           Select: {
@@ -35,17 +37,18 @@ export default function App() {
             controlHeight: 36,
           },
           Tabs: {
-            colorPrimary: '#0f172a',
-            colorPrimaryHover: '#334155',
-            colorPrimaryActive: '#020617',
+            colorPrimary: '#6F2BDC',
+            colorPrimaryHover: '#5B21B6',
+            colorPrimaryActive: '#4C1D95',
           },
           Card: {
             borderRadiusLG: 12,
           },
           Menu: {
             itemBorderRadius: 8,
-            itemSelectedBg: '#f1f5f9',
-            itemSelectedColor: '#0f172a',
+            /* 菜单选中态浅紫背景与紫字 */
+            itemSelectedBg: '#F5EEFF',
+            itemSelectedColor: '#6F2BDC',
           },
         },
       }}
@@ -55,6 +58,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/tasks/new" replace />} />
           <Route path="/tasks/new" element={<NewTaskPage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+          <Route path="/inspiration" element={<InspirationPage />} />
           <Route path="/experts" element={<ExpertsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/tasks/new" replace />} />

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/ipc.js'
-import type { AnybuddyApi } from '../shared/ipc.js'
+import type { CulclawApi } from '../shared/ipc.js'
 import type {
   AgentEvent,
   AgentRun,
@@ -29,7 +29,8 @@ async function invoke<T>(channel: string, ...args: unknown[]): Promise<IpcResult
   return ipcRenderer.invoke(channel, ...args) as Promise<IpcResult<T>>
 }
 
-const anybuddyApi: AnybuddyApi = {
+// 创建 CulClaw 主进程与渲染进程通信的统一 Bridge 实例
+const culclawApi: CulclawApi = {
   task: {
     list: filter => invoke<TaskSummary[]>(IPC_CHANNELS.tasksList, filter),
     get: taskId => invoke<Task | null>(IPC_CHANNELS.tasksGet, taskId),
@@ -114,4 +115,8 @@ const anybuddyApi: AnybuddyApi = {
   },
 }
 
-contextBridge.exposeInMainWorld('anybuddy', anybuddyApi)
+// 向渲染进程全局 Window 对象注入 API 桥接点
+contextBridge.exposeInMainWorld('culclaw', culclawApi)
+contextBridge.exposeInMainWorld('culclawApi', culclawApi)
+contextBridge.exposeInMainWorld('anybuddy', culclawApi)
+contextBridge.exposeInMainWorld('anybuddyApi', culclawApi)

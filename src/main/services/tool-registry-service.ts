@@ -15,7 +15,7 @@ const DEFAULT_SEARXNG_INSTANCES = [
 // 网络搜索 HTTP 请求头声明
 const SEARCH_REQUEST_HEADERS = {
   Accept: 'application/json, text/plain, */*',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) AnyBuddy/0.1',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) CulClaw/0.1',
 }
 
 /** 规范化后的单个搜索结果项 */

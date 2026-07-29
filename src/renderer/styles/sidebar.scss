@@ -1,0 +1,358 @@
+/* ==========================================
+   侧边栏 (Sidebar) 模块 SCSS 样式
+   ========================================== */
+
+$purple-accent: #6F2BDC;
+$purple-bg-active: #F5EEFF;
+$purple-bg-hover: rgba(111, 43, 220, 0.05);
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 16px;
+  background: var(--bg);
+  height: 100vh;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+
+  .brand-info {
+    display: flex;
+    flex-direction: column;
+
+    .brand-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--muted);
+    }
+  }
+}
+
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  transition: all 0.2s ease;
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+
+  &:hover {
+    background: $purple-bg-hover;
+    color: $purple-accent;
+  }
+
+  &.active {
+    background: $purple-bg-active;
+    color: $purple-accent;
+    font-weight: 600;
+  }
+}
+
+.new-task-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  margin-bottom: 8px;
+
+  &:hover {
+    background: #f9fafb;
+    border-color: rgba(0, 0, 0, 0.15);
+  }
+}
+
+.icon-button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  transition: all 0.2s ease;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.05);
+  }
+}
+
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 8px;
+  cursor: pointer;
+  user-select: none;
+
+  .section-head-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+.task-list,
+.workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-item,
+.workspace-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  transition: all 0.2s ease;
+  background: transparent;
+  border: none;
+  text-align: left;
+
+  &:hover {
+    background: $purple-bg-hover;
+    color: $purple-accent;
+  }
+
+  &.is-active,
+  &.active {
+    background: $purple-bg-active;
+    color: $purple-accent;
+    font-weight: 600;
+  }
+}
+
+.task-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.active { background-color: var(--good); }
+  &.waiting { background-color: var(--warn); }
+  &.failed { background-color: var(--danger); }
+  &.idle { background-color: var(--muted); }
+}
+
+.workspace-task-tree {
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 1px dashed rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  margin-bottom: 4px;
+}
+
+.workspace-task-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.03);
+    color: var(--ink);
+  }
+
+  &.is-active {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--ink);
+    font-weight: 600;
+  }
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.update-banner {
+  padding: 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+  position: relative;
+
+  .update-banner-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 8px;
+  }
+
+  .update-banner-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .update-banner-btn {
+    flex: 1;
+    padding: 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: #ffffff;
+    color: var(--ink);
+
+    &.primary {
+      background: var(--good);
+      color: #ffffff;
+      border-color: var(--good);
+    }
+
+    &:hover {
+      opacity: 0.9;
+    }
+  }
+}
+
+.sidebar-popover-anchor {
+  position: relative;
+}
+
+.sidebar-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 10;
+  width: 280px;
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+
+  .sidebar-popover-section {
+    display: grid;
+    gap: 8px;
+  }
+
+  .sidebar-popover-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+}
+
+.sidebar-search input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  outline: none;
+  font-size: 13px;
+
+  &:focus {
+    border-color: var(--ink);
+  }
+}
+
+/* 设置弹框左侧菜单项：hover 变为主题淡紫色 */
+.settings-nav-item {
+  cursor: pointer;
+  transition: all 0.2s ease;
+
+  &:hover:not(.settings-nav-item--active) {
+    background: $purple-bg-hover !important;
+    color: $purple-accent !important;
+  }
+}
+
+/* 左下角设置 Dropdown 菜单：hover 和点击改为淡紫色主题 */
+.ant-dropdown-menu-item:hover,
+.ant-dropdown-menu-item-active {
+  background-color: $purple-bg-hover !important;
+  color: $purple-accent !important;
+}
+
+.ant-dropdown-menu-item:hover .anticon,
+.ant-dropdown-menu-item-active .anticon {
+  color: $purple-accent !important;
+}

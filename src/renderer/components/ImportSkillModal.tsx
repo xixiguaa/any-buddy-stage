@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Modal, Checkbox, message, Spin } from 'antd'
 import { InboxOutlined } from '@ant-design/icons'
-import { createAnybuddyClients } from '../api/clients.js'
+import { createCulclawClients } from '../api/clients.js'
+import { rendererApi } from '../api/bridge.js'
 
 interface ImportSkillModalProps {
   open: boolean
@@ -17,7 +18,8 @@ export default function ImportSkillModal({ open, onCancel, onSuccess }: ImportSk
   const handleImport = async (filePath?: string) => {
     setLoading(true)
     try {
-      const clients = createAnybuddyClients(window.anybuddy)
+      // 创建 Culclaw API 客户端调用导入技能
+      const clients = createCulclawClients(rendererApi)
       const res = await clients.config.importSkill({ filePath, autoInstall })
       if (res.ok) {
         message.success(`技能 "${res.data.name}" 导入成功！`)

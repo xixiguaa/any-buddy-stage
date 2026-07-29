@@ -37,15 +37,19 @@ import type {
 import { createId, nowIso } from '../../shared/utils.js'
 
 // 活跃中的运行状态与任务状态列表
+import { WORKSPACE_DIR_NAME, CONFIG_DIR_NAME } from '../../shared/constants.js'
+
 const activeRunStatuses: AgentRun['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
 const activeTaskStatuses: Task['status'][] = ['queued', 'running', 'paused', 'waiting_approval']
+const terminalRunStatuses: AgentRun['status'][] = ['completed', 'failed', 'cancelled']
 
-// 默认工作区存储目录名称
-const ANYBUDDY_WORKSPACES_DIRNAME = 'AnyBuddy'
+function isTerminalRunStatus(status: AgentRun['status']) {
+  return terminalRunStatuses.includes(status)
+}
 
-/** 获取系统用户目录下 AnyBuddy 工作区根目录路径 (~/AnyBuddy) */
-function getAnyBuddyRootDir(): string {
-  return join(os.homedir(), ANYBUDDY_WORKSPACES_DIRNAME)
+/** 获取系统用户目录下默认工作区根目录路径 (~/CulClaw) */
+function getCulClawRootDir(): string {
+  return join(os.homedir(), WORKSPACE_DIR_NAME)
 }
 
 // 默认空 MCP 配置文件结构
@@ -152,7 +156,7 @@ export class AppService {
     await this.ensureDefaultExperts()
     await this.ensureDefaultExpertTeams()
     await this.hydrateConfigStateFromFiles()
-    await this.syncAnyBuddyWorkspaces()
+    await this.syncCulClawWorkspaces()
 
     // 应用启动时清理异常卡在活跃状态（running/queued等）的任务与运行
     let changed = false
@@ -177,21 +181,21 @@ export class AppService {
   }
 
   /**
-   * 自动扫描并水合用户目录 AnyBuddy 文件夹下的已存在工作区子目录
+   * 自动扫描并水合用户目录 CulClaw 文件夹下的已存在工作区子目录
    */
-  private async syncAnyBuddyWorkspaces() {
+  private async syncCulClawWorkspaces() {
     if (!this.state) return
-    const anybuddyRootDir = getAnyBuddyRootDir()
-    if (!existsSync(anybuddyRootDir)) return
+    const culclawRootDir = getCulClawRootDir()
+    if (!existsSync(culclawRootDir)) return
 
     try {
-      const entries = readdirSync(anybuddyRootDir, { withFileTypes: true })
+      const entries = readdirSync(culclawRootDir, { withFileTypes: true })
       const existingPaths = new Set(this.state.workspaces.map(w => w.path))
       let hasNew = false
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          const workspacePath = join(anybuddyRootDir, entry.name)
+          const workspacePath = join(culclawRootDir, entry.name)
           if (!existingPaths.has(workspacePath)) {
             const now = nowIso()
             const newWorkspace: Workspace = {
@@ -219,29 +223,99 @@ export class AppService {
     }
   }
 
-  /** 确保系统预设的默认专家 (ExpertPresets) 已注入持久化状态中 */
+  /** 同步系统内置专家，同时保留用户创建的自定义专家。 */
   private async ensureDefaultExperts() {
+    const defaultExpertsById = new Map(DEFAULT_EXPERTS.map(expert => [expert.id, expert]))
     const existingIds = new Set(this.snapshot.experts.map(expert => expert.id))
-    const missingExperts = DEFAULT_EXPERTS.filter(expert => !existingIds.has(expert.id))
-    if (missingExperts.length === 0) {
+    const syncedAt = nowIso()
+    let changed = false
+
+    const experts = this.snapshot.experts.map(expert => {
+      const defaultExpert = defaultExpertsById.get(expert.id)
+      // 自定义专家由用户维护，即使 ID 与内置预设相同也不覆盖。
+      if (!defaultExpert || expert.isCustom) {
+        return expert
+      }
+
+      const isCurrent = expert.name === defaultExpert.name
+        && expert.description === defaultExpert.description
+        && expert.systemPrompt === defaultExpert.systemPrompt
+        && expert.isCustom === false
+        && JSON.stringify(expert.skills) === JSON.stringify(defaultExpert.skills)
+      if (isCurrent) {
+        return expert
+      }
+
+      changed = true
+      return {
+        ...defaultExpert,
+        isCustom: false,
+        createdAt: expert.createdAt,
+        updatedAt: syncedAt,
+      }
+    })
+
+    for (const defaultExpert of DEFAULT_EXPERTS) {
+      if (!existingIds.has(defaultExpert.id)) {
+        experts.push({ ...defaultExpert, isCustom: false })
+        changed = true
+      }
+    }
+
+    if (!changed) {
       return
     }
 
     await this.mutate(state => {
-      state.experts = [...state.experts, ...missingExperts]
+      state.experts = experts
     })
   }
 
-  /** 确保系统预设的默认专家团 (ExpertTeamPresets) 已注入持久化状态中 */
+  /** 同步系统内置专家团，同时保留用户创建的自定义专家团。 */
   private async ensureDefaultExpertTeams() {
+    const defaultTeamsById = new Map(DEFAULT_EXPERT_TEAMS.map(team => [team.id, team]))
     const existingIds = new Set((this.snapshot.expertTeams ?? []).map(team => team.id))
-    const missingTeams = DEFAULT_EXPERT_TEAMS.filter(team => !existingIds.has(team.id))
-    if (missingTeams.length === 0) {
+    const syncedAt = nowIso()
+    let changed = false
+
+    const expertTeams = (this.snapshot.expertTeams ?? []).map(team => {
+      const defaultTeam = defaultTeamsById.get(team.id)
+      // 自定义专家团由用户维护，即使 ID 与内置预设相同也不覆盖。
+      if (!defaultTeam || team.isCustom) {
+        return team
+      }
+
+      const isCurrent = team.name === defaultTeam.name
+        && team.description === defaultTeam.description
+        && team.systemPrompt === defaultTeam.systemPrompt
+        && team.isCustom === false
+        && JSON.stringify(team.members) === JSON.stringify(defaultTeam.members)
+      if (isCurrent) {
+        return team
+      }
+
+      changed = true
+      return {
+        ...defaultTeam,
+        isCustom: false,
+        createdAt: team.createdAt,
+        updatedAt: syncedAt,
+      }
+    })
+
+    for (const defaultTeam of DEFAULT_EXPERT_TEAMS) {
+      if (!existingIds.has(defaultTeam.id)) {
+        expertTeams.push({ ...defaultTeam, isCustom: false })
+        changed = true
+      }
+    }
+
+    if (!changed) {
       return
     }
 
     await this.mutate(state => {
-      state.expertTeams = [...(state.expertTeams ?? []), ...missingTeams]
+      state.expertTeams = expertTeams
     })
   }
 
@@ -286,9 +360,9 @@ export class AppService {
     return fn(this.snapshot)
   }
 
-  /** 获取 AnyBuddy 的全局本地配置目录路径 (`~/.anybuddy`) */
+  /** 获取全局本地配置目录路径 (`~/.culclaw`) */
   private getConfigDir() {
-    return join(os.homedir(), '.anybuddy')
+    return join(os.homedir(), CONFIG_DIR_NAME)
   }
 
   /** 获取模型配置文件路径 (`~/.anybuddy/models.json`) */
@@ -514,13 +588,13 @@ export class AppService {
 
       let primaryWorkspaceId = input.workspaceId?.trim() ? input.workspaceId : undefined
 
-      // 若未指定工作区，自动在用户目录 AnyBuddy 文件夹下创建新工作区（格式：年-月-日 时-分秒）
+      // 若未指定工作区，自动在用户目录 CulClaw 文件夹下创建新工作区（格式：年-月-日 时-分秒）
       if (!primaryWorkspaceId) {
         const date = new Date()
         const pad = (n: number) => String(n).padStart(2, '0')
         const folderName = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
-        const anybuddyRootDir = getAnyBuddyRootDir()
-        const workspacePath = join(anybuddyRootDir, folderName)
+        const culclawRootDir = getCulClawRootDir()
+        const workspacePath = join(culclawRootDir, folderName)
 
         if (!existsSync(workspacePath)) {
           mkdirSync(workspacePath, { recursive: true })
@@ -1149,6 +1223,7 @@ ${initialPrompt.slice(0, 1000)}
       updatedAt: now,
     }
 
+    let queuedTask: Task | null = null
     await this.mutate(state => {
       state.agentRuns.unshift(run)
       state.agentEvents.push(this.createAgentEvent(run, 'run_started', {
@@ -1164,10 +1239,16 @@ ${initialPrompt.slice(0, 1000)}
           target.lastRunId = run.id
         }
         target.updatedAt = now
+        if (run.kind === 'main') {
+          queuedTask = { ...target }
+        }
       }
     })
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    if (queuedTask) {
+      this.emitTaskRuntimePatch(taskId, { task: queuedTask })
+    }
     this.emitTaskRuntimeSnapshot(taskId)
     return run
   }
@@ -1235,16 +1316,22 @@ ${initialPrompt.slice(0, 1000)}
   ): Promise<void> {
     let taskId = ''
     let completedRun: AgentRun | null = null
+    let completedTask: Task | null = null
     let runStatusEvent: AgentEvent | null = null
     let runCompletedEvent: AgentEvent | null = null
     let persistedIntermediateMessages: Message[] = []
     let assistantMessage: Message | null = null
+    let didComplete = false
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)
       }
+      if (isTerminalRunStatus(run.status)) {
+        return
+      }
       taskId = run.taskId
+      didComplete = true
       run.status = 'completed'
       run.currentNode = 'finished'
       run.completedAt = nowIso()
@@ -1253,6 +1340,7 @@ ${initialPrompt.slice(0, 1000)}
       if (task && task.lastRunId === run.id) {
         task.status = 'completed'
         task.updatedAt = run.updatedAt
+        completedTask = { ...task }
       }
       runStatusEvent = this.createAgentEvent(run, 'run_status', {
         status: 'completed',
@@ -1288,9 +1376,22 @@ ${initialPrompt.slice(0, 1000)}
       completedRun = { ...run }
     })
 
+    if (!didComplete) {
+      return
+    }
+
     this.discardPendingStreamEventPatches(runId)
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
+      // 先用已持久化消息替换前端暂态流，再发送完成状态，避免出现“Done 仍在输出”。
+      for (const intermediateMessage of persistedIntermediateMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
+      }
+      if (assistantMessage) {
+        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
+      }
+      if (completedTask) {
+        this.emitTaskRuntimePatch(taskId, { task: completedTask })
+      }
       if (completedRun) {
         this.emitTaskRuntimePatch(taskId, { run: completedRun })
       }
@@ -1300,13 +1401,8 @@ ${initialPrompt.slice(0, 1000)}
       if (runCompletedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
       }
-      for (const intermediateMessage of persistedIntermediateMessages) {
-        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
-      }
-      if (assistantMessage) {
-        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
-      }
     }
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
   }
 
   /**
@@ -1320,20 +1416,26 @@ ${initialPrompt.slice(0, 1000)}
   ): Promise<void> {
     let taskId = ''
     let waitingRun: AgentRun | null = null
+    let waitingTask: Task | null = null
     let runStatusEvent: AgentEvent | null = null
     let runCompletedEvent: AgentEvent | null = null
     let persistedIntermediateMessages: Message[] = []
     let assistantMessage: Message | null = null
     let approval: HumanApproval | null = null
     let approvalRequestedEvent: AgentEvent | null = null
+    let didEnterApproval = false
 
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)
       }
+      if (isTerminalRunStatus(run.status)) {
+        return
+      }
 
       taskId = run.taskId
+      didEnterApproval = true
       run.status = 'waiting_approval'
       run.currentNode = 'plan_approval'
       run.updatedAt = nowIso()
@@ -1342,6 +1444,7 @@ ${initialPrompt.slice(0, 1000)}
       if (task && task.lastRunId === run.id) {
         task.status = 'waiting_approval'
         task.updatedAt = run.updatedAt
+        waitingTask = { ...task }
       }
 
       runStatusEvent = this.createAgentEvent(run, 'run_status', {
@@ -1409,9 +1512,21 @@ ${initialPrompt.slice(0, 1000)}
       waitingRun = { ...run }
     })
 
+    if (!didEnterApproval) {
+      return
+    }
+
     this.discardPendingStreamEventPatches(runId)
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
+      for (const intermediateMessage of persistedIntermediateMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
+      }
+      if (assistantMessage) {
+        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
+      }
+      if (waitingTask) {
+        this.emitTaskRuntimePatch(taskId, { task: waitingTask })
+      }
       if (waitingRun) {
         this.emitTaskRuntimePatch(taskId, { run: waitingRun })
       }
@@ -1421,12 +1536,6 @@ ${initialPrompt.slice(0, 1000)}
       if (runCompletedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: runCompletedEvent })
       }
-      for (const intermediateMessage of persistedIntermediateMessages) {
-        this.emitTaskRuntimePatch(taskId, { message: intermediateMessage })
-      }
-      if (assistantMessage) {
-        this.emitTaskRuntimePatch(taskId, { message: assistantMessage })
-      }
       if (approval) {
         this.emitTaskRuntimePatch(taskId, { approval })
       }
@@ -1434,6 +1543,7 @@ ${initialPrompt.slice(0, 1000)}
         this.emitTaskRuntimePatch(taskId, { event: approvalRequestedEvent })
       }
     }
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
   }
 
   /**
@@ -1446,6 +1556,9 @@ ${initialPrompt.slice(0, 1000)}
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)
+      }
+      if (isTerminalRunStatus(run.status)) {
+        return
       }
       taskId = run.taskId
 
@@ -1488,14 +1601,20 @@ ${initialPrompt.slice(0, 1000)}
   async failRuntimeRun(runId: string, error: unknown): Promise<void> {
     let taskId = ''
     let failedRun: AgentRun | null = null
+    let failedTask: Task | null = null
     let failedEvent: AgentEvent | null = null
     let persistedStreamMessages: Message[] = []
+    let didFail = false
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         return
       }
+      if (isTerminalRunStatus(run.status)) {
+        return
+      }
       taskId = run.taskId
+      didFail = true
       run.status = 'failed'
       run.currentNode = 'failed'
       run.completedAt = nowIso()
@@ -1504,6 +1623,7 @@ ${initialPrompt.slice(0, 1000)}
       if (task && task.lastRunId === run.id) {
         task.status = 'failed'
         task.updatedAt = run.updatedAt
+        failedTask = { ...task }
       }
       failedEvent = this.createAgentEvent(run, 'run_failed', {
         message: error instanceof Error ? error.message : 'Unknown runtime failure',
@@ -1548,19 +1668,26 @@ ${initialPrompt.slice(0, 1000)}
       failedRun = { ...run }
     })
 
+    if (!didFail) {
+      return
+    }
+
     this.discardPendingStreamEventPatches(runId)
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
+      for (const streamMessage of persistedStreamMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: streamMessage })
+      }
+      if (failedTask) {
+        this.emitTaskRuntimePatch(taskId, { task: failedTask })
+      }
       if (failedRun) {
         this.emitTaskRuntimePatch(taskId, { run: failedRun })
       }
       if (failedEvent) {
         this.emitTaskRuntimePatch(taskId, { event: failedEvent })
       }
-      for (const streamMessage of persistedStreamMessages) {
-        this.emitTaskRuntimePatch(taskId, { message: streamMessage })
-      }
     }
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
   }
 
   /** 暂停运行时 AgentRun */
@@ -1585,6 +1712,7 @@ ${initialPrompt.slice(0, 1000)}
     let approval: HumanApproval | null = null
     let taskId = ''
     let approvalRun: AgentRun | null = null
+    let approvalTask: Task | null = null
     let approvalRequestedEvent: AgentEvent | null = null
 
     await this.mutate(state => {
@@ -1602,6 +1730,7 @@ ${initialPrompt.slice(0, 1000)}
       if (task && task.lastRunId === run.id) {
         task.status = 'waiting_approval'
         task.updatedAt = run.updatedAt
+        approvalTask = { ...task }
       }
 
       approval = {
@@ -1631,6 +1760,9 @@ ${initialPrompt.slice(0, 1000)}
 
     this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (taskId) {
+      if (approvalTask) {
+        this.emitTaskRuntimePatch(taskId, { task: approvalTask })
+      }
       if (approvalRun) {
         this.emitTaskRuntimePatch(taskId, { run: approvalRun })
       }
@@ -1661,12 +1793,16 @@ ${initialPrompt.slice(0, 1000)}
     let targetTaskId = ''
     let resolvedApproval: HumanApproval | null = null
     let resolvedRun: AgentRun | null = null
+    let resolvedTask: Task | null = null
     let resolvedEvent: AgentEvent | null = null
     let resolvedMessage: Message | null = null
     await this.mutate(state => {
       const approval = state.approvals.find(item => item.id === approvalId)
       if (!approval) {
         throw new Error(`Approval not found: ${approvalId}`)
+      }
+      if (approval.decision !== 'pending') {
+        throw new Error(`Approval already resolved: ${approvalId}`)
       }
       approval.decision = decision
       approval.editedArgs = editedArgs
@@ -1692,13 +1828,14 @@ ${initialPrompt.slice(0, 1000)}
       }
 
       const task = state.tasks.find(item => item.id === approval.taskId)
-      if (task) {
+      if (task && task.lastRunId === run.id) {
         task.status = isPlanConfirmation
           ? (decision === 'rejected' ? 'cancelled' : 'completed')
           : decision === 'rejected'
             ? 'failed'
             : 'running'
         task.updatedAt = run.updatedAt
+        resolvedTask = { ...task }
       }
 
       resolvedEvent = this.createAgentEvent(run, 'interrupt_resolved', {
@@ -1733,8 +1870,13 @@ ${initialPrompt.slice(0, 1000)}
       resolvedRun = { ...run }
     })
 
-    this.bus.emitActiveRuns(this.listActiveAgentRuns())
     if (targetTaskId) {
+      if (resolvedMessage) {
+        this.emitTaskRuntimePatch(targetTaskId, { message: resolvedMessage })
+      }
+      if (resolvedTask) {
+        this.emitTaskRuntimePatch(targetTaskId, { task: resolvedTask })
+      }
       if (resolvedRun) {
         this.emitTaskRuntimePatch(targetTaskId, { run: resolvedRun })
       }
@@ -1744,10 +1886,8 @@ ${initialPrompt.slice(0, 1000)}
       if (resolvedEvent) {
         this.emitTaskRuntimePatch(targetTaskId, { event: resolvedEvent })
       }
-      if (resolvedMessage) {
-        this.emitTaskRuntimePatch(targetTaskId, { message: resolvedMessage })
-      }
     }
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
 
     if (!resolvedApproval) {
       throw new Error(`Approval not found after resolve: ${approvalId}`)
@@ -1758,11 +1898,18 @@ ${initialPrompt.slice(0, 1000)}
 
   /** 更新 AgentRun 状态并向 UI 发送更新补丁 */
   private async updateAgentRunStatus(runId: string, status: AgentRun['status']): Promise<AgentRun> {
-    return this.mutate(state => {
+    let taskId = ''
+    let updatedRun: AgentRun | null = null
+    let updatedTask: Task | null = null
+    let statusEvent: AgentEvent | null = null
+    let terminalEvent: AgentEvent | null = null
+
+    await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
       if (!run) {
         throw new Error(`Agent run not found: ${runId}`)
       }
+      taskId = run.taskId
       run.status = status
       run.updatedAt = nowIso()
       run.currentNode = status === 'paused'
@@ -1770,25 +1917,55 @@ ${initialPrompt.slice(0, 1000)}
         : status === 'running'
           ? 'execution'
           : run.currentNode
-      state.agentEvents.push(this.createAgentEvent(run, 'run_status', {
+      statusEvent = this.createAgentEvent(run, 'run_status', {
         status,
         currentNode: run.currentNode,
-      }))
+      })
+      state.agentEvents.push(statusEvent)
+
+      const task = state.tasks.find(item => item.id === run.taskId)
+      if (task && task.lastRunId === run.id) {
+        task.status = status
+        task.updatedAt = run.updatedAt
+        updatedTask = { ...task }
+      }
+
       if (status === 'completed' || status === 'failed' || status === 'cancelled') {
         run.completedAt = nowIso()
-        const task = state.tasks.find(item => item.id === run.taskId)
         if (task && task.lastRunId === run.id) {
-          task.status = status === 'completed' ? 'completed' : status
           task.updatedAt = run.updatedAt
+          updatedTask = { ...task }
         }
-        state.agentEvents.push(this.createAgentEvent(
+        terminalEvent = this.createAgentEvent(
           run,
           status === 'failed' ? 'run_failed' : 'run_completed',
           { status },
-        ))
+        )
+        state.agentEvents.push(terminalEvent)
       }
-      return run
+
+      updatedRun = { ...run }
+      return updatedRun
     })
+
+    if (!updatedRun) {
+      throw new Error(`Agent run not found: ${runId}`)
+    }
+
+    if (taskId) {
+      if (updatedTask) {
+        this.emitTaskRuntimePatch(taskId, { task: updatedTask })
+      }
+      this.emitTaskRuntimePatch(taskId, { run: updatedRun })
+      if (statusEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: statusEvent })
+      }
+      if (terminalEvent) {
+        this.emitTaskRuntimePatch(taskId, { event: terminalEvent })
+      }
+    }
+    this.bus.emitActiveRuns(this.listActiveAgentRuns())
+    return updatedRun
   }
 
   // ==========================================

@@ -1,0 +1,119 @@
+/* ==========================================
+   任务详情 (Task Detail) 模块 SCSS 样式
+   ========================================== */
+
+.task-detail-split {
+  display: flex;
+  gap: 20px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.chat-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  gap: 16px;
+  box-sizing: border-box;
+}
+
+.chat-message-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+
+.metadata-pane {
+  width: 320px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+  box-sizing: border-box;
+}
+
+.chat-bubble {
+  padding: 14px 18px;
+  border-radius: 16px;
+  max-width: 85%;
+  font-size: 14px;
+  line-height: 1.6;
+  position: relative;
+  box-sizing: border-box;
+
+  &.user {
+    align-self: flex-end;
+    background: #f3f4f6;
+    color: #111827;
+    border-bottom-right-radius: 4px;
+  }
+
+  &.assistant {
+    align-self: flex-start;
+    background: #ffffff;
+    border: 1px solid var(--line);
+    color: #111827;
+    border-bottom-left-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.01);
+  }
+
+  &.system,
+  &.tool {
+    align-self: flex-start;
+    background: #f9fafb;
+    border: 1px dashed var(--line);
+    color: var(--muted);
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 12px;
+    border-bottom-left-radius: 4px;
+  }
+
+  .chat-bubble-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+}
+
+.message-list {
+  display: grid;
+  gap: 12px;
+
+  .message-row {
+    padding: 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(213, 208, 198, 0.8);
+    background: #fff;
+
+    &.message-user { border-left: 4px solid var(--accent); }
+    &.message-assistant { border-left: 4px solid var(--accent-2); }
+    &.message-system,
+    &.message-tool { border-left: 4px solid var(--good); }
+  }
+
+  .message-content {
+    margin-top: 6px;
+    white-space: pre-wrap;
+    line-height: 1.6;
+  }
+
+  .message-role {
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+}

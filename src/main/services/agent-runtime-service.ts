@@ -34,6 +34,8 @@ export class AgentRuntimeService {
   private readonly modelService: OpenAIModelService;
   private readonly toolRegistry: ToolRegistryService;
   private readonly deepAgentExecutor: AgentExecutor;
+  /** 当前正在执行的 Run 取消控制器。 */
+  private readonly abortControllersByRunId = new Map<string, AbortController>();
 
   constructor(
     private readonly appService: AppService,
@@ -71,13 +73,11 @@ export class AgentRuntimeService {
     const resolvedModel = this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId);
 
     // Agent 运行时在后台异步推进，先向调用方返回 run 实体，前端通过 IPC 事件订阅观察后续状态变化
-    void this.executeRuntime({
+    this.executeInBackground({
       task,
       run,
       model: resolvedModel?.model ?? null,
       settings,
-    }).catch(error => {
-      void this.appService.failRuntimeRun(run.id, error);
     });
 
     return run;
@@ -101,6 +101,8 @@ export class AgentRuntimeService {
    * 取消指定运行。
    */
   async cancel(runId: string) {
+    // 先中断执行流，避免 Run 状态已取消后模型或工具仍继续工作。
+    this.abortControllersByRunId.get(runId)?.abort();
     return this.appService.cancelRuntimeRun(runId);
   }
 
@@ -112,60 +114,36 @@ export class AgentRuntimeService {
    * @param editedArgs 修改后的工具调用参数（若有）
    */
   async approve(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>) {
-    // 1. 持久化审批决议
-    const approval = await this.appService.approveRequest(approvalId, decision, editedArgs);
+    // 命令不再逐步审批；此处仅持久化其他既有审批类型（例如计划确认）。
+    return this.appService.approveRequest(approvalId, decision, editedArgs);
+  }
 
-    // 2. 若执行引擎在线，优先尝试在内存中恢复挂起的 Promise 任务
-    if (this.deepAgentExecutor instanceof DeepAgentExecutor) {
-      const resumedPendingExecute = this.deepAgentExecutor.resolvePendingExecuteApproval(approval);
-      if (resumedPendingExecute) {
-        return approval;
-      }
-    }
-
-    // 3. 如果用户选择拒绝，则无需启动恢复执行
-    if (decision === 'rejected') {
-      return approval;
-    }
-
-    // 4. 进程重启后的离线恢复保底机制：
-    // 当应用重启后，内存中的挂起 Promise 已不存在，此时对于敏感命令执行审批，从审批记录读取命令并重新拉起 Agent 运行。
-    const args = approval.editedArgs ?? approval.originalArgs ?? {};
-    const originalArgs = approval.originalArgs ?? {};
-    if (args.toolName !== 'execute' && originalArgs.toolName !== 'execute') {
-      return approval;
-    }
-
-    const command = typeof args.command === 'string' ? args.command : '';
-    const originalCommand = typeof originalArgs.command === 'string' ? originalArgs.command : '';
-    if (!command.trim() && !originalCommand.trim()) {
-      throw new Error('Missing approved execute command');
-    }
-
-    const run = this.appService.getAgentRun(approval.runId);
-    const task = this.appService.getTask(approval.taskId);
-    if (!run || !task) {
-      throw new Error(`Runtime context missing for approval: ${approvalId}`);
-    }
-
-    try {
-      if (this.deepAgentExecutor instanceof DeepAgentExecutor) {
-        this.deepAgentExecutor.approveExecuteCommand(run.id, command || originalCommand);
-        if (originalCommand && originalCommand !== command) {
-          this.deepAgentExecutor.approveExecuteCommand(run.id, originalCommand);
+  /** 在后台执行 Run，并在运行结束后释放取消控制器。 */
+  private executeInBackground(context: RuntimeContext) {
+    const controller = this.createAbortController(context.run.id);
+    void this.executeRuntime(context, controller.signal)
+      .catch(error => {
+        // 用户主动停止后的异常不应覆盖已写入的 cancelled 状态。
+        if (!controller.signal.aborted) {
+          void this.appService.failRuntimeRun(context.run.id, error);
         }
-      }
-      // 重新拉起 Agent 异步运行
-      await this.executeRuntime({
-        task,
-        run,
-        model: this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId)?.model ?? null,
-        settings: this.appService.getSettings(),
+      })
+      .finally(() => {
+        this.clearAbortController(context.run.id, controller);
       });
-      return approval;
-    } catch (error) {
-      await this.appService.failRuntimeRun(run.id, error);
-      throw error;
+  }
+
+  /** 为 Run 创建并登记取消控制器。 */
+  private createAbortController(runId: string) {
+    const controller = new AbortController();
+    this.abortControllersByRunId.set(runId, controller);
+    return controller;
+  }
+
+  /** 仅清理当前执行实例的控制器，避免误删后续执行。 */
+  private clearAbortController(runId: string, controller: AbortController) {
+    if (this.abortControllersByRunId.get(runId) === controller) {
+      this.abortControllersByRunId.delete(runId);
     }
   }
 
@@ -174,8 +152,15 @@ export class AgentRuntimeService {
    */
   private async executeRuntime(
     context: RuntimeContext,
+    signal: AbortSignal,
   ) {
+    if (signal.aborted) {
+      return;
+    }
     await this.appService.resumeRuntimeRun(context.run.id);
+    if (signal.aborted) {
+      return;
+    }
 
     // 1. 根据任务配置筛选可用拓展工具
     const tools = this.buildDeepAgentTools(context);
@@ -188,6 +173,7 @@ export class AgentRuntimeService {
     // 4. 调用底层 DeepAgentExecutor 引擎推进 Agent 轮次
     const handledByDeepAgent = await this.deepAgentExecutor.execute({
       context,
+      signal,
       systemPrompt,
       activeExpert,
       activeExpertTeam,

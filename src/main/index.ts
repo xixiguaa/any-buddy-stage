@@ -22,10 +22,12 @@ function openMainWindow() {
   return mainWindow
 }
 
+import { DB_FILE_NAME } from '../shared/constants.js'
+
 async function bootstrap() {
   await app.whenReady()
 
-  const repository = new AppStateRepository(join(app.getPath('userData'), 'anybuddy.db'))
+  const repository = new AppStateRepository(join(app.getPath('userData'), DB_FILE_NAME))
   const service = new AppService(repository, bus)
   await service.init()
   registerIpcHandlers(service)

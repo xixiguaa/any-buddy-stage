@@ -1,22 +1,34 @@
 import { createContext, useContext, type ReactNode } from 'react'
-import type { AnybuddyClients } from './clients.js'
+import type { CulclawClients } from './clients.js'
 
-const AnybuddyApiContext = createContext<AnybuddyClients | null>(null)
+// 创建 Culclaw API 客户端 Context
+const CulclawApiContext = createContext<CulclawClients | null>(null)
 
-export function AnybuddyApiProvider({
+/**
+ * Culclaw API 上下文提供者组件
+ */
+export function CulclawApiProvider({
   clients,
   children,
 }: {
-  clients: AnybuddyClients
+  clients: CulclawClients
   children: ReactNode
 }) {
-  return <AnybuddyApiContext.Provider value={clients}>{children}</AnybuddyApiContext.Provider>
+  return <CulclawApiContext.Provider value={clients}>{children}</CulclawApiContext.Provider>
 }
 
-export function useAnybuddyClients() {
-  const value = useContext(AnybuddyApiContext)
+/**
+ * 获取 Culclaw API 客户端实例 Hook
+ */
+export function useCulclawClients() {
+  const value = useContext(CulclawApiContext)
   if (!value) {
-    throw new Error('AnybuddyApiProvider is missing')
+    throw new Error('CulclawApiProvider is missing')
   }
   return value
 }
+
+// 兼容性导出别名
+export const AnybuddyApiContext = CulclawApiContext
+export const AnybuddyApiProvider = CulclawApiProvider
+export const useAnybuddyClients = useCulclawClients

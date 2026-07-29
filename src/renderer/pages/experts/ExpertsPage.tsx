@@ -13,7 +13,8 @@ import {
   InfoCircleOutlined,
 } from '@ant-design/icons'
 import { useAppStore } from '../../stores/app-store.js'
-import { createAnybuddyClients } from '../../api/clients.js'
+import { createCulclawClients } from '../../api/clients.js'
+import { rendererApi } from '../../api/bridge.js'
 import type { ExpertPreset, ExpertTeamPreset } from '../../../shared/types.js'
 import ImportSkillModal from '../../components/ImportSkillModal.js'
 
@@ -54,7 +55,8 @@ export default function ExpertsPage() {
   const [viewingTeam, setViewingTeam] = useState<ExpertTeamPreset | null>(null)
 
   const fetchSkills = () => {
-    const clients = createAnybuddyClients(window.anybuddy)
+    // 创建 Culclaw 客户端加载技能列表
+    const clients = createCulclawClients(rendererApi)
     void clients.config.listSkills().then(result => {
       if (result.ok) {
         setLocalSkills(result.data)
@@ -188,7 +190,7 @@ export default function ExpertsPage() {
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>专家库列表</div>
               <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>专家是带有特定模式、技能和模型预设的 Agent 会话模板。</div>
             </div>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateExpertModal} style={{ background: '#0f172a', border: 'none' }}>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateExpertModal} style={{ background: '#6F2BDC', border: 'none' }}>
               添加自定义专家
             </Button>
           </div>
@@ -319,7 +321,7 @@ export default function ExpertsPage() {
                       type="primary"
                       icon={<ThunderboltOutlined />}
                       onClick={() => handleStartTeamTask(team)}
-                      style={{ flex: 1, borderRadius: 6, fontWeight: 500, background: '#0f172a', border: 'none' }}
+                      style={{ flex: 1, borderRadius: 6, fontWeight: 500, background: '#6F2BDC', border: 'none' }}
                     >
                       基于专家团发起任务
                     </Button>
@@ -365,7 +367,7 @@ export default function ExpertsPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>本地技能包</div>
-              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 ~/.anybuddy/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 ~/.culclaw/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
             </div>
             <Space>
               <Input
@@ -379,7 +381,7 @@ export default function ExpertsPage() {
                 type="primary"
                 icon={<UploadOutlined />}
                 onClick={() => setIsImportModalOpen(true)}
-                style={{ background: '#0f172a', border: 'none', borderRadius: '6px' }}
+                style={{ background: '#6F2BDC', border: 'none', borderRadius: '6px' }}
               >
                 导入技能
               </Button>
@@ -481,7 +483,7 @@ export default function ExpertsPage() {
             key="start"
             type="primary"
             icon={<ThunderboltOutlined />}
-            style={{ background: '#0f172a', border: 'none' }}
+            style={{ background: '#6F2BDC', border: 'none' }}
             onClick={() => {
               if (viewingTeam) {
                 const team = viewingTeam
@@ -495,7 +497,7 @@ export default function ExpertsPage() {
         ]}
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <TeamOutlined style={{ color: '#6366f1' }} />
+            <TeamOutlined style={{ color: '#6F2BDC' }} />
             <span>{viewingTeam?.name} 详情</span>
             <Tag color="purple">内置团队 (不可编辑)</Tag>
           </div>

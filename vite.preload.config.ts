@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import { builtinModules } from 'node:module'
+import path from 'node:path'
 
 const builtins = [
   'electron',
@@ -8,6 +9,11 @@ const builtins = [
 ]
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, 'src'),
+    },
+  },
   build: {
     emptyOutDir: false,
     lib: {

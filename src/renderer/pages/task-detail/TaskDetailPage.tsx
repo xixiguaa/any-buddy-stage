@@ -10,12 +10,13 @@ import TaskDetailArtifactsSidebar from './TaskDetailArtifactsSidebar.js'
  * 任务详情页主内容区域组件
  */
 function TaskDetailContent() {
-  const { task } = useTaskDetail()
+  const { task, taskId, selectedTaskId } = useTaskDetail()
 
-  if (!task) {
+  // 路由已切换但新任务数据尚未加载时，不能继续展示上一任务的上下文。
+  if (!task || task.id !== taskId || selectedTaskId !== taskId) {
     return (
       <div style={{ display: 'grid', placeItems: 'center', height: '100%', padding: '48px' }}>
-        <Empty description="选择一个任务查看对话和运行状态。" />
+        <Empty description={taskId ? '正在加载任务...' : '选择一个任务查看对话和运行状态。'} />
       </div>
     )
   }

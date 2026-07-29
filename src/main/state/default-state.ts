@@ -4,6 +4,8 @@ import type { AppSettings, AppState } from '../../shared/types.js';
 import { createId, nowIso } from '../../shared/utils.js';
 import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js';
 
+import { APP_NAME } from '../../shared/constants.js';
+
 export function createDefaultSettings(): AppSettings {
   return {
     networkEnabled: false,
@@ -13,6 +15,7 @@ export function createDefaultSettings(): AppSettings {
   };
 }
 
+/* 创建应用默认初始化 State 状态结构 */
 export function createDefaultState(): AppState {
   const now = nowIso();
   const workspaceId = createId('workspace');
@@ -20,7 +23,7 @@ export function createDefaultState(): AppState {
   const workspace = {
     id: workspaceId,
     name: '默认工作区',
-    path: join(os.homedir(), 'Documents', 'AnyBuddy Workspace'),
+    path: join(os.homedir(), 'Documents', `${APP_NAME} Workspace`),
     icon: 'folder',
     defaultPermissionMode: 'read_write' as const,
     isArchived: false,
@@ -31,7 +34,7 @@ export function createDefaultState(): AppState {
 
   const task = {
     id: taskId,
-    title: '开始使用 AnyBuddy',
+    title: `开始使用 ${APP_NAME}`,
     mode: 'ask' as const,
     modelId: '',
     expertIds: [],

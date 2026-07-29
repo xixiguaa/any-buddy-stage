@@ -79,7 +79,7 @@ function fail(error: unknown): IpcResult<never> {
 }
 
 async function listLocalSkills() {
-  const skillRoots = [path.join(os.homedir(), '.anybuddy', 'skills')]
+  const skillRoots = [path.join(os.homedir(), '.culclaw', 'skills')]
   const names = new Set<string>()
 
   for (const skillsRoot of skillRoots) {
@@ -519,6 +519,7 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  /* 写入 MCP 配置 JSON 字符串 */
   ipcMain.handle(IPC_CHANNELS.configWriteMcp, async (_event, content: string) => {
     try {
       await appService.writeMcpConfig(content)
@@ -528,6 +529,7 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  /* 列出本地配置与全局 ~/.culclaw/skills 下的可用技能 */
   ipcMain.handle(IPC_CHANNELS.configListSkills, async () => {
     try {
       return ok(await listLocalSkills())
@@ -536,6 +538,7 @@ export function registerIpcHandlers(appService: AppService) {
     }
   })
 
+  /* 导入技能压缩包或目录至 ~/.culclaw/skills */
   ipcMain.handle(IPC_CHANNELS.configImportSkill, async (_event, input?: { filePath?: string; autoInstall?: boolean }) => {
     try {
       let targetPath = input?.filePath
@@ -552,7 +555,7 @@ export function registerIpcHandlers(appService: AppService) {
       }
 
       const stat = await fs.stat(targetPath)
-      const tempDir = path.join(os.tmpdir(), `anybuddy-skill-import-${Date.now()}`)
+      const tempDir = path.join(os.tmpdir(), `culclaw-skill-import-${Date.now()}`)
       const sourceFolder = tempDir
 
       try {
@@ -624,7 +627,7 @@ export function registerIpcHandlers(appService: AppService) {
         }
 
         const safeSkillId = skillName.replace(/[^\w-]/g, '-').replace(/-+/g, '-').toLowerCase() || `skill-${Date.now()}`
-        const globalSkillsRoot = path.join(os.homedir(), '.anybuddy', 'skills')
+        const globalSkillsRoot = path.join(os.homedir(), '.culclaw', 'skills')
         const finalDestDir = path.join(globalSkillsRoot, safeSkillId)
 
         await fs.mkdir(globalSkillsRoot, { recursive: true })

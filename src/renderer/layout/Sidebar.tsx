@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ModelApiMode } from '../../shared/types.js'
-import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Button, Badge, Modal, Input, Popover, Avatar, Dropdown, Space, Tag, Tooltip, Switch, Divider, Form, Card } from 'antd'
 import {
   PlusOutlined,
@@ -13,26 +13,19 @@ import {
   RightOutlined,
   UserOutlined,
   SyncOutlined,
-  InfoCircleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   SlidersOutlined
 } from '@ant-design/icons'
-import { Sparkles, Terminal, ShieldAlert, Award, Radio, MoreHorizontal } from 'lucide-react'
+import { Sparkles, ShieldAlert, Award, MoreHorizontal } from 'lucide-react'
 import { useAppStore } from '../stores/app-store.js'
-import { createAnybuddyClients } from '../api/clients.js'
+import { createCulclawClients } from '../api/clients.js'
+import { rendererApi } from '../api/bridge.js'
 import CustomPopover from '../components/Popover.js'
 
 const { Sider } = Layout
-
-const STATUS_FILTERS = [
-  { value: 'all', label: 'All' },
-  { value: 'active', label: 'Running' },
-  { value: 'waiting_approval', label: 'Paused' },
-  { value: 'failed', label: 'Failed' },
-] as const
 
 const TIME_FILTERS = [
   { value: 'all', label: 'All time' },
@@ -41,6 +34,9 @@ const TIME_FILTERS = [
   { value: 'last_30_days', label: '30d' },
 ] as const
 
+/**
+ * 匹配任务更新时间范围
+ */
 function matchesTimeRange(updatedAt: string, timeRange: (typeof TIME_FILTERS)[number]['value']) {
   if (timeRange === 'all') {
     return true
@@ -91,20 +87,21 @@ export default function Sidebar() {
   const [workspacesCollapsed, setWorkspacesCollapsed] = useState(false)
   const [hoveredWorkspaceId, setHoveredWorkspaceId] = useState<string | null>(null)
   const [activeWorkspacePopoverId, setActiveWorkspacePopoverId] = useState<string | null>(null)
-  const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null)
+  const [hoveredTopTaskId, setHoveredTopTaskId] = useState<string | null>(null)
+  const [hoveredSpaceTaskId, setHoveredSpaceTaskId] = useState<string | null>(null)
 
-  // Settings Modal States
+  // 设置弹窗状态
   const [showSettingsModal, setShowSettingsModal] = useState(false)
   const [activeSettingsTab, setActiveSettingsTab] = useState('account')
 
-  // Custom Model Form States
+  // 自定义模型表单状态
   const [newModelName, setNewModelName] = useState('')
   const [newModelEndpoint, setNewModelEndpoint] = useState('')
   const [newModelKey, setNewModelKey] = useState('')
   const [newModelBase, setNewModelBase] = useState('')
   const [newModelApiMode, setNewModelApiMode] = useState<ModelApiMode>('auto')
 
-  // Global Assistant Setup Form States
+  // 全局助理设置表单状态
   const [wechatWebhook, setWechatWebhook] = useState(settings?.wechatWebhook ?? '')
   const [wechatSecret, setWechatSecret] = useState(settings?.wechatSecret ?? '')
   const [dingtalkWebhook, setDingtalkWebhook] = useState(settings?.dingtalkWebhook ?? '')
@@ -119,6 +116,7 @@ export default function Sidebar() {
     }
   }, [settings])
 
+  // 根据搜索词和筛选条件过滤任务
   const filteredTasks = useMemo(() => {
     const keyword = search.trim().toLowerCase()
     return tasks.filter(task => {
@@ -139,8 +137,7 @@ export default function Sidebar() {
     })
   }, [search, statusFilter, tasks, timeRange])
 
-
-
+  // 按工作空间聚合任务列表
   const tasksByWorkspace = useMemo(() => {
     return workspaces.map(workspace => ({
       workspace,
@@ -148,6 +145,7 @@ export default function Sidebar() {
     }))
   }, [filteredTasks, workspaces])
 
+  // 切换工作空间展开/收起状态
   function toggleWorkspace(workspaceId: string) {
     setExpandedWorkspaceIds(state => ({
       ...state,
@@ -168,7 +166,7 @@ export default function Sidebar() {
     }
   }
 
-  // 侧边栏底部偏好菜单配置（已移除退出登录选项）
+  // 侧边栏底部偏好菜单配置
   const userMenuItems = {
     items: [
       { key: 'settings', label: '系统设置', icon: <SettingOutlined /> },
@@ -177,6 +175,7 @@ export default function Sidebar() {
     onClick: handleUserMenuClick,
   }
 
+  // 删除任务处理逻辑
   const handleDeleteTask = (task: typeof tasks[number]) => {
     Modal.confirm({
       title: '删除任务',
@@ -193,23 +192,26 @@ export default function Sidebar() {
     })
   }
 
+  // 获取状态 Tag 标签（优化尺寸与边距，避免抖动）
   const getStatusTag = (status: string) => {
+    const tagStyle = { margin: 0, fontSize: '10px', height: '20px', lineHeight: '18px', padding: '0 6px', display: 'inline-flex', alignItems: 'center' }
     switch (status) {
       case 'running':
-        return <Tag color="processing" style={{ margin: 0, scale: '0.85' }}>Running</Tag>
+        return <Tag color="processing" style={tagStyle}>Running</Tag>
       case 'waiting_approval':
-        return <Tag color="warning" style={{ margin: 0, scale: '0.85' }}>Paused</Tag>
+        return <Tag color="warning" style={tagStyle}>Paused</Tag>
       case 'failed':
-        return <Tag color="error" style={{ margin: 0, scale: '0.85' }}>Failed</Tag>
+        return <Tag color="error" style={tagStyle}>Failed</Tag>
       case 'completed':
-        return <Tag color="success" style={{ margin: 0, scale: '0.85' }}>Done</Tag>
+        return <Tag color="success" style={tagStyle}>Done</Tag>
       case 'paused':
-        return <Tag color="warning" style={{ margin: 0, scale: '0.85' }}>Paused</Tag>
+        return <Tag color="warning" style={tagStyle}>Paused</Tag>
       default:
-        return <Tag color="default" style={{ margin: 0, scale: '0.85' }}>{status}</Tag>
+        return <Tag color="default" style={tagStyle}>{status}</Tag>
     }
   }
 
+  // 添加自定义模型
   const handleAddCustomModel = async () => {
     if (!newModelName || !newModelEndpoint) {
       Modal.error({ title: '添加失败', content: '模型名称和接口地址不能为空' })
@@ -244,11 +246,13 @@ export default function Sidebar() {
     Modal.success({ title: '保存成功', content: '自定义模型已保存写入' })
   }
 
+  // 删除自定义模型
   const handleDeleteCustomModel = async (modelId: string) => {
     const updated = customModels.filter(model => model.id !== modelId)
     await saveCustomModels(updated)
   }
 
+  // 保存全局助理配置
   const handleSaveAssistantConfig = async () => {
     await updateSettings({
       wechatWebhook,
@@ -259,6 +263,7 @@ export default function Sidebar() {
     Modal.success({ title: '保存成功', content: '全局助理集成配置已更新' })
   }
 
+  // 时间筛选 Popover 内容（主色调调优为紫色）
   const filterContent = (
     <div style={{ padding: '8px 4px', width: '220px', background: '#ffffff' }}>
       <div style={{ marginBottom: '12px' }}>
@@ -276,9 +281,9 @@ export default function Sidebar() {
                 style={{
                   textAlign: 'left',
                   borderRadius: '6px',
-                  background: active ? '#0f172a' : 'transparent',
+                  background: active ? '#6F2BDC' : 'transparent',
                   color: active ? '#ffffff' : '#475569',
-                  border: active ? '1px solid #0f172a' : '1px solid #e2e8f0',
+                  border: active ? '1px solid #6F2BDC' : '1px solid #e2e8f0',
                   boxShadow: 'none',
                 }}
               >
@@ -322,7 +327,7 @@ export default function Sidebar() {
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '16px 12px' }}>
-        {/* Brand Header with top-right actions */}
+        {/* 顶部品牌区域与头部动作控制按钮 */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -334,7 +339,7 @@ export default function Sidebar() {
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <div style={{
-                  background: '#0f172a',
+                  background: '#6F2BDC',
                   color: '#ffffff',
                   width: '32px',
                   height: '32px',
@@ -399,9 +404,9 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Scrollable Navigation / Items Panel */}
+        {/* 侧边栏可滚动区域 */}
         <div style={{ flex: 1, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' }}>
-          {/* Main Navigation Links */}
+          {/* 主导航入口 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '20px' }}>
             <NavLink
               to="/tasks/new"
@@ -414,12 +419,31 @@ export default function Sidebar() {
                 borderRadius: '8px',
                 fontSize: '13px',
                 fontWeight: 500,
-                color: isActive && location.pathname === '/tasks/new' ? '#0f172a' : '#475569',
-                background: isActive && location.pathname === '/tasks/new' ? '#e2e8f0' : 'transparent',
+                color: isActive && location.pathname === '/tasks/new' ? '#6F2BDC' : '#475569',
+                background: isActive && location.pathname === '/tasks/new' ? '#F5EEFF' : 'transparent',
               })}
             >
               <PlusOutlined style={{ fontSize: '14px' }} />
               {!collapsed && <span>开始创作</span>}
+            </NavLink>
+
+            <NavLink
+              to="/inspiration"
+              className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
+              style={({ isActive }) => ({
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '8px 12px',
+                borderRadius: '8px',
+                fontSize: '13px',
+                fontWeight: 500,
+                color: isActive ? '#6F2BDC' : '#475569',
+                background: isActive ? '#F5EEFF' : 'transparent',
+              })}
+            >
+              <Sparkles size={16} />
+              {!collapsed && <span>灵感广场</span>}
             </NavLink>
 
             <NavLink
@@ -433,8 +457,8 @@ export default function Sidebar() {
                 borderRadius: '8px',
                 fontSize: '13px',
                 fontWeight: 500,
-                color: isActive ? '#0f172a' : '#475569',
-                background: isActive ? '#e2e8f0' : 'transparent',
+                color: isActive ? '#6F2BDC' : '#475569',
+                background: isActive ? '#F5EEFF' : 'transparent',
               })}
             >
               <Award size={16} />
@@ -444,9 +468,7 @@ export default function Sidebar() {
 
           {!collapsed && (
             <>
-              {/* 任务折叠菜单 */}
-
-              {/* Tasks Accordion */}
+              {/* 顶部任务列表折叠菜单 */}
               <div style={{ marginBottom: '16px' }}>
                 <div
                   onClick={() => setTasksCollapsed(!tasksCollapsed)}
@@ -466,36 +488,46 @@ export default function Sidebar() {
                 >
                   <Space size={4}>
                     <span>任务</span>
-                    <Badge count={filteredTasks.length} size="small" style={{ backgroundColor: '#e2e8f0', color: '#475569', boxShadow: 'none' }} />
+                    <Badge count={filteredTasks.length} size="small" style={{ backgroundColor: '#F5EEFF', color: '#6F2BDC', boxShadow: 'none' }} />
                   </Space>
                   {tasksCollapsed ? <RightOutlined style={{ fontSize: '9px' }} /> : <DownOutlined style={{ fontSize: '9px' }} />}
                 </div>
 
                 {!tasksCollapsed && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '6px', paddingLeft: '4px' }}>
-                    {filteredTasks.map(task => (
-                      <NavLink
-                        key={task.id}
-                        to={`/tasks/${task.id}`}
-                        onMouseEnter={() => setHoveredTaskId(task.id)}
-                        onMouseLeave={() => setHoveredTaskId(null)}
-                        style={({ isActive }) => ({
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '2px',
-                          padding: '8px 10px',
-                          borderRadius: '8px',
-                          background: isActive ? '#ffffff' : 'transparent',
-                          border: isActive ? '1px solid #e2e8f0' : '1px solid transparent',
-                          boxShadow: isActive ? '0 2px 8px rgba(0,0,0,0.02)' : 'none',
-                        })}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', width: '100%', justifyContent: 'space-between' }}>
-                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
+                    {filteredTasks.map(task => {
+                      // 需求1：选中空间下面的任务和上面任务列表的状态不需要同步
+                      // 仅当当前 URL 参数没有带有 from=space 时，上面任务列表才判断为选中状态
+                      const isTopTaskActive = location.pathname === `/tasks/${task.id}` && new URLSearchParams(location.search).get('from') !== 'space'
+                      // 独立控制顶部任务列表的 Hover 状态，不与空间下的任务同步
+                      const isHovered = hoveredTopTaskId === task.id
+
+                      return (
+                        <NavLink
+                          key={task.id}
+                          to={`/tasks/${task.id}`}
+                          onMouseEnter={() => setHoveredTopTaskId(task.id)}
+                          onMouseLeave={() => setHoveredTopTaskId(null)}
+                          className={() => `sidebar-nav-item ${isTopTaskActive ? 'active' : ''}`}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            // 需求：上面任务列表只显示名字，选中与 Hover 维持紫色主题
+                            background: isTopTaskActive ? '#F5EEFF' : isHovered ? 'rgba(111, 43, 220, 0.04)' : 'transparent',
+                            border: isTopTaskActive ? '1px solid #E9D5FF' : '1px solid transparent',
+                            boxShadow: isTopTaskActive ? '0 2px 8px rgba(111, 43, 220, 0.08)' : 'none',
+                            transition: 'all 0.2s ease',
+                          }}
+                        >
+                          {/* 仅显示任务名字 */}
+                          <span style={{ fontSize: '13px', fontWeight: isTopTaskActive ? 600 : 500, color: isTopTaskActive ? '#6F2BDC' : '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: '8px' }}>
                             {task.title}
                           </span>
-                          <span style={{ display: 'flex', alignItems: 'center' }}>
-                            {hoveredTaskId === task.id ? (
+                          <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                            {isHovered ? (
                               <DeleteOutlined
                                 style={{
                                   color: '#ef4444',
@@ -518,13 +550,9 @@ export default function Sidebar() {
                               </>
                             )}
                           </span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#94a3b8' }}>
-                          <span>{task.primaryWorkspaceName ?? 'No Workspace'}</span>
-                          <span>{task.mode}</span>
-                        </div>
-                      </NavLink>
-                    ))}
+                        </NavLink>
+                      )
+                    })}
                     {!filteredTasks.length && (
                       <div style={{ fontSize: '12px', color: '#94a3b8', padding: '8px', textAlign: 'center' }}>暂无任务</div>
                     )}
@@ -532,7 +560,7 @@ export default function Sidebar() {
                 )}
               </div>
 
-              {/* Workspaces Accordion */}
+              {/* 空间 (Workspaces) 折叠菜单 */}
               <div style={{ marginBottom: '16px' }}>
                 <div
                   onClick={() => setWorkspacesCollapsed(!workspacesCollapsed)}
@@ -552,7 +580,7 @@ export default function Sidebar() {
                 >
                   <Space size={4}>
                     <span>空间</span>
-                    <Badge count={workspaces.length} size="small" style={{ backgroundColor: '#e2e8f0', color: '#475569', boxShadow: 'none' }} />
+                    <Badge count={workspaces.length} size="small" style={{ backgroundColor: '#F5EEFF', color: '#6F2BDC', boxShadow: 'none' }} />
                   </Space>
                   {workspacesCollapsed ? <RightOutlined style={{ fontSize: '9px' }} /> : <DownOutlined style={{ fontSize: '9px' }} />}
                 </div>
@@ -562,17 +590,20 @@ export default function Sidebar() {
                     {tasksByWorkspace.map(({ workspace }) => {
                       const expanded = expandedWorkspaceIds[workspace.id] ?? false
                       const wsTasksList = tasks.filter(t => t.primaryWorkspaceId === workspace.id)
+                      const isWorkspaceHovered = hoveredWorkspaceId === workspace.id
+
                       return (
                         <div
                           key={workspace.id}
                           style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}
-                          onMouseEnter={() => setHoveredWorkspaceId(workspace.id)}
-                          onMouseLeave={() => setHoveredWorkspaceId(null)}
                         >
+                          {/* 需求2：hover 空间下面任务列表时，仅在 Hover 空间标题这一行时触发高亮 */}
                           <div
                             onClick={() => {
                               toggleWorkspace(workspace.id)
                             }}
+                            onMouseEnter={() => setHoveredWorkspaceId(workspace.id)}
+                            onMouseLeave={() => setHoveredWorkspaceId(null)}
                             style={{
                               display: 'flex',
                               alignItems: 'center',
@@ -580,17 +611,18 @@ export default function Sidebar() {
                               padding: '6px 8px',
                               borderRadius: '6px',
                               cursor: 'pointer',
-                              background: hoveredWorkspaceId === workspace.id ? 'rgba(0, 0, 0, 0.03)' : 'transparent',
-                              transition: 'background 0.2s',
+                              // 需求3：使用淡紫色 Hover 效果
+                              background: isWorkspaceHovered ? 'rgba(111, 43, 220, 0.06)' : 'transparent',
+                              transition: 'all 0.2s ease',
                             }}
                           >
                             <Space size={8} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                              <FolderOutlined style={{ color: '#64748b' }} />
-                              <span style={{ fontSize: '13px', fontWeight: 500, color: '#334155' }}>{workspace.name}</span>
+                              <FolderOutlined style={{ color: isWorkspaceHovered ? '#6F2BDC' : '#64748b' }} />
+                              <span style={{ fontSize: '13px', fontWeight: 500, color: isWorkspaceHovered ? '#6F2BDC' : '#334155' }}>{workspace.name}</span>
                             </Space>
 
                             <Space size={2} onClick={e => e.stopPropagation()}>
-                              {(hoveredWorkspaceId === workspace.id || activeWorkspacePopoverId === workspace.id) && (
+                              {(isWorkspaceHovered || activeWorkspacePopoverId === workspace.id) && (
                                 <CustomPopover
                                   content={
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '120px' }}>
@@ -602,7 +634,8 @@ export default function Sidebar() {
                                         onClick={async (e) => {
                                           e.stopPropagation()
                                           setActiveWorkspacePopoverId(null)
-                                          const clients = createAnybuddyClients(window.anybuddy)
+                                          // 打开本地文件夹
+                                          const clients = createCulclawClients(rendererApi)
                                           const res = await clients.workspace.openFolder(workspace.id)
                                           if (!res.ok) {
                                             Modal.error({
@@ -630,7 +663,7 @@ export default function Sidebar() {
                                             okText: '确认',
                                             cancelText: '取消',
                                             onOk: async () => {
-                                              const clients = createAnybuddyClients(window.anybuddy)
+                                              const clients = createCulclawClients(rendererApi)
                                               await clients.workspace.remove(workspace.id)
                                               const refreshed = await clients.workspace.list()
                                               if (refreshed.ok) {
@@ -679,45 +712,59 @@ export default function Sidebar() {
                               flexDirection: 'column',
                               gap: '2px',
                             }}>
-                              {wsTasksList.map(task => (
-                                <NavLink
-                                  key={task.id}
-                                  to={`/tasks/${task.id}`}
-                                  onMouseEnter={() => setHoveredTaskId(task.id)}
-                                  onMouseLeave={() => setHoveredTaskId(null)}
-                                  style={({ isActive }) => ({
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'space-between',
-                                    padding: '4px 8px',
-                                    borderRadius: '4px',
-                                    fontSize: '12px',
-                                    color: isActive ? '#0f172a' : '#64748b',
-                                    background: isActive ? '#e2e8f0' : 'transparent',
-                                    fontWeight: isActive ? 600 : 500,
-                                  })}
-                                >
-                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '120px' }}>
-                                    {task.title}
-                                  </span>
-                                  {hoveredTaskId === task.id ? (
-                                    <DeleteOutlined
-                                      style={{
-                                        color: '#ef4444',
-                                        cursor: 'pointer',
-                                        fontSize: '13px',
-                                      }}
-                                      onClick={(e) => {
-                                        e.preventDefault()
-                                        e.stopPropagation()
-                                        handleDeleteTask(task)
-                                      }}
-                                    />
-                                  ) : (
-                                    getStatusTag(task.status)
-                                  )}
-                                </NavLink>
-                              ))}
+                              {wsTasksList.map(task => {
+                                // 需求1：选中空间下面的任务通过 ?from=space 区分激活状态，不与上面任务列表联动
+                                const isSpaceTaskActive = location.pathname === `/tasks/${task.id}` && new URLSearchParams(location.search).get('from') === 'space'
+                                // 独立控制空间任务列表的 Hover 状态，不与顶部任务同步
+                                const isTaskHovered = hoveredSpaceTaskId === task.id
+
+                                return (
+                                  <NavLink
+                                    key={task.id}
+                                    to={`/tasks/${task.id}?from=space`}
+                                    onMouseEnter={() => setHoveredSpaceTaskId(task.id)}
+                                    onMouseLeave={() => setHoveredSpaceTaskId(null)}
+                                    className={() => `workspace-task-link ${isSpaceTaskActive ? 'is-active' : ''}`}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      padding: '4px 8px',
+                                      borderRadius: '4px',
+                                      fontSize: '12px',
+                                      // 需求3：选中态使用主题紫色 `#6F2BDC` 和浅紫色背景 `#F5EEFF`
+                                      color: isSpaceTaskActive ? '#6F2BDC' : isTaskHovered ? '#6F2BDC' : '#64748b',
+                                      background: isSpaceTaskActive ? '#F5EEFF' : isTaskHovered ? 'rgba(111, 43, 220, 0.06)' : 'transparent',
+                                      fontWeight: isSpaceTaskActive ? 600 : 500,
+                                      transition: 'all 0.2s ease',
+                                    }}
+                                  >
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: '8px' }}>
+                                      {task.title}
+                                    </span>
+                                    {/* 采用固定宽高的右侧容器包裹，放置 Tag 与删除图标，防止 hover 时组件宽度变化引起二次 trigger 抖动 */}
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0, minWidth: '48px', height: '20px' }}>
+                                      {isTaskHovered ? (
+                                        <DeleteOutlined
+                                          style={{
+                                            color: '#ef4444',
+                                            cursor: 'pointer',
+                                            fontSize: '13px',
+                                            padding: '2px 4px',
+                                          }}
+                                          onClick={(e) => {
+                                            e.preventDefault()
+                                            e.stopPropagation()
+                                            handleDeleteTask(task)
+                                          }}
+                                        />
+                                      ) : (
+                                        getStatusTag(task.status)
+                                      )}
+                                    </div>
+                                  </NavLink>
+                                )
+                              })}
                               {!wsTasksList.length && (
                                 <div style={{ fontSize: '11px', color: '#94a3b8', padding: '4px 8px' }}>无任务</div>
                               )}
@@ -755,10 +802,10 @@ export default function Sidebar() {
                   transition: 'background 0.2s',
                 }}
               >
-                <Avatar size={32} icon={<SettingOutlined />} style={{ backgroundColor: '#0f172a', color: '#ffffff' }} />
+                {/* 底部设置 Avatar 使用主题紫色 */}
+                <Avatar size={32} icon={<SettingOutlined />} style={{ backgroundColor: '#6F2BDC', color: '#ffffff' }} />
                 {!collapsed && (
                   <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flex: 1 }}>
-                    {/* 侧边栏左下角点击弹出菜单，包含系统设置和检查更新 */}
                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       设置
                     </span>
@@ -770,7 +817,7 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* Global Search Modal */}
+      {/* 全局搜索弹窗 */}
       <Modal
         open={showSearchModal}
         onCancel={() => setShowSearchModal(false)}
@@ -832,7 +879,7 @@ export default function Sidebar() {
         </div>
       </Modal>
 
-      {/* Global Settings Modal with Dual-column mockup layout */}
+      {/* 系统设置 Modal */}
       <Modal
         open={showSettingsModal}
         onCancel={() => setShowSettingsModal(false)}
@@ -842,7 +889,7 @@ export default function Sidebar() {
         style={{ top: '60px' }}
       >
         <div style={{ display: 'flex', height: '560px', borderRadius: '12px', overflow: 'hidden' }}>
-          {/* Left Menu Sidebar */}
+          {/* 左侧菜单 */}
           <div style={{
             width: '200px',
             background: '#f8fafc',
@@ -873,8 +920,8 @@ export default function Sidebar() {
                     borderRadius: '8px',
                     fontSize: '13px',
                     fontWeight: active ? 600 : 500,
-                    color: active ? '#0f172a' : '#64748b',
-                    background: active ? '#f1f5f9' : 'transparent',
+                    color: active ? '#6F2BDC' : '#64748b',
+                    background: active ? '#F5EEFF' : 'transparent',
                     cursor: 'pointer',
                     transition: 'all 0.2s',
                   }}
@@ -886,15 +933,14 @@ export default function Sidebar() {
             })}
           </div>
 
-          {/* Right Content Panel */}
+          {/* 右侧面板 */}
           <div style={{ flex: 1, padding: '32px', display: 'flex', flexDirection: 'column', overflowY: 'auto', background: '#ffffff' }}>
             {activeSettingsTab === 'account' && (
               <div>
                 <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#0f172a', marginBottom: '24px' }}>账户管理</h2>
                 <Card style={{ borderRadius: '12px', background: '#f8fafc', border: '1px solid #e2e8f0' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                    {/* 本地账户信息显示区块 */}
-                    <Avatar size={64} icon={<UserOutlined />} style={{ backgroundColor: '#0f172a' }} />
+                    <Avatar size={64} icon={<UserOutlined />} style={{ backgroundColor: '#6F2BDC' }} />
                     <div>
                       <div style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>本地用户</div>
                       <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>本地工作台运行状态：正常</div>
@@ -1058,7 +1104,7 @@ export default function Sidebar() {
                         onChange={e => setNewModelKey(e.target.value)}
                       />
                     </div>
-                    <Button type="primary" onClick={handleAddCustomModel} style={{ background: '#0f172a', fontWeight: 600, marginTop: '8px' }}>
+                    <Button type="primary" onClick={handleAddCustomModel} style={{ background: '#6F2BDC', fontWeight: 600, marginTop: '8px' }}>
                       保存自定义模型
                     </Button>
                   </Space>
@@ -1112,7 +1158,7 @@ export default function Sidebar() {
                     </Space>
                   </Card>
 
-                  <Button type="primary" onClick={handleSaveAssistantConfig} style={{ background: '#0f172a', fontWeight: 600, width: 'fit-content' }}>
+                  <Button type="primary" onClick={handleSaveAssistantConfig} style={{ background: '#6F2BDC', fontWeight: 600, width: 'fit-content' }}>
                     保存全局参数
                   </Button>
                 </div>

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import type { Message } from '../../../shared/types.js'
 import { useAppStore } from '../../stores/app-store.js'
+import { getStreamingEntriesForTask } from '../../stores/task-runtime-view.js'
 import { useTaskDetail } from './TaskDetailContext.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 
@@ -246,7 +247,12 @@ function CollapsibleToolMessage({ message }: { message: Message }) {
     }
 
     if (payload.result) {
-      resultText = typeof payload.result === 'string' ? payload.result : JSON.stringify(payload.result, null, 2)
+      const result = payload.result as { text?: unknown }
+      resultText = typeof payload.result === 'string'
+        ? payload.result
+        : typeof result.text === 'string'
+          ? result.text
+          : JSON.stringify(payload.result, null, 2)
     }
   }
 
@@ -584,7 +590,7 @@ const MessageItem = memo(function MessageItem({
   }
 
   const subagentName = typeof message.metadata?.subagentName === 'string' ? message.metadata.subagentName : undefined
-  const expertName = String(message.metadata?.expertTeamName ?? message.metadata?.expertName ?? 'AnyBuddy')
+  const expertName = String(message.metadata?.expertTeamName ?? message.metadata?.expertName ?? 'CulClaw')
   const senderTitle = isUser
     ? '用户'
     : isAssistant
@@ -604,7 +610,7 @@ const MessageItem = memo(function MessageItem({
         style={{
           maxWidth: '85%',
           padding: '12px 16px',
-          background: isUser ? '#0f172a' : isTool ? '#1e293b' : '#ffffff',
+          background: isUser ? '#6F2BDC' : isTool ? '#1e293b' : '#ffffff',
           color: isUser ? '#ffffff' : isTool ? '#38bdf8' : '#334155',
           boxShadow: '0 2px 8px rgba(0,0,0,0.02)',
           border: isUser ? 'none' : isStreamingAssistant ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
@@ -660,31 +666,26 @@ const MessageItem = memo(function MessageItem({
  * 流式消息独立渲染通道组件
  */
 const StreamingMessageList = memo(function StreamingMessageList() {
-  const { activeExpert, activeExpertTeam, scrollContainerRef, shouldAutoScrollRef } = useTaskDetail()
+  const { taskId, activeExpert, activeExpertTeam, scrollContainerRef, shouldAutoScrollRef } = useTaskDetail()
 
   const streamingDataKey = useAppStore((state) => {
-    const ids = Object.values(state.streamingMessageIdsByRun).flat()
-    let key = String(ids.length)
-    for (const id of ids) {
-      const c = state.streamingContentByMessageId[id]
-      if (c !== undefined) key += `${id}:${c.length};`
-    }
-    return key
+    return getStreamingEntriesForTask(
+      state.streamingContentByMessageId,
+      state.streamingMessageIdsByRun,
+      state.agentRuns,
+      taskId,
+    ).map(entry => `${entry.id}:${entry.content.length}`).join(';')
   })
 
   const streamingEntries = useMemo(() => {
     const state = useAppStore.getState()
-    const result: Array<{ id: string; runId: string; content: string }> = []
-    for (const runId of Object.keys(state.streamingMessageIdsByRun)) {
-      for (const id of state.streamingMessageIdsByRun[runId] ?? []) {
-        const content = state.streamingContentByMessageId[id]
-        if (content !== undefined) {
-          result.push({ id, runId, content })
-        }
-      }
-    }
-    return result
-  }, [streamingDataKey])
+    return getStreamingEntriesForTask(
+      state.streamingContentByMessageId,
+      state.streamingMessageIdsByRun,
+      state.agentRuns,
+      taskId,
+    )
+  }, [streamingDataKey, taskId])
 
   useEffect(() => {
     if (streamingEntries.length === 0) return
@@ -707,7 +708,7 @@ const StreamingMessageList = memo(function StreamingMessageList() {
           key={entry.id}
           message={{
             id: entry.id,
-            taskId: '',
+            taskId: entry.taskId,
             runId: entry.runId,
             role: 'assistant',
             content: entry.content,
@@ -824,7 +825,7 @@ export default function TaskDetailMessageList() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             <span style={{ fontSize: '12px', fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {activeExpertTeam?.name ?? activeExpert?.name ?? 'AnyBuddy'} 正在执行中
+              {activeExpertTeam?.name ?? activeExpert?.name ?? 'CulClaw'} 正在执行中
             </span>
             <span style={{ fontSize: '11px', color: '#64748b' }}>
               {(() => {

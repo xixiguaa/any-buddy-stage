@@ -1,9 +1,9 @@
-import type { AnybuddyApi } from '../../shared/ipc.js'
+import type { CulclawApi } from '../../shared/ipc.js'
 
 class TaskClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
-  list(filter?: Parameters<AnybuddyApi['task']['list']>[0]) {
+  list(filter?: Parameters<CulclawApi['task']['list']>[0]) {
     return this.api.task.list(filter)
   }
 
@@ -11,11 +11,11 @@ class TaskClient {
     return this.api.task.get(taskId)
   }
 
-  create(input: Parameters<AnybuddyApi['task']['create']>[0]) {
+  create(input: Parameters<CulclawApi['task']['create']>[0]) {
     return this.api.task.create(input)
   }
 
-  update(taskId: string, input: Parameters<AnybuddyApi['task']['update']>[1]) {
+  update(taskId: string, input: Parameters<CulclawApi['task']['update']>[1]) {
     return this.api.task.update(taskId, input)
   }
 
@@ -49,13 +49,13 @@ class TaskClient {
 }
 
 class DraftClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   get(taskId: string) {
     return this.api.draft.get(taskId)
   }
 
-  save(taskId: string, input: Parameters<AnybuddyApi['draft']['save']>[1]) {
+  save(taskId: string, input: Parameters<CulclawApi['draft']['save']>[1]) {
     return this.api.draft.save(taskId, input)
   }
 
@@ -65,25 +65,25 @@ class DraftClient {
 }
 
 class MessageClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   list(taskId: string) {
     return this.api.message.list(taskId)
   }
 
-  create(taskId: string, input: Parameters<AnybuddyApi['message']['create']>[1]) {
+  create(taskId: string, input: Parameters<CulclawApi['message']['create']>[1]) {
     return this.api.message.create(taskId, input)
   }
 }
 
 class WorkspaceClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   list() {
     return this.api.workspace.list()
   }
 
-  createFromPath(input: Parameters<AnybuddyApi['workspace']['createFromPath']>[0]) {
+  createFromPath(input: Parameters<CulclawApi['workspace']['createFromPath']>[0]) {
     return this.api.workspace.createFromPath(input)
   }
 
@@ -99,7 +99,7 @@ class WorkspaceClient {
     return this.api.workspace.openFolder(workspaceId)
   }
 
-  listTasks(workspaceId: string, filter?: Parameters<AnybuddyApi['workspace']['listTasks']>[1]) {
+  listTasks(workspaceId: string, filter?: Parameters<CulclawApi['workspace']['listTasks']>[1]) {
     return this.api.workspace.listTasks(workspaceId, filter)
   }
 
@@ -117,25 +117,25 @@ class WorkspaceClient {
 }
 
 class SettingsClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   get() {
     return this.api.settings.get()
   }
 
-  update(input: Parameters<AnybuddyApi['settings']['update']>[0]) {
+  update(input: Parameters<CulclawApi['settings']['update']>[0]) {
     return this.api.settings.update(input)
   }
 }
 
 class ExpertClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   list() {
     return this.api.expert.list()
   }
 
-  create(input: Parameters<AnybuddyApi['expert']['create']>[0]) {
+  create(input: Parameters<CulclawApi['expert']['create']>[0]) {
     return this.api.expert.create(input)
   }
 
@@ -145,7 +145,7 @@ class ExpertClient {
 }
 
 class ExpertTeamClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   list() {
     return this.api.expertTeam.list()
@@ -153,7 +153,7 @@ class ExpertTeamClient {
 }
 
 class AgentRunClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   listActive() {
     return this.api.agentRun.listActive()
@@ -175,7 +175,7 @@ class AgentRunClient {
     return this.api.agentRun.get(runId)
   }
 
-  start(taskId: string, input?: Parameters<AnybuddyApi['agentRun']['start']>[1]) {
+  start(taskId: string, input?: Parameters<CulclawApi['agentRun']['start']>[1]) {
     return this.api.agentRun.start(taskId, input)
   }
 
@@ -199,17 +199,17 @@ class AgentRunClient {
     return this.api.agentRun.clearByTask(taskId)
   }
 
-  subscribeActive(listener: Parameters<AnybuddyApi['agentRun']['subscribeActive']>[0]) {
+  subscribeActive(listener: Parameters<CulclawApi['agentRun']['subscribeActive']>[0]) {
     return this.api.agentRun.subscribeActive(listener)
   }
 
-  subscribeTask(taskId: string, listener: Parameters<AnybuddyApi['agentRun']['subscribeTask']>[1]) {
+  subscribeTask(taskId: string, listener: Parameters<CulclawApi['agentRun']['subscribeTask']>[1]) {
     return this.api.agentRun.subscribeTask(taskId, listener)
   }
 }
 
 class ConfigClient {
-  constructor(private readonly api: AnybuddyApi) {}
+  constructor(private readonly api: CulclawApi) {}
 
   readModels() {
     return this.api.config.readModels()
@@ -231,12 +231,12 @@ class ConfigClient {
     return this.api.config.listSkills()
   }
 
-  importSkill(input?: Parameters<AnybuddyApi['config']['importSkill']>[0]) {
+  importSkill(input?: Parameters<CulclawApi['config']['importSkill']>[0]) {
     return this.api.config.importSkill(input)
   }
 }
 
-export type AnybuddyClients = {
+export type CulclawClients = {
   task: TaskClient
   draft: DraftClient
   message: MessageClient
@@ -248,7 +248,9 @@ export type AnybuddyClients = {
   config: ConfigClient
 }
 
-export function createAnybuddyClients(api: AnybuddyApi): AnybuddyClients {
+export type AnybuddyClients = CulclawClients
+
+export function createCulclawClients(api: CulclawApi): CulclawClients {
   return {
     task: new TaskClient(api),
     draft: new DraftClient(api),
@@ -261,3 +263,8 @@ export function createAnybuddyClients(api: AnybuddyApi): AnybuddyClients {
     config: new ConfigClient(api),
   }
 }
+
+/**
+ * 兼容性导出的别名，推荐统一使用 createCulclawClients
+ */
+export const createAnybuddyClients = createCulclawClients

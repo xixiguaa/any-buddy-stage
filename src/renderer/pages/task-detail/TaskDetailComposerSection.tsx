@@ -1,4 +1,5 @@
-import { createAnybuddyClients } from '../../api/clients.js'
+import { createCulclawClients } from '../../api/clients.js'
+import { rendererApi } from '../../api/bridge.js'
 import TaskComposer from '../../components/TaskComposer.js'
 import { useTaskDetail } from './TaskDetailContext.js'
 
@@ -7,7 +8,7 @@ import { useTaskDetail } from './TaskDetailContext.js'
  * 包裹 TaskComposer 并处理草稿保存、发送消息及更新 Task 配置
  */
 export default function TaskDetailComposerSection() {
-  const { taskId, task, workspaces, drafts, saveDraft, clearDraft, sendMessage, selectTask } = useTaskDetail()
+  const { taskId, task, workspaces, drafts, currentRun, isAgentWorking, saveDraft, clearDraft, sendMessage, selectTask } = useTaskDetail()
 
   // 路由切换期间不使用上一任务的数据初始化当前编辑器。
   if (!task || !taskId || task.id !== taskId) return null
@@ -25,6 +26,17 @@ export default function TaskDetailComposerSection() {
         hideTitle={true}
         hideWorkspacePicker={true}
         buttonLabel="发送"
+        isResponding={isAgentWorking}
+        onStop={async () => {
+          if (!currentRun) return
+          // 使用 Culclaw API 取消 Agent 运行
+          const clients = createCulclawClients(rendererApi)
+          const result = await clients.agentRun.cancel(currentRun.id)
+          if (!result.ok) {
+            throw new Error(result.error.message)
+          }
+          await selectTask(taskId)
+        }}
         onDraftChange={(draft) => {
           void saveDraft(taskId, {
             content: draft.content,
@@ -38,7 +50,8 @@ export default function TaskDetailComposerSection() {
         }}
         onClearDraft={() => clearDraft(taskId)}
         onSend={async (content, options) => {
-          const clients = createAnybuddyClients(window.anybuddy)
+          // 使用 Culclaw API 更新任务设置
+          const clients = createCulclawClients(rendererApi)
           const updateResult = await clients.task.update(taskId, {
             mode: options.mode,
             modelId: options.modelId,

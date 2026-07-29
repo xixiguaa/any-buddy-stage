@@ -14,7 +14,8 @@ import type {
   WorkspaceSummary,
   WorkspaceArtifact,
 } from '../../../shared/types.js'
-import { createAnybuddyClients } from '../../api/clients.js'
+import { createCulclawClients } from '../../api/clients.js'
+import { rendererApi } from '../../api/bridge.js'
 import { useAppStore } from '../../stores/app-store.js'
 
 /**
@@ -228,7 +229,13 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     return workspaces.find((workspace) => workspace.id === task.primaryWorkspaceId)
   }, [task?.primaryWorkspaceId, workspaces])
 
-  const currentRun = agentRuns[0]
+  // 当前任务状态以 lastRunId 为准，不能因为历史 Run 的补丁到达顺序而选错运行实例。
+  const currentRun = useMemo(
+    () => task?.lastRunId
+      ? agentRuns.find(run => run.id === task.lastRunId)
+      : agentRuns[0],
+    [agentRuns, task?.lastRunId],
+  )
   const activeExpert = useMemo(() => experts.find((expert) => expert.id === task?.activeExpertId), [experts, task?.activeExpertId])
   const activeExpertTeam = useMemo(
     () => expertTeams.find((team) => team.id === task?.activeExpertTeamId),
@@ -265,7 +272,8 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
       okType: 'danger',
       cancelText: '取消',
       onOk: async () => {
-        const clients = createAnybuddyClients(window.anybuddy)
+        // 使用 Culclaw API 清除运行记录
+        const clients = createCulclawClients(rendererApi)
         const result = await clients.agentRun.clearByTask(taskId ?? '')
         if (result.ok) {
           await selectTask(taskId ?? '')
@@ -293,7 +301,8 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
   const handleSwitchExpert = async (expert: ExpertPreset) => {
     if (!taskId) return
     if (expert.id === task?.activeExpertId) return
-    const clients = createAnybuddyClients(window.anybuddy)
+    // 使用 Culclaw API 切换 Expert
+    const clients = createCulclawClients(rendererApi)
     const updateResult = await clients.task.update(taskId, {
       activeExpertId: expert.id,
       expertIds: task?.expertIds.includes(expert.id) ? task.expertIds : [...(task?.expertIds ?? []), expert.id],
@@ -318,7 +327,8 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
 
   const handleApprovePlan = async (approvalId: string) => {
     if (!taskId) return
-    const clients = createAnybuddyClients(window.anybuddy)
+    // 使用 Culclaw API 审批 Execution Plan
+    const clients = createCulclawClients(rendererApi)
     const approval = taskApprovals.find((item) => item.id === approvalId)
     const approvedPlan = approval ? getPlanApprovalText(approval) : ''
     const approvalResult = await clients.agentRun.approve(approvalId, 'approved')
@@ -398,7 +408,7 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     if (!taskId) return []
     setIsScanningArtifacts(true)
     try {
-      const res = await window.anybuddy.workspace.scanArtifacts(taskId)
+      const res = await rendererApi.workspace.scanArtifacts(taskId)
       if (res.ok) {
         setArtifacts(res.data)
         return res.data

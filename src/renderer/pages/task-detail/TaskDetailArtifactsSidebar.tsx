@@ -23,6 +23,7 @@ import {
   Video,
 } from 'lucide-react'
 import type { WorkspaceArtifact } from '../../../shared/types.js'
+import { rendererApi } from '../../api/bridge.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 import { useTaskDetail } from './TaskDetailContext.js'
 
@@ -83,7 +84,7 @@ function DocxPreviewer({ file }: { file: WorkspaceArtifact }) {
 
     async function loadDocx() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (!res.ok) {
           throw new Error(res.error.message)
         }
@@ -161,7 +162,7 @@ function XlsxPreviewer({ file }: { file: WorkspaceArtifact }) {
 
     async function loadXlsx() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (!res.ok) {
           throw new Error(res.error.message)
         }
@@ -287,7 +288,7 @@ function PdfPreviewer({ file }: { file: WorkspaceArtifact }) {
 
     async function loadPdfDocument() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (!res.ok) {
           throw new Error(res.error.message)
         }
@@ -523,7 +524,7 @@ function MarkdownPreviewer({ file }: { file: WorkspaceArtifact }) {
     let active = true
     async function loadText() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'utf8')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'utf8')
         if (res.ok && active) {
           setText(res.data)
         }
@@ -568,7 +569,7 @@ function ImagePreviewer({ file }: { file: WorkspaceArtifact }) {
     let active = true
     async function loadImage() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (res.ok && active) {
           const mime = file.extension === 'svg' ? 'image/svg+xml' : `image/${file.extension}`
           setImgUrl(`data:${mime};base64,${res.data}`)
@@ -624,7 +625,7 @@ function AudioPreviewer({ file }: { file: WorkspaceArtifact }) {
     let active = true
     async function loadAudio() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (res.ok && active) {
           const ext = file.extension.toLowerCase()
           const mime = ext === 'wav' ? 'audio/wav' : ext === 'mp3' ? 'audio/mpeg' : `audio/${ext}`
@@ -736,7 +737,7 @@ function VideoPreviewer({ file }: { file: WorkspaceArtifact }) {
     let active = true
     async function loadVideo() {
       try {
-        const res = await window.anybuddy.workspace.readFile(file.absolutePath, 'base64')
+        const res = await rendererApi.workspace.readFile(file.absolutePath, 'base64')
         if (res.ok && active) {
           const ext = file.extension.toLowerCase()
           const mime = ext === 'mp4' ? 'video/mp4' : ext === 'webm' ? 'video/webm' : `video/${ext}`

@@ -17,9 +17,11 @@ import type {
   TaskWorkspaceContext,
   WorkspaceSummary,
 } from '../../shared/types.js'
-import { createAnybuddyClients } from '../api/clients.js'
-import { useAnybuddyClients } from '../api/context.js'
+import { createCulclawClients } from '../api/clients.js'
+import { rendererApi } from '../api/bridge.js'
+import { useCulclawClients } from '../api/context.js'
 import { buildVisibleMessages, isPersistedFinalAssistantMessage } from './runtime-message-view.js'
+import { mergeTaskSummary } from './task-runtime-view.js'
 
 function sanitizeModelConfigs(models: ModelConfig[]) {
   return models.filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
@@ -89,10 +91,14 @@ type AppStoreState = {
 
 let bootstrapSubscription: (() => void) | null = null
 let selectedTaskSubscription: (() => void) | null = null
+let selectedTaskSubscriptionTaskId: string | null = null
+let selectedTaskSubscriptionVersion = 0
+let selectedTaskRequestVersion = 0
 let selectedTaskPatchRaf: number | null = null
 let selectedTaskPatchQueue: TaskRuntimePayload[] = []
 let selectedTaskPatchTaskId: string | null = null
-const RECENT_EXPERTS_STORAGE_KEY = 'anybuddy.recentExperts'
+let selectedTaskPatchSubscriptionVersion = 0
+const RECENT_EXPERTS_STORAGE_KEY = 'culclaw.recentExperts'
 const RECENT_EXPERTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000
 const STREAM_BATCH_FALLBACK_MS = 80
 
@@ -223,56 +229,54 @@ function removeStreamingRun(
 }
 
 /**
- * 单条更新 task summary：run 状态变化时使用，不触发 IPC、不拉全量。
- * AgentRunStatus 与 TaskStatus 字面量完全重叠，可直接 cast。
+ * 根据已持久化消息和运行时事件恢复当前任务仍未落库替换的流式内容。
  */
-function mergeTaskSummary(tasks: TaskSummary[], taskId: string, run: AgentRun): TaskSummary[] {
-  const idx = tasks.findIndex(t => t.id === taskId)
-  if (idx === -1) return tasks
-  const old = tasks[idx]
-  return [
-    ...tasks.slice(0, idx),
-    {
-      ...old,
-      status: run.status as TaskSummary['status'],
-      updatedAt: run.updatedAt,
-    },
-    ...tasks.slice(idx + 1),
-  ]
+function buildStreamingState(messages: Message[], events: AgentEvent[]) {
+  const streamingContentByMessageId: Record<string, string> = {}
+  const streamingMessageIdsByRun: Record<string, string[]> = {}
+
+  for (const event of events) {
+    if (!isStreamingAgentMessageEvent(event) || hasPersistedStreamReplacement(messages, event.id)) {
+      continue
+    }
+    const content = event.payload.content
+    if (typeof content !== 'string' || content.length === 0) {
+      continue
+    }
+    streamingContentByMessageId[event.id] = content
+    const existingIds = streamingMessageIdsByRun[event.runId] ?? []
+    if (!existingIds.includes(event.id)) {
+      streamingMessageIdsByRun[event.runId] = [...existingIds, event.id]
+    }
+  }
+
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !message.metadata?.streaming || !message.runId) {
+      continue
+    }
+    streamingContentByMessageId[message.id] = message.content
+    const existingIds = streamingMessageIdsByRun[message.runId] ?? []
+    if (!existingIds.includes(message.id)) {
+      streamingMessageIdsByRun[message.runId] = [...existingIds, message.id]
+    }
+  }
+
+  return { streamingContentByMessageId, streamingMessageIdsByRun }
 }
 
 function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: TaskRuntimePayload) {
+  if (payload.taskId !== taskId) {
+    return state
+  }
+
   if (payload.kind === 'snapshot') {
     const messages = buildVisibleMessages(payload.messages, payload.events)
     const activeRun = payload.runs.find(run => run.id === state.taskDetail?.lastRunId) ?? payload.runs[0]
     // snapshot 通常是初始全量，同时从流式事件恢复仍未被持久化消息替换的临时态。
-    const streamingContentByMessageId: Record<string, string> = {}
-    const streamingMessageIdsByRun: Record<string, string[]> = {}
-
-    for (const event of payload.events) {
-      if (!isStreamingAgentMessageEvent(event) || hasPersistedStreamReplacement(payload.messages, event.id)) {
-        continue
-      }
-      const content = event.payload.content
-      if (typeof content !== 'string' || content.length === 0) {
-        continue
-      }
-      streamingContentByMessageId[event.id] = content
-      const existingIds = streamingMessageIdsByRun[event.runId] ?? []
-      if (!existingIds.includes(event.id)) {
-        streamingMessageIdsByRun[event.runId] = [...existingIds, event.id]
-      }
-    }
-
-    for (const message of payload.messages) {
-      if (message.role === 'assistant' && message.metadata?.streaming && message.runId) {
-        streamingContentByMessageId[message.id] = message.content
-        const existingIds = streamingMessageIdsByRun[message.runId] ?? []
-        if (!existingIds.includes(message.id)) {
-          streamingMessageIdsByRun[message.runId] = [...existingIds, message.id]
-        }
-      }
-    }
+    const { streamingContentByMessageId, streamingMessageIdsByRun } = buildStreamingState(
+      payload.messages,
+      payload.events,
+    )
     return {
       agentRuns: [
         ...state.agentRuns.filter(run => run.taskId !== taskId),
@@ -383,13 +387,13 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     ? buildVisibleMessages(persistedMessages, nextEvents)
     : state.messages
   const taskRuns = nextRuns.filter(run => run.taskId === taskId)
-  const activeRun = taskRuns.find(run => run.id === state.taskDetail?.lastRunId) ?? taskRuns[0]
+  const activeRun = state.taskDetail?.lastRunId
+    ? taskRuns.find(run => run.id === state.taskDetail?.lastRunId)
+    : taskRuns[0]
 
   let nextTasks = state.tasks
   if (payload.task) {
-    nextTasks = nextTasks.map(t => t.id === taskId ? { ...t, title: payload.task!.title } : t)
-  } else if (payload.run) {
-    nextTasks = mergeTaskSummary(nextTasks, taskId, payload.run)
+    nextTasks = mergeTaskSummary(nextTasks, payload.task)
   }
 
   let nextTaskDetail = state.taskDetail
@@ -417,6 +421,11 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
 }
 
 function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads: TaskRuntimePayload[]) {
+  const matchingPayloads = payloads.filter(payload => payload.taskId === taskId)
+  if (matchingPayloads.length === 0) {
+    return state
+  }
+
   let nextRuns = state.agentRuns
   let nextEvents = state.taskEvents
   let nextApprovals = state.taskApprovals
@@ -425,18 +434,14 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
   let nextStreamingIdsByRun = state.streamingMessageIdsByRun
   let taskDetail = state.taskDetail
   let nextTasks = state.tasks
-  let hasRunPatch = false
-  let latestRunPatch: AgentRun | null = null
   let hasVisibleMessageChange = false
 
-  for (const payload of payloads) {
+  for (const payload of matchingPayloads) {
     if (payload.kind === 'snapshot') {
       return mergeTaskRuntimePayload(state, taskId, payload)
     }
 
     if (payload.run) {
-      hasRunPatch = true
-      latestRunPatch = payload.run
       nextRuns = [
         ...nextRuns.filter(run => !(run.taskId === taskId && run.id === payload.run?.id)),
         payload.run,
@@ -512,13 +517,15 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
       if (taskDetail && taskDetail.id === taskId) {
         taskDetail = { ...taskDetail, ...payload.task }
       }
-      nextTasks = nextTasks.map(t => t.id === taskId ? { ...t, title: payload.task!.title } : t)
+      nextTasks = mergeTaskSummary(nextTasks, payload.task)
     }
   }
 
   const nextMessages = hasVisibleMessageChange ? buildVisibleMessages(persistedMessages, nextEvents) : state.messages
   const taskRuns = nextRuns.filter(run => run.taskId === taskId)
-  const activeRun = taskRuns.find(run => run.id === taskDetail?.lastRunId) ?? taskRuns[0]
+  const activeRun = taskDetail?.lastRunId
+    ? taskRuns.find(run => run.id === taskDetail?.lastRunId)
+    : taskRuns[0]
 
   if (taskDetail && taskDetail.id === taskId) {
     taskDetail = {
@@ -534,7 +541,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     taskEvents: nextEvents,
     taskApprovals: nextApprovals,
     messages: nextMessages,
-    tasks: hasRunPatch && latestRunPatch ? mergeTaskSummary(nextTasks, taskId, latestRunPatch) : nextTasks,
+    tasks: nextTasks,
     streamingContentByMessageId: nextStreamingContent,
     streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail,
@@ -544,6 +551,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
 function clearTaskRuntimePatchQueue() {
   selectedTaskPatchQueue = []
   selectedTaskPatchTaskId = null
+  selectedTaskPatchSubscriptionVersion = 0
   if (selectedTaskPatchRaf !== null) {
     if (typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
       window.cancelAnimationFrame(selectedTaskPatchRaf)
@@ -554,14 +562,30 @@ function clearTaskRuntimePatchQueue() {
   }
 }
 
-function enqueueTaskRuntimePayload(taskId: string, payload: TaskRuntimePayload, apply: (taskId: string, payloads: TaskRuntimePayload[]) => void) {
-  if (payload.kind === 'snapshot') {
-    clearTaskRuntimePatchQueue()
-    apply(taskId, [payload])
+function enqueueTaskRuntimePayload(
+  taskId: string,
+  subscriptionVersion: number,
+  payload: TaskRuntimePayload,
+  isCurrentSubscription: () => boolean,
+  apply: (taskId: string, payloads: TaskRuntimePayload[]) => void,
+) {
+  if (payload.taskId !== taskId || !isCurrentSubscription()) {
     return
   }
 
+  if (payload.kind === 'snapshot') {
+    clearTaskRuntimePatchQueue()
+    if (isCurrentSubscription()) {
+      apply(taskId, [payload])
+    }
+    return
+  }
+
+  if (selectedTaskPatchTaskId && selectedTaskPatchTaskId !== taskId) {
+    clearTaskRuntimePatchQueue()
+  }
   selectedTaskPatchTaskId = taskId
+  selectedTaskPatchSubscriptionVersion = subscriptionVersion
   selectedTaskPatchQueue.push(payload)
   if (selectedTaskPatchRaf !== null) {
     return
@@ -575,12 +599,20 @@ function enqueueTaskRuntimePayload(taskId: string, payload: TaskRuntimePayload, 
 
   selectedTaskPatchRaf = schedule(() => {
     const queuedTaskId = selectedTaskPatchTaskId
+    const queuedSubscriptionVersion = selectedTaskPatchSubscriptionVersion
     const queuedPayloads = selectedTaskPatchQueue
     selectedTaskPatchQueue = []
     selectedTaskPatchTaskId = null
+    selectedTaskPatchSubscriptionVersion = 0
     selectedTaskPatchRaf = null
 
-    if (queuedTaskId && queuedPayloads.length > 0) {
+    if (
+      queuedTaskId &&
+      queuedPayloads.length > 0 &&
+      queuedSubscriptionVersion === subscriptionVersion &&
+      queuedPayloads.every(queuedPayload => queuedPayload.taskId === queuedTaskId) &&
+      isCurrentSubscription()
+    ) {
       apply(queuedTaskId, queuedPayloads)
     }
   })
@@ -634,14 +666,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ recentExperts: [] })
   },
   async refreshTaskIndex() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.task.list()
     if (result.ok) {
       set({ tasks: result.data })
     }
   },
   async bootstrap() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const [tasksResult, workspacesResult, settingsResult, runsResult, runningTasksResult] = await Promise.all([
       clients.task.list(),
       clients.workspace.list(),
@@ -684,7 +716,31 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     ])
   },
   async selectTask(taskId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const requestVersion = ++selectedTaskRequestVersion
+    const isTaskSwitch = get().selectedTaskId !== taskId
+
+    // 切换路由时立即停止旧任务的订阅与暂态内容，不能等待多个 IPC 查询返回。
+    if (isTaskSwitch) {
+      if (selectedTaskSubscription) {
+        selectedTaskSubscription()
+      }
+      selectedTaskSubscription = null
+      selectedTaskSubscriptionTaskId = null
+      selectedTaskSubscriptionVersion += 1
+      clearTaskRuntimePatchQueue()
+      set({
+        selectedTaskId: taskId,
+        taskDetail: null,
+        taskWorkspaces: [],
+        messages: [],
+        taskEvents: [],
+        taskApprovals: [],
+        streamingContentByMessageId: {},
+        streamingMessageIdsByRun: {},
+      })
+    }
+
+    const clients = createCulclawClients(rendererApi)
     const [taskResult, taskWorkspacesResult, messagesResult, draftResult, runsResult, eventsResult, approvalsResult] = await Promise.all([
       clients.task.get(taskId),
       clients.task.listWorkspaces(taskId),
@@ -695,15 +751,46 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       clients.agentRun.listApprovals(taskId),
     ])
 
-    if (selectedTaskSubscription) {
+    // 快速切换任务时，旧请求的返回结果不允许回写到当前页面。
+    if (requestVersion !== selectedTaskRequestVersion || get().selectedTaskId !== taskId) {
+      return
+    }
+
+    if (selectedTaskSubscription && selectedTaskSubscriptionTaskId !== taskId) {
       selectedTaskSubscription()
+      selectedTaskSubscription = null
+      selectedTaskSubscriptionTaskId = null
+      selectedTaskSubscriptionVersion += 1
       clearTaskRuntimePatchQueue()
     }
-    selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
-      enqueueTaskRuntimePayload(taskId, payload, (queuedTaskId, payloads) => {
-        set(state => mergeTaskRuntimePayloads(state, queuedTaskId, payloads))
+
+    if (!selectedTaskSubscription) {
+      const subscriptionVersion = ++selectedTaskSubscriptionVersion
+      selectedTaskSubscriptionTaskId = taskId
+      const isCurrentSubscription = () => (
+        selectedTaskSubscriptionTaskId === taskId &&
+        selectedTaskSubscriptionVersion === subscriptionVersion &&
+        get().selectedTaskId === taskId
+      )
+      selectedTaskSubscription = clients.agentRun.subscribeTask(taskId, payload => {
+        enqueueTaskRuntimePayload(
+          taskId,
+          subscriptionVersion,
+          payload,
+          isCurrentSubscription,
+          (queuedTaskId, payloads) => {
+            if (!isCurrentSubscription()) {
+              return
+            }
+            set(state => mergeTaskRuntimePayloads(state, queuedTaskId, payloads))
+          },
+        )
       })
-    })
+    }
+
+    const restoredStreamingState = messagesResult.ok && eventsResult.ok
+      ? buildStreamingState(messagesResult.data, eventsResult.data)
+      : null
 
     set(state => ({
       selectedTaskId: taskId,
@@ -725,9 +812,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         : state.agentRuns,
       taskEvents: eventsResult.ok ? eventsResult.data : state.taskEvents,
       taskApprovals: approvalsResult.ok ? approvalsResult.data : state.taskApprovals,
+      streamingContentByMessageId: restoredStreamingState?.streamingContentByMessageId ?? state.streamingContentByMessageId,
+      streamingMessageIdsByRun: restoredStreamingState?.streamingMessageIdsByRun ?? state.streamingMessageIdsByRun,
     }))
     if (taskResult.ok && taskResult.data) {
       await clients.task.markRead(taskId)
+      if (requestVersion !== selectedTaskRequestVersion || get().selectedTaskId !== taskId) {
+        return
+      }
       set(state => ({
         taskDetail: state.taskDetail && state.taskDetail.id === taskId
           ? { ...state.taskDetail, unreadEventCount: 0 }
@@ -741,7 +833,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await get().selectTask(taskId)
   },
   async createTask(input: CreateTaskInput, initialMessage) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.task.create(input)
     if (!result.ok) {
       throw new Error(result.error.message)
@@ -769,7 +861,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     return task
   },
   async createWorkspace(input: CreateWorkspaceInput) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.workspace.createFromPath(input)
     if (!result.ok) {
       throw new Error(result.error.message)
@@ -782,7 +874,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     return undefined
   },
   async createWorkspaceFromFolderPicker() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const picked = await clients.workspace.pickFolder()
     if (!picked.ok || !picked.data) {
       return undefined
@@ -803,7 +895,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     })
   },
   async sendMessage(taskId: string, content: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.message.create(taskId, { content, role: 'user' })
     if (!result.ok) {
       throw new Error(result.error.message)
@@ -821,7 +913,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await get().refreshTaskIndex()
   },
   async loadDraft(taskId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.draft.get(taskId)
     set(state => {
       const drafts = { ...state.drafts }
@@ -847,7 +939,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       return
     }
 
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.draft.save(taskId, draft)
     if (result.ok) {
       set(state => ({
@@ -859,7 +951,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
   async clearDraft(taskId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     await clients.draft.clear(taskId)
     set(state => {
       const next = { ...state.drafts }
@@ -868,7 +960,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     })
   },
   async startRun(taskId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.agentRun.start(taskId, { agentName: 'Main Agent', kind: 'main' })
     if (!result.ok) {
       throw new Error(result.error.message)
@@ -876,28 +968,28 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await get().reloadTask(taskId)
   },
   async pauseRun(runId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.agentRun.pause(runId)
     if (!result.ok) {
       throw new Error(result.error.message)
     }
   },
   async resumeRun(runId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.agentRun.resume(runId)
     if (!result.ok) {
       throw new Error(result.error.message)
     }
   },
   async cancelRun(runId: string) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.agentRun.cancel(runId)
     if (!result.ok) {
       throw new Error(result.error.message)
     }
   },
   async approveTask(approvalId: string, decision: 'approved' | 'rejected' | 'edited', editedArgs?: Record<string, unknown>) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.agentRun.approve(approvalId, decision, editedArgs)
     if (!result.ok) {
       throw new Error(result.error.message)
@@ -916,7 +1008,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     await get().approveTask(interruptId, decision, editedArgs)
   },
   async updateSettings(patch: Partial<AppSettings>) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.settings.update(patch)
     if (result.ok) {
       set({ settings: result.data })
@@ -932,7 +1024,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set({ sidebarTimeRange: value })
   },
   async loadCustomModels() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.config.readModels()
     if (result.ok) {
       try {
@@ -944,21 +1036,21 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
   async loadExperts() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.expert.list()
     if (result.ok) {
       set({ experts: result.data })
     }
   },
   async loadExpertTeams() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.expertTeam.list()
     if (result.ok) {
       set({ expertTeams: result.data })
     }
   },
   async createExpert(input) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.expert.create(input)
     if (result.ok) {
       set(state => ({ experts: [...state.experts.filter(expert => expert.id !== result.data.id), result.data] }))
@@ -967,14 +1059,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     return undefined
   },
   async deleteExpert(expertId) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.expert.delete(expertId)
     if (result.ok) {
       set(state => ({ experts: state.experts.filter(expert => expert.id !== expertId) }))
     }
   },
   async deleteTask(taskId) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.task.delete(taskId)
     if (result.ok) {
       set(state => {
@@ -988,7 +1080,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
   async saveCustomModels(models) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const sanitized = sanitizeModelConfigs(models)
     const content = JSON.stringify(sanitized, null, 2)
     const result = await clients.config.writeModels(content)
@@ -997,14 +1089,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
   async loadMcpConfig() {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.config.readMcp()
     if (result.ok) {
       set({ mcpConfigRaw: result.data })
     }
   },
   async saveMcpConfig(content) {
-    const clients = createAnybuddyClients(window.anybuddy)
+    const clients = createCulclawClients(rendererApi)
     const result = await clients.config.writeMcp(content)
     if (result.ok) {
       set({ mcpConfigRaw: content })
@@ -1026,9 +1118,15 @@ function awaitSummary(task: Task, workspaces: WorkspaceSummary[]): TaskSummary {
   }
 }
 
-export function useAnybuddyBootstrap() {
+/**
+ * Culclaw 应用初始化 Hook
+ */
+export function useCulclawBootstrap() {
   const bootstrap = useAppStore(state => state.bootstrap)
   const initialized = useAppStore(state => state.initialized)
-  const clients = useAnybuddyClients()
+  const clients = useCulclawClients()
   return { bootstrap, initialized, clients }
 }
+
+// 兼容性导出别名
+export const useAnybuddyBootstrap = useCulclawBootstrap

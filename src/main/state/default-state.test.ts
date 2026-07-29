@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createDefaultSettings, createDefaultState } from './default-state.js';
+import { APP_NAME } from '../../shared/constants.js';
 
 test('createDefaultState returns one default workspace and one default task', () => {
   const state = createDefaultState();
@@ -20,7 +21,7 @@ test('createDefaultState returns one default workspace and one default task', ()
   const taskWorkspace = state.taskWorkspaces[0];
 
   assert.equal(workspace.name, '默认工作区');
-  assert.equal(task.title, '开始使用 AnyBuddy');
+  assert.equal(task.title, `开始使用 ${APP_NAME}`);
   assert.equal(task.modelId, '');
   assert.equal(task.primaryWorkspaceId, workspace.id);
   assert.equal(taskWorkspace.workspaceId, workspace.id);

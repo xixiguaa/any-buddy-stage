@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { createAnybuddyClients } from '../api/clients.js'
+import { createCulclawClients } from '../api/clients.js'
+import { rendererApi } from '../api/bridge.js'
 import { Input, Select, Button, Space, Divider, Checkbox, Tooltip, Modal, Tag } from 'antd'
 import {
   PlusOutlined,
@@ -15,12 +16,16 @@ import {
   CompassOutlined,
   TeamOutlined,
   ThunderboltOutlined,
+  EditOutlined,
 } from '@ant-design/icons'
 import type { CreateTaskInput, ExpertPreset, ModelApiMode, ModelConfig, TaskDraft, WorkspaceSummary } from '../../shared/types.js'
+import { DEFAULT_WORKSPACE_LABEL } from '../../shared/constants.js'
 import { useAppStore } from '../stores/app-store.js'
 import { useNavigate } from 'react-router-dom'
 /* 引入手写的丝滑 Popover 全局弹出层组件 */
 import CustomPopover from './Popover.js'
+/* 引入 TaskComposer 模块独立样式 */
+import './TaskComposer.scss'
 
 // Custom icons matching the user's screenshot
 const CraftIcon = () => (
@@ -122,7 +127,9 @@ export default function TaskComposer({
   onPickWorkspace,
   hideWorkspacePicker = false,
   hideTitle = false,
-  buttonLabel
+  buttonLabel,
+  isResponding = false,
+  onStop,
 }: {
   workspaces: WorkspaceSummary[]
   onCreate?: (input: CreateTaskInput, initialMessage: string) => Promise<void>
@@ -149,6 +156,8 @@ export default function TaskComposer({
   hideWorkspacePicker?: boolean
   hideTitle?: boolean
   buttonLabel?: string
+  isResponding?: boolean
+  onStop?: () => Promise<void> | void
 }) {
   const navigate = useNavigate()
   const workspaceOptions = useMemo(() => workspaces.filter(workspace => !workspace.isArchived), [workspaces])
@@ -180,6 +189,29 @@ export default function TaskComposer({
   }
   const [permissionMode, setPermissionMode] = useState<'read_write' | 'full_access'>(() => normalizePermissionMode(defaultPermissionMode))
   const [busy, setBusy] = useState(false)
+
+  const hasAppliedInspirationRef = useRef(false)
+
+  // 自动检测并载入灵感广场的“创作同款” Prompt
+  useEffect(() => {
+    const raw = sessionStorage.getItem('cclaw-inspiration-create-same-prompt')
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (parsed.prompt) {
+          setMessage(parsed.prompt)
+          if (parsed.title) {
+            setTitle(parsed.title)
+          }
+          hasAppliedInspirationRef.current = true
+          /* 消费灵感提示词后清理 key */
+          sessionStorage.removeItem('cclaw-inspiration-create-same-prompt')
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [])
 
   // Popover visible states
   const [showModePopover, setShowModePopover] = useState(false)
@@ -237,12 +269,12 @@ export default function TaskComposer({
     }
   }, [scheduleCloseModeAndExpertPopovers, showModePopover, showRecentExperts])
 
-  // Import custom skills locally - removed, now loaded from local .agents/skills directory
-  // Load local skills from .agents/skills directory via IPC
+  // 从本地 .agents/skills 目录加载技能列表
   const [localSkills, setLocalSkills] = useState<string[]>([])
   const [skillsLoaded, setSkillsLoaded] = useState(false)
   useEffect(() => {
-    const clients = createAnybuddyClients(window.anybuddy)
+    // 使用 Culclaw API 客户端获取技能
+    const clients = createCulclawClients(rendererApi)
     void clients.config.listSkills().then(result => {
       if (result.ok) {
         setLocalSkills(result.data)
@@ -360,7 +392,10 @@ export default function TaskComposer({
       return
     }
 
-    setMessage(draft.content)
+    /* 若本次初始化已充填灵感 Prompt，避免被异步加载的旧草稿内容覆盖 */
+    if (!hasAppliedInspirationRef.current) {
+      setMessage(draft.content)
+    }
     if (draft.selectedMode) {
       setMode(draft.selectedMode)
     }
@@ -448,7 +483,23 @@ export default function TaskComposer({
     }
   }
 
+  async function handleStop() {
+    if (!onStop) return
+    setBusy(true)
+    try {
+      await onStop()
+    } catch (error) {
+      Modal.error({
+        title: '停止失败',
+        content: error instanceof Error ? error.message : '停止任务时发生未知错误。',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isResponding) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       void handleSubmit()
@@ -529,32 +580,13 @@ export default function TaskComposer({
   }
 
   const requestPermissionChange = (nextPermissionMode: typeof permissionMode) => {
-    if (nextPermissionMode === permissionMode) {
-      setShowPermissionPopover(false)
-      return
-    }
-
-    if (nextPermissionMode === 'full_access') {
-      setPermissionMode(nextPermissionMode)
-      setShowPermissionPopover(false)
-      return
-    }
-
-    Modal.confirm({
-      title: '确认开启读写权限？',
-      content: '读写权限允许 Agent 修改工作区文件。请确认当前任务需要写入能力。',
-      okText: '确认开启',
-      cancelText: '取消',
-      onOk: () => {
-        setPermissionMode(nextPermissionMode)
-        setShowPermissionPopover(false)
-      },
-    })
+    setPermissionMode(nextPermissionMode)
+    setShowPermissionPopover(false)
   }
 
   const currentWorkspaceName = useMemo(() => {
     const ws = workspaceOptions.find(w => w.id === workspaceId)
-    return ws ? ws.name : '自动新建 (AnyBuddy/日期文件夹)'
+    return ws ? ws.name : DEFAULT_WORKSPACE_LABEL
   }, [workspaceId, workspaceOptions])
 
   const filteredWorkspaceOptions = useMemo(() => {
@@ -563,29 +595,41 @@ export default function TaskComposer({
   }, [wsSearch, workspaceOptions])
 
   return (
-    <div style={{
-      border: '1px solid #e2e8f0',
-      borderRadius: '16px',
-      padding: '16px',
-      background: '#f8fafc',
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.04)',
+    /* 采用符合视觉设计的卡片容器样式 */
+    <div className="task-composer-card" style={{
+      border: '1.5px solid #e9d5ff',
+      borderRadius: '20px',
+      padding: '16px 20px',
+      background: '#ffffff',
+      boxShadow: '0 8px 30px rgba(111, 43, 220, 0.04)',
       display: 'flex',
       flexDirection: 'column',
       gap: '12px'
     }}>
-      {/* Title Row */}
+      {/* 优雅精致的对话标题输入栏 */}
       {!hideTitle && (
-        <div style={{ display: 'flex', alignItems: 'center', paddingBottom: '8px', borderBottom: '1px solid #f1f5f9' }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          paddingBottom: '8px',
+          borderBottom: '1px solid #f1f5f9'
+        }}>
           <Input
             variant="borderless"
-            placeholder="我想创作一个关于环保主题的短视频脚本，时长30秒左右，面向年轻人群，风格轻松幽默..."
+            prefix={<EditOutlined style={{ color: '#94a3b8', fontSize: 14, marginRight: 6 }} />}
+            placeholder="设置对话标题（可选）..."
             value={title}
             onChange={event => setTitle(event.target.value)}
+            allowClear
             style={{
               fontSize: '15px',
               fontWeight: 600,
-              color: '#1e293b',
-              padding: 0
+              color: '#0f172a',
+              padding: '6px 10px',
+              borderRadius: '8px',
+              backgroundColor: title ? '#ffffff' : 'transparent',
+              boxShadow: title ? '0 1px 2px rgba(0,0,0,0.04)' : 'none',
+              transition: 'all 0.2s ease'
             }}
           />
         </div>
@@ -609,7 +653,7 @@ export default function TaskComposer({
               onClose={() => {
                 setActiveExpertId(undefined)
               }}
-              color="blue"
+              color="purple"
               icon={<ThunderboltOutlined />}
               style={{ borderRadius: '12px', padding: '2px 10px', fontSize: '12px', fontWeight: 600, margin: 0 }}
             >
@@ -672,21 +716,16 @@ export default function TaskComposer({
         </div>
       )}
 
-      {/* Main Textarea Prompt Bar */}
+      {/* 主文本域输入栏，使用 task-composer-textarea 自定义类防止禁用时文字变黑和背景变灰 */}
       <Input.TextArea
-        rows={6}
+        rows={5}
         value={message}
+        disabled={busy}
         onChange={event => setMessage(event.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={onSend ? "描述后续步骤或要求 Agent 继续执行..." : "描述你想让 Agent 做什么。你可以包含工作区、约束或粗略的计划。直接回车将触发创建..."}
-        style={{
-          borderRadius: '8px',
-          border: '1px solid #e2e8f0',
-          background: '#ffffff',
-          padding: '12px',
-          fontSize: '14px',
-          color: '#334155'
-        }}
+        placeholder={onSend ? "描述后续步骤或要求 Agent 继续执行..." : "描述你的创作需求，例如：我想创作一个关于环保主题的短视频脚本，时长30秒左右，面向年轻人群，风格轻松幽默..."}
+        variant="borderless"
+        className="task-composer-textarea"
       />
 
       {/* Floating Option Pills & Actions Bar */}
@@ -1035,7 +1074,7 @@ export default function TaskComposer({
                       style={{ borderRadius: '4px' }}
                     />
                     <Input.Password
-                      placeholder="API Key 环境变量名 (如 OPENAI_API_KEY)"
+                      placeholder="API Key或者对应的环境变量名字"
                       value={newModelKey}
                       onChange={e => setNewModelKey(e.target.value)}
                       size="small"
@@ -1194,7 +1233,7 @@ export default function TaskComposer({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
                   {[
-                    { value: 'read_write', label: '✍️ 读写权限', desc: 'Agent 可以读写工作区文件，开启前需要确认。' },
+                    { value: 'read_write', label: '✍️ 默认权限', desc: 'Agent 使用 Node VFS 沙盒运行，运行完成后输出物才会写入工作区。' },
                     { value: 'full_access', label: '🔑 完全访问权限', desc: 'Agent 使用本地 Shell backend，可读写文件并直接执行命令。' }
                   ].map(opt => {
                     const isSelected = permissionMode === opt.value
@@ -1218,7 +1257,7 @@ export default function TaskComposer({
                         onMouseEnter={e => !isSelected && (e.currentTarget.style.background = '#f8fafc')}
                         onMouseLeave={e => !isSelected && (e.currentTarget.style.background = 'transparent')}
                       >
-                        <span style={{ fontSize: '12px', fontWeight: 600, color: isSelected ? '#0f172a' : '#334155' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 600, color: isSelected ? '#6F2BDC' : '#334155' }}>
                           {opt.label}
                         </span>
                         <span style={{ fontSize: '10px', color: '#94a3b8', lineHeight: '1.3' }}>{opt.desc}</span>
@@ -1232,23 +1271,37 @@ export default function TaskComposer({
             placement="topLeft"
           >
             <Button size="small" style={{ borderRadius: '6px', fontSize: '12px' }}>
-              🛡️ 权限: {permissionMode === 'full_access' ? '完全' : '读写'}
+              🛡️ 权限: {permissionMode === 'full_access' ? '完全访问' : '默认'}
             </Button>
           </CustomPopover>
         </Space>
 
-        {/* Right Action buttons */}
+        {/* 右侧发送/创建任务按钮，使用 task-composer-send-btn 类名，确保禁用状态下保持浅紫背景与紫色图标，不出现黑色文字/图标 */}
         <Space size={8}>
-          <Button
-            type="primary"
-            shape="round"
-            icon={<SendOutlined />}
-            onClick={handleSubmit}
-            disabled={busy || !message.trim()}
-            style={{ background: '#0f172a', fontWeight: 600, height: '32px', border: 'none' }}
-          >
-            {buttonLabel || (onSend ? '发送' : '创建任务')}
-          </Button>
+          {isResponding && onStop ? (
+            <Tooltip title="停止回答">
+              <Button
+                type="primary"
+                shape="circle"
+                icon={<span aria-hidden="true" style={{ display: 'block', width: '12px', height: '12px', background: '#ffffff' }} />}
+                onClick={() => void handleStop()}
+                disabled={busy}
+                aria-label="停止回答"
+                className="task-composer-send-btn"
+              />
+            </Tooltip>
+          ) : (
+            <Button
+              type="primary"
+              shape="round"
+              icon={<SendOutlined />}
+              onClick={handleSubmit}
+              disabled={busy || !message.trim()}
+              className="task-composer-send-btn"
+            >
+              {buttonLabel || (onSend ? '发送' : '创建任务')}
+            </Button>
+          )}
         </Space>
       </div>
 
@@ -1277,7 +1330,7 @@ export default function TaskComposer({
                   size="small"
                   style={{
                     textAlign: 'left',
-                    background: !workspaceId ? '#0f172a' : 'transparent',
+                    background: !workspaceId ? '#6F2BDC' : 'transparent',
                     color: !workspaceId ? '#ffffff' : '#334155',
                     borderRadius: '4px',
                   }}
@@ -1286,7 +1339,7 @@ export default function TaskComposer({
                     setShowWorkspacePicker(false)
                   }}
                 >
-                  ✨ 自动新建 (AnyBuddy/日期文件夹)
+                  ✨ {DEFAULT_WORKSPACE_LABEL}
                 </Button>
                 {filteredWorkspaceOptions.map(ws => (
                   <Button
@@ -1296,7 +1349,7 @@ export default function TaskComposer({
                     size="small"
                     style={{
                       textAlign: 'left',
-                      background: workspaceId === ws.id ? '#0f172a' : 'transparent',
+                      background: workspaceId === ws.id ? '#6F2BDC' : 'transparent',
                       color: workspaceId === ws.id ? '#ffffff' : '#334155',
                       borderRadius: '4px'
                     }}

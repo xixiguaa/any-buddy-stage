@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logProcessError } from '../runtime/error-logger.js'
@@ -11,7 +11,7 @@ export function createMainWindow() {
     minWidth: 1280,
     minHeight: 800,
     backgroundColor: '#f4f1eb',
-    title: 'anybuddy',
+    title: 'CulClaw',
     webPreferences: {
       preload: join(currentDir, 'preload.cjs'),
       contextIsolation: true,
@@ -19,6 +19,9 @@ export function createMainWindow() {
       sandbox: false,
     },
   })
+
+  /* 移除原生菜单栏（File / Edit / View / Window 那一行） */
+  Menu.setApplicationMenu(null)
 
   if (!app.isPackaged) {
     const devUrl = process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL ?? 'http://localhost:5173'

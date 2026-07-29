@@ -110,7 +110,7 @@ export const IPC_CHANNELS = {
   configImportSkill: 'config:import-skill',
 } as const
 
-export type AnybuddyApi = {
+export type CulclawApi = {
   task: {
     list(filter?: TaskFilter): Promise<IpcResult<TaskSummary[]>>
     get(taskId: string): Promise<IpcResult<Task | null>>
@@ -182,8 +182,14 @@ export type AnybuddyApi = {
   }
 }
 
+/* 兼容性类型别名 */
+export type AnybuddyApi = CulclawApi
+
 declare global {
   interface Window {
-    anybuddy: AnybuddyApi
+    culclaw?: CulclawApi
+    anybuddy?: AnybuddyApi
+    culclawApi?: CulclawApi
+    anybuddyApi?: AnybuddyApi
   }
 }

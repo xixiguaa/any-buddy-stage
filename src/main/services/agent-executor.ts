@@ -3,6 +3,8 @@ import type { RuntimeContext, ToolDefinition, ToolExecutionContext } from './age
 
 export type ExecuteAgentParams = {
   context: RuntimeContext
+  /** 用于停止当前 Agent Run 的取消信号。 */
+  signal?: AbortSignal
   systemPrompt: string
   activeExpert: ExpertPreset | null
   activeExpertTeam?: ExpertTeamPreset | null

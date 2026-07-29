@@ -5,7 +5,7 @@ import { getPlanApprovalText, getStatusLabelAndColor, useTaskDetail } from './Ta
 import { renderMarkdown } from '../../utils/markdown.js'
 
 function formatAccessMode(value: 'read_only' | 'read_write') {
-  return value === 'read_only' ? '只读' : '读写'
+  return value === 'read_only' ? '只读' : '默认'
 }
 
 function formatTimestamp(value?: string) {
@@ -76,8 +76,8 @@ export default function TaskDetailRuntimeSidebar() {
                 width: '8px',
                 height: '8px',
                 borderRadius: '50%',
-                backgroundColor: '#3b82f6',
-                boxShadow: '0 0 8px #3b82f6',
+                backgroundColor: '#6F2BDC',
+                boxShadow: '0 0 8px #6F2BDC',
                 animation: 'pulseGlow 1.5s infinite alternate',
               }}
             />
@@ -85,7 +85,7 @@ export default function TaskDetailRuntimeSidebar() {
         </div>
         <div style={{ fontSize: '12px', color: '#64748b', display: 'flex', alignItems: 'center', gap: '4px' }}>
           当前节点:{' '}
-          <Tag color="blue" style={{ margin: 0, fontSize: '10px', lineHeight: '1.4' }}>
+          <Tag color="purple" style={{ margin: 0, fontSize: '10px', lineHeight: '1.4' }}>
             {currentRun?.currentNode ?? 'idle'}
           </Tag>
         </div>
@@ -106,7 +106,7 @@ export default function TaskDetailRuntimeSidebar() {
               style={{
                 height: '100%',
                 width: '40%',
-                background: 'linear-gradient(90deg, #6366f1, #3b82f6)',
+                background: 'linear-gradient(90deg, #7C3AED, #6F2BDC)',
                 borderRadius: '1px',
                 animation: 'loadingBar 1.5s infinite ease-in-out',
               }}
@@ -161,7 +161,7 @@ export default function TaskDetailRuntimeSidebar() {
           <div>
             <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{activeExpertTeam?.name ?? activeExpert?.name ?? '通用助手'}</div>
             <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px', lineHeight: 1.6 }}>
-              {activeExpertTeam?.description ?? activeExpert?.description ?? '当前未指定专家，使用默认 AnyBuddy persona。'}
+              {activeExpertTeam?.description ?? activeExpert?.description ?? '当前未指定专家，使用默认 CulClaw persona。'}
             </div>
           </div>
           {availableExperts.length > 0 && (
@@ -174,7 +174,7 @@ export default function TaskDetailRuntimeSidebar() {
                     size="small"
                     type={isActive ? 'primary' : 'default'}
                     onClick={() => void handleSwitchExpert(expert)}
-                    style={isActive ? { background: '#0f172a', borderColor: '#0f172a' } : undefined}
+                    style={isActive ? { background: '#6F2BDC', borderColor: '#6F2BDC' } : undefined}
                   >
                     {expert.name}
                   </Button>
@@ -215,10 +215,10 @@ export default function TaskDetailRuntimeSidebar() {
         <div
           style={{
             background: '#ffffff',
-            border: '1px solid #bfdbfe',
+            border: '1px solid #d8b4fe',
             borderRadius: '16px',
             padding: '16px',
-            boxShadow: '0 6px 20px rgba(37, 99, 235, 0.06)',
+            boxShadow: '0 6px 20px rgba(111, 43, 220, 0.08)',
             display: 'flex',
             flexDirection: 'column',
             gap: '14px',
@@ -233,8 +233,8 @@ export default function TaskDetailRuntimeSidebar() {
                 width: '24px',
                 height: '24px',
                 borderRadius: '6px',
-                background: '#eff6ff',
-                color: '#2563eb',
+                background: '#F5EEFF',
+                color: '#6F2BDC',
               }}
             >
               <AlertCircle size={14} />
@@ -255,8 +255,8 @@ export default function TaskDetailRuntimeSidebar() {
                     overflowY: 'auto',
                     padding: '12px',
                     borderRadius: '10px',
-                    border: '1px solid #dbeafe',
-                    background: '#f8fbff',
+                    border: '1px solid #F5EEFF',
+                    background: '#FAF5FF',
                     color: '#334155',
                     fontSize: '12px',
                     lineHeight: 1.6,
@@ -272,8 +272,8 @@ export default function TaskDetailRuntimeSidebar() {
                     onClick={() => void handleApprovePlanWithFeedback(approval.id)}
                     style={{
                       flex: 1,
-                      background: '#0f172a',
-                      borderColor: '#0f172a',
+                      background: '#6F2BDC',
+                      borderColor: '#6F2BDC',
                       borderRadius: '8px',
                       fontWeight: 600,
                       display: 'flex',
@@ -348,6 +348,7 @@ export default function TaskDetailRuntimeSidebar() {
           </span>
           <div style={{ fontSize: '14px', fontWeight: 700, color: '#0f172a' }}>中断恢复</div>
         </div>
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {pendingInterrupts.map((interrupt) => (
             <div
@@ -380,174 +381,120 @@ export default function TaskDetailRuntimeSidebar() {
                 <span style={{ fontSize: '10px', color: '#b45309' }}>{formatTimestamp(interrupt.createdAt)}</span>
               </div>
 
-              <div
-                style={{
-                  fontSize: '12px',
-                  color: '#451a03',
-                  lineHeight: 1.6,
-                  padding: '8px 12px',
-                  background: 'rgba(251, 191, 36, 0.06)',
-                  borderRadius: '8px',
-                  borderLeft: '3px solid #fbbf24',
-                }}
-              >
+              <div style={{ fontSize: '12px', color: '#92400e', lineHeight: 1.5, background: 'rgba(251, 191, 36, 0.1)', padding: '8px 10px', borderRadius: '6px' }}>
                 {interrupt.reason}
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <div style={{ fontSize: '11px', color: '#92400e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <Terminal size={11} />
-                  恢复参数预览 (Args)
-                </div>
-                <pre
+              {typeof interrupt.originalArgs?.command === 'string' && (
+                <div
                   style={{
-                    background: '#0f172a',
-                    color: '#38bdf8',
-                    padding: '12px',
-                    borderRadius: '8px',
                     fontSize: '11px',
-                    overflowY: 'auto',
-                    overflowX: 'hidden',
-                    maxHeight: '140px',
-                    margin: 0,
-                    border: '1px solid #1e293b',
                     fontFamily: `'Fira Code', 'Consolas', monospace`,
-                    whiteSpace: 'pre-wrap',
-                    boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.15)',
+                    background: '#1e293b',
+                    color: '#f8fafc',
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    wordBreak: 'break-all',
                   }}
                 >
-                  {JSON.stringify(interrupt.originalArgs ?? {}, null, 2)}
-                </pre>
-              </div>
+                  <Terminal size={12} style={{ display: 'inline', marginRight: '6px', color: '#38bdf8' }} />
+                  {String(interrupt.originalArgs.command)}
+                </div>
+              )}
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
                 <Button
                   type="primary"
-                  size="middle"
-                  icon={<Play size={14} style={{ marginRight: '4px' }} />}
+                  size="small"
+                  icon={<Play size={12} />}
                   onClick={() => void resumeInterruptedRun(interrupt.id, 'resume')}
-                  style={{
-                    width: '100%',
-                    background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                    borderColor: '#10b981',
-                    borderRadius: '8px',
-                    fontWeight: 600,
-                    boxShadow: '0 4px 12px rgba(16, 185, 129, 0.15)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '36px',
-                  }}
+                  style={{ flex: 1, background: '#6F2BDC', borderColor: '#6F2BDC', borderRadius: '6px', fontWeight: 600, fontSize: '12px' }}
                 >
-                  按原参数恢复执行
+                  继续运行
                 </Button>
-                <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
-                  <Button
-                    size="middle"
-                    icon={<Edit2 size={13} style={{ marginRight: '2px' }} />}
-                    onClick={() => handleOpenEditInterrupt(interrupt.id, interrupt.originalArgs)}
-                    style={{
-                      flex: 1,
-                      borderRadius: '8px',
-                      fontWeight: 600,
-                      border: '1px solid #cbd5e1',
-                      background: '#ffffff',
-                      color: '#334155',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      height: '36px',
-                    }}
-                  >
-                    编辑参数
-                  </Button>
-                  <Button
-                    danger
-                    size="middle"
-                    icon={<XCircle size={13} style={{ marginRight: '2px' }} />}
-                    onClick={() => void resumeInterruptedRun(interrupt.id, 'cancel')}
-                    style={{
-                      flex: 1,
-                      borderRadius: '8px',
-                      fontWeight: 600,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      height: '36px',
-                    }}
-                  >
-                    取消执行
-                  </Button>
-                </div>
+                <Button
+                  size="small"
+                  icon={<Edit2 size={12} />}
+                  onClick={() => handleOpenEditInterrupt(interrupt.id, interrupt.originalArgs)}
+                  style={{ borderRadius: '6px', fontSize: '12px' }}
+                >
+                  编辑
+                </Button>
               </div>
             </div>
           ))}
-          {pendingInterrupts.length === 0 && <div style={{ fontSize: '12px', color: '#94a3b8' }}>当前没有待恢复的中断点。</div>}
-        </div>
-      </div>
 
-      {/* 历史运行记录 */}
-      <div
-        style={{
-          background: '#ffffff',
-          border: '1px solid #e2e8f0',
-          borderRadius: '14px',
-          padding: '14px',
-          minHeight: '120px',
-          maxHeight: '300px',
-          overflowY: 'auto',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a' }}>运行记录</span>
-          {agentRuns.filter((run) => run.kind === 'main').length > 0 && (
-            <Button type="link" size="small" danger onClick={handleClearRuns} style={{ padding: 0, height: 'auto', fontSize: '11px', fontWeight: 600 }}>
-              清除记录
-            </Button>
+          {pendingInterrupts.length === 0 && (
+            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '24px 0' }}>暂无等待恢复的中断点</div>
           )}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {agentRuns
-            .filter((run) => run.kind === 'main')
-            .map((run) => (
-              <div
-                key={run.id}
-                style={{
-                  border: '1px solid #f1f5f9',
-                  borderRadius: '12px',
-                  padding: '10px 12px',
-                  background: run.kind === 'main' ? '#f8fafc' : '#ffffff',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>{run.agentName}</div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                      主运行 · {run.currentNode ?? 'idle'}
-                    </div>
-                  </div>
-                  <Tag color={getStatusLabelAndColor(run.status).color}>{getStatusLabelAndColor(run.status).label}</Tag>
-                </div>
-              </div>
-            ))}
-          {agentRuns.filter((run) => run.kind === 'main').length === 0 && <div style={{ fontSize: '12px', color: '#94a3b8' }}>暂无运行记录。</div>}
         </div>
       </div>
 
       {/* 关联工作区 */}
-      {attachedWorkspaces.length > 0 && (
-        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>关联工作区</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {attachedWorkspaces.map((item) => (
-              <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '12px' }}>
-                <span style={{ color: '#0f172a' }}>{item.workspace.name}</span>
-                <span style={{ color: '#64748b' }}>{formatAccessMode(item.accessMode)}</span>
-              </div>
-            ))}
-          </div>
+      <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a', marginBottom: '10px' }}>关联工作区</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {attachedWorkspaces.map((item) => (
+            <div
+              key={item.workspace.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                fontSize: '12px',
+                padding: '6px 8px',
+                borderRadius: '6px',
+                background: '#f8fafc',
+              }}
+            >
+              <span style={{ color: '#0f172a' }}>{item.workspace.name}</span>
+              <Tag style={{ margin: 0, fontSize: '10px' }}>{formatAccessMode(item.accessMode)}</Tag>
+            </div>
+          ))}
+          {attachedWorkspaces.length === 0 && (
+            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '12px 0' }}>未关联独立工作空间</div>
+          )}
         </div>
-      )}
+      </div>
+
+      {/* 运行记录历史列表 */}
+      <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '14px', padding: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <span style={{ fontSize: '13px', fontWeight: 700, color: '#0f172a' }}>运行记录</span>
+          {agentRuns.length > 0 && (
+            <Button type="text" danger size="small" onClick={() => void handleClearRuns()} style={{ fontSize: '11px', padding: 0 }}>
+              清空记录
+            </Button>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
+          {agentRuns.map((run) => (
+            <div
+              key={run.id}
+              style={{
+                padding: '8px 10px',
+                borderRadius: '8px',
+                border: '1px solid #f1f5f9',
+                background: '#fafafa',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a' }}>{run.agentName}</div>
+                <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>{formatTimestamp(run.createdAt)}</div>
+              </div>
+              <Tag color={getStatusLabelAndColor(run.status).color} style={{ margin: 0, fontSize: '10px' }}>
+                {getStatusLabelAndColor(run.status).label}
+              </Tag>
+            </div>
+          ))}
+          {agentRuns.length === 0 && (
+            <div style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '16px 0' }}>暂无运行历史</div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

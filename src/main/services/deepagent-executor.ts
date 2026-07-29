@@ -2,18 +2,18 @@ import { createMiddleware, tool } from 'langchain';
 import { ChatOpenAI } from '@langchain/openai';
 import { createDeepAgent, LocalShellBackend, registerHarnessProfile } from 'deepagents/node';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, readdir, stat } from 'node:fs/promises';
+import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
 import { OpenAIModelService } from './openai-model-service.js';
+import { RemoteDockerSandboxBackend } from './remote-docker-sandbox-backend.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
-import type { HumanApproval } from '../../shared/types.js';
 
-// AnyBuddy 只允许显式专家团成员作为子 Agent，禁用 DeepAgents 默认通用子 Agent。
+// CulClaw 只允许显式专家团成员作为子 Agent，禁用 DeepAgents 默认通用子 Agent。
 registerHarnessProfile('openai', {
   generalPurposeSubagent: { enabled: false },
 });
@@ -22,9 +22,23 @@ function isTaskTool(candidate: unknown): candidate is { name: string } {
   return Boolean(candidate && typeof candidate === 'object' && 'name' in candidate && candidate.name === 'task');
 }
 
+/** 创建可被运行时识别的取消异常。 */
+function createAbortError() {
+  const error = new Error('Agent run cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+/** 在处理流式事件前确认当前 Run 未被用户停止。 */
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
 // 单专家模式从模型可见工具中移除 task，确保不会触发子 Agent 调度。
 const hideTaskToolMiddleware = createMiddleware({
-  name: 'AnyBuddyHideTaskTool',
+  name: 'CulClawHideTaskTool',
   wrapModelCall(request, handler) {
     return handler({
       ...request,
@@ -39,22 +53,6 @@ const hideTaskToolMiddleware = createMiddleware({
 type DeepAgentExecutorDependencies = {
   /** 模型解析与配置服务 */
   modelService: OpenAIModelService
-};
-
-/**
- * 挂起等待用户审批的本地命令执行信息
- */
-type PendingExecuteApproval = {
-  /** 当前 Agent 运行 ID */
-  runId: string
-  /** 原始待执行命令 */
-  originalCommand: string
-  /** 实际执行命令的底层闭包 */
-  execute: (command: string) => Promise<unknown>
-  /** Promise 完成回调 */
-  resolve: (value: any) => void
-  /** Promise 拒绝回调 */
-  reject: (error: unknown) => void
 };
 
 /**
@@ -220,18 +218,174 @@ function isSameDrive(a: string, b: string): boolean {
   return driveA === driveB;
 }
 
+import { CONFIG_DIR_NAME } from '../../shared/constants.js';
+
+/**
+ * 递归读取物理工作区目录文件，生成远程沙盒初始化所需的相对路径文件字典
+ * 
+ * @param rootDir 工作区物理根目录
+ * @param maxFiles 文件加载上限（防止内存开销过大）
+ * @param maxFileSize 单文件读取最大体积限制（默认 2MB）
+ */
+async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFileSize = 2 * 1024 * 1024): Promise<Record<string, string>> {
+  const initialFiles: Record<string, string> = {};
+  const ignoredDirs = new Set(['node_modules', '.git', 'out', 'dist', '.vite', '.tmp-tests', 'userData', 'brain', CULCLAW_DIRNAME, SYSTEM_SKILL_CACHE_DIRNAME]);
+
+  async function walk(dir: string) {
+    if (Object.keys(initialFiles).length >= maxFiles) return;
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (Object.keys(initialFiles).length >= maxFiles) break;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (!ignoredDirs.has(entry.name) && !entry.name.startsWith('.')) {
+            await walk(fullPath);
+          }
+        } else if (entry.isFile()) {
+          try {
+            const fileStat = await stat(fullPath);
+            if (fileStat.size <= maxFileSize) {
+              const relative = path.relative(rootDir, fullPath).replace(/\\/g, '/');
+              const virtualPath = `/${relative}`;
+              const content = await readFile(fullPath, 'utf-8');
+              initialFiles[virtualPath] = content;
+            }
+          } catch {
+            // 忽略读取失败的单文件
+          }
+        }
+      }
+    } catch {
+      // 忽略读取失败的目录
+    }
+  }
+
+  await walk(rootDir);
+  return initialFiles;
+}
+
+/**
+ * 将全局 Skill 直接镜像到远程沙盒，避免默认权限模式在物理工作区创建技能缓存。
+ *
+ * @param backend 远程 Docker 沙盒后端
+ * @param sourceSkillDir 全局 Skill 源目录
+ * @param skillId Skill 标识
+ * @returns 沙盒内 Skill 目录路径；同步失败时返回 null
+ */
+async function mirrorSkillIntoRemoteSandboxBackend(
+  backend: RemoteDockerSandboxBackend,
+  sourceSkillDir: string,
+  skillId: string,
+): Promise<string | null> {
+  const virtualSkillDir = `/${SYSTEM_SKILL_CACHE_DIRNAME}/${skillId}`;
+  const filesToUpload: Array<[string, Uint8Array]> = [];
+
+  try {
+    async function walk(dir: string) {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath);
+        } else if (entry.isFile()) {
+          const relativePath = path.relative(sourceSkillDir, fullPath).replace(/\\/g, '/');
+          const content = await readFile(fullPath);
+          filesToUpload.push([`${virtualSkillDir}/${relativePath}`, new Uint8Array(content)]);
+        }
+      }
+    }
+
+    await walk(sourceSkillDir);
+    if (filesToUpload.length === 0) {
+      return null;
+    }
+
+    const uploadResults = await backend.uploadFiles(filesToUpload);
+    if (uploadResults.some(item => item.error)) {
+      return null;
+    }
+    console.debug('[DeepAgentBackend] 同步全局 Skill 到远程 Docker 沙盒成功:', filesToUpload.length);
+    return virtualSkillDir;
+  } catch (error) {
+    console.debug('[DeepAgentBackend] 同步全局 Skill 到远程 Docker 沙盒失败:', error);
+    return null;
+  }
+}
+
+/**
+ * 将远程 Docker 沙盒运行完成后的新增/修改产物文件导出同步到物理工作区
+ * 
+ * @param backend 远程 Docker 沙盒后端
+ * @param rootDir 工作区物理根目录
+ * @param initialFiles 初始载入的文件内容字典
+ */
+async function exportSandboxOutputsToWorkspace(
+  backend: RemoteDockerSandboxBackend,
+  rootDir: string,
+  initialFiles: Record<string, string>,
+) {
+  try {
+    const globResult = await backend.glob('**/*');
+    if (!globResult || !Array.isArray(globResult.files) || globResult.files.length === 0) {
+      return;
+    }
+
+    const pathsToDownload: string[] = [];
+    for (const fileInfo of globResult.files) {
+      const vPath = fileInfo.path.startsWith('/') ? fileInfo.path : `/${fileInfo.path}`;
+      // 过滤系统缓存目录
+      if (vPath.startsWith('/.system-skill-cache')) continue;
+      pathsToDownload.push(vPath);
+    }
+
+    if (pathsToDownload.length === 0) return;
+
+    const downloaded = await backend.downloadFiles(pathsToDownload);
+    for (const item of downloaded) {
+      if (item.error || !item.content) continue;
+
+      const vPath = item.path.startsWith('/') ? item.path : `/${item.path}`;
+      const relativePath = vPath.slice(1);
+      if (!relativePath) continue;
+
+      const contentStr = typeof item.content === 'string'
+        ? item.content
+        : new TextDecoder().decode(item.content);
+
+      const initialContent = initialFiles[vPath];
+      // 仅当文件属于新创建，或内容相比初始载入被修改时，才同步输出到物理工作区
+      if (initialContent === undefined || initialContent !== contentStr) {
+        const resolvedRootDir = path.resolve(rootDir);
+        const destPath = path.resolve(resolvedRootDir, relativePath);
+        const destinationRelativePath = path.relative(resolvedRootDir, destPath);
+        // 防止沙盒内的异常路径突破工作区边界。
+        if (destinationRelativePath.startsWith('..') || path.isAbsolute(destinationRelativePath)) {
+          console.warn('[DeepAgentBackend] 忽略越界的远程沙盒输出路径:', vPath);
+          continue;
+        }
+        await mkdir(path.dirname(destPath), { recursive: true });
+        await writeFile(destPath, contentStr, 'utf-8');
+        console.debug('[DeepAgentBackend] 沙盒完成，导出写入新文件到工作区:', destPath);
+      }
+    }
+  } catch (error) {
+    console.warn('[DeepAgentBackend] 导出远程 Docker 沙盒输出物到工作区失败:', error);
+  }
+}
+
 /** 应用全局配置/数据目录名称 */
-const ANYBUDDY_DIRNAME = '.anybuddy';
+const CULCLAW_DIRNAME = CONFIG_DIR_NAME;
 /** 系统技能缓存目录名称 */
 const SYSTEM_SKILL_CACHE_DIRNAME = '.system-skill-cache';
 /** 全局技能存储子目录名称 */
 const GLOBAL_SKILLS_DIRNAME = 'skills';
 
 /**
- * 获取系统用户全局技能存储根目录 (~/.anybuddy/skills)
+ * 获取系统用户全局技能存储根目录 (~/.culclaw/skills)
  */
 function getGlobalSkillsRoot() {
-  return path.join(os.homedir(), ANYBUDDY_DIRNAME, GLOBAL_SKILLS_DIRNAME);
+  return path.join(os.homedir(), CULCLAW_DIRNAME, GLOBAL_SKILLS_DIRNAME);
 }
 
 /**
@@ -362,7 +516,7 @@ function readChunkText(message: unknown): string {
 }
 
 /**
- * 从流式消息分块中提取工具调用的参数分块（tool_call_chunks）
+ * 从流式消息中提取工具调用参数，兼容分块与完整工具调用格式。
  * 
  * @param message 消息分块对象
  * @returns 工具调用分块数组
@@ -373,27 +527,65 @@ function readToolCallChunks(message: unknown): Array<{ id?: string; name?: strin
   }
 
   const chunks = (message as { tool_call_chunks?: unknown }).tool_call_chunks;
-  if (!Array.isArray(chunks)) {
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    return chunks.map(chunk => {
+      if (!chunk || typeof chunk !== 'object') {
+        return {};
+      }
+      return {
+        id: typeof (chunk as { id?: unknown }).id === 'string' ? (chunk as { id?: string }).id : undefined,
+        name: typeof (chunk as { name?: unknown }).name === 'string' ? (chunk as { name?: string }).name : undefined,
+        args: typeof (chunk as { args?: unknown }).args === 'string' ? (chunk as { args?: string }).args : undefined,
+        // 同一条模型消息中的并行工具调用依赖 index 区分，不能只按 source 关联。
+        index: typeof (chunk as { index?: unknown }).index === 'number' ? (chunk as { index?: number }).index : undefined,
+      };
+    });
+  }
+
+  const toolCalls = (message as { tool_calls?: unknown }).tool_calls;
+  if (!Array.isArray(toolCalls)) {
     return [];
   }
 
-  return chunks.map(chunk => {
-    if (!chunk || typeof chunk !== 'object') {
+  return toolCalls.map((toolCall, index) => {
+    if (!toolCall || typeof toolCall !== 'object') {
       return {};
     }
+
+    const call = toolCall as {
+      id?: unknown;
+      name?: unknown;
+      args?: unknown;
+      function?: { name?: unknown; arguments?: unknown };
+    };
+    const rawArgs = call.args ?? call.function?.arguments;
+    let args: string | undefined;
+    if (typeof rawArgs === 'string') {
+      args = rawArgs;
+    } else if (rawArgs !== undefined) {
+      try {
+        args = JSON.stringify(rawArgs);
+      } catch {
+        args = undefined;
+      }
+    }
+
     return {
-      id: typeof (chunk as { id?: unknown }).id === 'string' ? (chunk as { id?: string }).id : undefined,
-      name: typeof (chunk as { name?: unknown }).name === 'string' ? (chunk as { name?: string }).name : undefined,
-      args: typeof (chunk as { args?: unknown }).args === 'string' ? (chunk as { args?: string }).args : undefined,
-      // 同一条模型消息中的并行工具调用依赖 index 区分，不能只按 source 关联。
-      index: typeof (chunk as { index?: unknown }).index === 'number' ? (chunk as { index?: number }).index : undefined,
+      id: typeof call.id === 'string' ? call.id : undefined,
+      name: typeof call.name === 'string'
+        ? call.name
+        : typeof call.function?.name === 'string'
+          ? call.function.name
+          : undefined,
+      args,
+      index,
     };
   });
 }
 
 /**
  * 判断消息是否为工具执行结果类型（tool result）
- * 
+ *
  * @param message 消息对象
  * @returns 是否为工具结果消息
  */
@@ -485,31 +677,16 @@ function isApprovalPendingError(error: unknown): boolean {
 }
 
 /**
- * 规范化待审批的 Shell 命令文本（统一 CRLF 为 LF 并去除首尾空白）
- * 
- * @param command 命令文本
- * @returns 规范化后的命令字符串
- */
-function normalizeExecuteApprovalCommand(command: string) {
-  return command.replace(/\r\n/g, '\n').trim();
-}
-
-/**
  * 基于 DeepAgents 架构的 Agent 执行器实现类
- * 
- * 负责组装 ChatOpenAI 模型、LocalShellBackend 后端、项目工具和技能配置，
- * 协调 Agent 流式推理过程，处理消息流、工具调用事件、实时状态推送以及人工审批拦截。
+ *
+ * 负责组装 ChatOpenAI 模型、远程 Docker 沙盒或 LocalShellBackend、项目工具和技能配置，
+ * 协调 Agent 流式推理过程，处理消息流、工具调用事件和实时状态推送。
  */
 export class DeepAgentExecutor implements AgentExecutor {
-  /** 记录各个运行 (runId) 下已被用户批准执行的命令集合 */
-  private readonly approvedExecuteCommandsByRun = new Map<string, Set<string>>();
-  /** 挂起的本地命令审批句柄映射表（key: approvalId） */
-  private readonly pendingExecuteApprovals = new Map<string, PendingExecuteApproval>();
-
   constructor(
     private readonly appService: AppService,
     private readonly dependencies: DeepAgentExecutorDependencies,
-  ) {}
+  ) { }
 
   /**
    * 执行 Agent 任务
@@ -517,7 +694,8 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param params 执行所需的完整上下文、系统提示词、专家配置、工具列表等参数
    * @returns 执行成功或因挂起审批暂停返回 true；缺少必要配置返回 false
    */
-  async execute({ context, systemPrompt, activeExpert, activeExpertTeam, tools, toolExecutionContext, assistantMetadata }: ExecuteAgentParams): Promise<boolean> {
+  async execute({ context, signal, systemPrompt, activeExpert, activeExpertTeam, tools, toolExecutionContext, assistantMetadata }: ExecuteAgentParams): Promise<boolean> {
+    throwIfAborted(signal);
     // 1. 解析当前任务指定的模型配置
     const resolvedModel = this.dependencies.modelService.resolveModelConfig(
       this.appService.listModelConfigs(),
@@ -534,12 +712,20 @@ export class DeepAgentExecutor implements AgentExecutor {
     const primaryWorkspace = taskWorkspaces.find(workspace => workspace.role === 'primary')?.workspace;
 
     const backendRootDir = primaryWorkspace?.path ?? process.cwd();
-    const backend = await this.createBackend(context, backendRootDir);
+    const { backend, isSandbox, initialFiles } = await this.createBackend(context, backendRootDir);
 
-    const fileExecutionConstraintPrompt = [
+    const fileExecutionConstraintPrompt = isSandbox
+      ? [
+        '---',
+        '【文件生成规范（必须严格遵守）】：',
+        '1. 当前运行位于远程 Docker 沙盒。创建、修改、生成或导出文件时，必须通过工具在沙盒内完成，禁止将执行过程视为对物理工作区的直接写入。',
+        '2. 沙盒运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
+        '3. 工具成功后可告知用户沙盒内的输出路径，应用完成同步后该路径会出现在工作区。',
+      ].join('\n')
+      : [
         '---',
         '【文件生成与物理执行规范（必须严格遵守）】：',
-        '1. 当用户要求创建、修改、生成或导出文件（如 PDF、Docx、Markdown、代码等）时，必须真实调用工具（如 write_file、execute 等）在磁盘上创建或修改物理文件。',
+        '1. 当前运行具有完全访问权限。创建、修改、生成或导出文件时，必须真实调用工具在物理工作区中完成。',
         '2. 严禁在未真正发起工具调用生成物理文件的情况下，口头虚构或声称“文件已成功生成”。',
         '3. 只有在工具成功写入并确认物理文件存在后，方可在最终回复中告知用户文件路径。',
       ].join('\n');
@@ -550,6 +736,7 @@ export class DeepAgentExecutor implements AgentExecutor {
     });
 
     try {
+      throwIfAborted(signal);
       // 3. 实例化 LangChain ChatOpenAI 模型
       const model = new ChatOpenAI({
         model: resolvedModel.modelName,
@@ -562,7 +749,12 @@ export class DeepAgentExecutor implements AgentExecutor {
       });
 
       // 4. 解析并镜像同步需要的 Skill 目录
-      const skillSources = await this.resolveSkillSources(context.run.id, context.task.skillIds, backendRootDir);
+      const skillSources = await this.resolveSkillSources(
+        context.run.id,
+        context.task.skillIds,
+        backendRootDir,
+        isSandbox && backend instanceof RemoteDockerSandboxBackend ? backend : undefined,
+      );
 
       // 5. 解析专家团子 Agent 成员配置
       const subagents = (activeExpertTeam?.members ?? []).map(member => ({
@@ -575,9 +767,14 @@ export class DeepAgentExecutor implements AgentExecutor {
           '请用 Markdown 输出你的独立分析、建议和结论，即使任务较小也不要返回空内容。',
         ].filter(Boolean).join('\n'),
       }));
+      // 仅在专家团存在实际成员时才启用 task 子 Agent 工具，避免空列表暴露无可用类型的 task。
+      const hasSubagents = subagents.length > 0;
+      const delegationConstraintPrompt = hasSubagents
+        ? ''
+        : '当前没有可用子 Agent。禁止调用 task 工具；涉及新建或修改文件时，请直接使用当前后端提供的文件工具。';
 
-      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}`;
-      if (activeExpertTeam) {
+      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${delegationConstraintPrompt}`;
+      if (hasSubagents && activeExpertTeam) {
         finalSystemPrompt = [
           `你当前以专家团队 ${activeExpertTeam.name} Leader 的身份调度工作。`,
           `团队定位: ${activeExpertTeam.description}`,
@@ -605,6 +802,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           '---',
           systemPrompt,
           fileExecutionConstraintPrompt,
+          delegationConstraintPrompt,
         ].filter(Boolean).join('\n');
       }
 
@@ -612,10 +810,11 @@ export class DeepAgentExecutor implements AgentExecutor {
       const agent = createDeepAgent({
         model,
         backend,
-        subagents,
-        middleware: activeExpertTeam ? [] : [hideTaskToolMiddleware],
+        // 空子 Agent 列表不传入 DeepAgents，确保不会注册无可调用类型的 task 工具。
+        ...(hasSubagents ? { subagents } : {}),
+        middleware: hasSubagents ? [] : [hideTaskToolMiddleware],
         permissions: this.resolvePermissions(context),
-        // 暂不使用 DeepAgents 内置 interruptOn 确认机制。AnyBuddy 使用自身 AppService/approval 数据库表控制人工审批。
+        // 不使用 DeepAgents 内置 interruptOn，命令在所选后端中连续执行。
         tools: tools.map(toolDefinition => this.toDeepAgentTool(toolDefinition, toolExecutionContext)),
         memory: this.resolveMemoryFiles(backendRootDir),
         skills: skillSources,
@@ -631,6 +830,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       }, {
         streamMode: ['messages', 'updates'],
         subgraphs: true,
+        signal,
       });
 
       // 临时映射与状态存储变量
@@ -642,6 +842,8 @@ export class DeepAgentExecutor implements AgentExecutor {
       }>();
       const toolCallArgsMap = new Map<string, string>();
       const toolCallNameMap = new Map<string, string>();
+      // 防止同一工具调用以分块和完整消息两种格式重复上报。
+      const reportedToolCallIds = new Set<string>();
       // 工具参数会跨多个 chunk 到达；key 必须包含 index，避免并行 task 调用互相覆盖。
       const activeToolCallIdByStream = new Map<string, string>();
       const streamSegmentBySource = new Map<string, number>();
@@ -663,8 +865,8 @@ export class DeepAgentExecutor implements AgentExecutor {
         const resolvedKey = mappedType ?? subagentKey;
         const member = activeExpertTeam?.members.find(
           m => m.name.toLowerCase() === resolvedKey.toLowerCase() ||
-               m.id === resolvedKey ||
-               m.role.toLowerCase() === resolvedKey.toLowerCase()
+            m.id === resolvedKey ||
+            m.role.toLowerCase() === resolvedKey.toLowerCase()
         );
         if (member) {
           return `${member.name} (${member.role})`;
@@ -678,11 +880,19 @@ export class DeepAgentExecutor implements AgentExecutor {
         streaming: true,
       };
 
+      await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
+        status: 'running',
+        currentNode: isSandbox ? 'sandbox_ready' : 'local_backend_ready',
+        executionEnvironment: isSandbox ? 'sandbox' : 'local',
+        runtimeEngine: 'deepagents',
+      });
+
       // 7. 循环处理流式迭代器返回的事件分块
       for await (const item of run as AsyncIterable<[string[], string, unknown]>) {
+        throwIfAborted(signal);
         const [namespace, mode, data] = item;
         // 单专家任务不启用子 Agent 展示；专家团按官方 tools:<toolCallId> namespace 路由。
-        const source = activeExpertTeam ? readNamespaceSource(namespace, toolCallSubagentMap) : 'main';
+        const source = hasSubagents ? readNamespaceSource(namespace, toolCallSubagentMap) : 'main';
 
         // 如果是子 Agent 运行且尚未触发启动事件，向渲染进程发送 subagent_started 事件
         const isResolvedSubagent = source !== 'main' && !source.startsWith('tool-call:');
@@ -698,6 +908,7 @@ export class DeepAgentExecutor implements AgentExecutor {
             subagentName: displayName,
             reason: `专家团子 Agent [${displayName}] 已启动协作子任务${taskDesc}`,
             namespace: source,
+            executionEnvironment: isSandbox ? 'sandbox' : 'local',
             runtimeEngine: 'deepagents',
           });
         }
@@ -757,7 +968,26 @@ export class DeepAgentExecutor implements AgentExecutor {
                         : undefined;
                     if (subagentType) {
                       toolCallSubagentMap.set(toolCallId, { subagentType, description });
+                      if (!startedSubagents.has(subagentType)) {
+                        const displayName = resolveSubagentDisplayName(subagentType);
+                        startedSubagents.set(subagentType, displayName);
+                        await this.appService.appendRuntimeEvent(context.run.id, 'subagent_started', {
+                          expertId: subagentType,
+                          subagentName: displayName,
+                          reason: description ? `已接收协作任务：${description}` : '已接收协作任务，正在启动。',
+                          namespace: source,
+                          executionEnvironment: isSandbox ? 'sandbox' : 'local',
+                          runtimeEngine: 'deepagents',
+                        });
+                      }
                     }
+                  }
+
+                  if (reportedToolCallIds.has(toolCallId)) {
+                    toolCallNameMap.delete(toolCallId);
+                    toolCallArgsMap.delete(toolCallId);
+                    activeToolCallIdByStream.delete(toolCallStreamKey);
+                    continue;
                   }
 
                   // 触发工具调用运行时事件
@@ -769,7 +999,9 @@ export class DeepAgentExecutor implements AgentExecutor {
                     subagentName: currentSubagentName,
                     toolCallId,
                     runtimeScope: classifyToolScope(toolName),
+                    executionEnvironment: isSandbox ? 'sandbox' : 'local',
                   });
+                  reportedToolCallIds.add(toolCallId);
                   toolIndex += 1;
                   toolCallNameMap.delete(toolCallId);
                   toolCallArgsMap.delete(toolCallId);
@@ -792,6 +1024,8 @@ export class DeepAgentExecutor implements AgentExecutor {
                 namespace: source,
                 subagentName: currentSubagentName,
                 runtimeScope: classifyToolScope(toolName),
+                toolCallId: message.tool_call_id,
+                executionEnvironment: isSandbox ? 'sandbox' : 'local',
               });
               if (/^Error:/i.test(content.trim())) {
                 failedToolSummaries.push(`${toolName}: ${content.trim()}`);
@@ -847,6 +1081,7 @@ export class DeepAgentExecutor implements AgentExecutor {
                 stepNode: nodeName,
                 stepDescription,
                 namespace: source,
+                executionEnvironment: isSandbox ? 'sandbox' : 'local',
                 runtimeEngine: 'deepagents',
               });
             } else if (source === 'main') {
@@ -859,6 +1094,7 @@ export class DeepAgentExecutor implements AgentExecutor {
                   runtimeEngine: 'deepagents',
                   namespace: source,
                   subagentName: currentSubagentName,
+                  executionEnvironment: isSandbox ? 'sandbox' : 'local',
                 });
               }
             }
@@ -874,6 +1110,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           status: 'completed',
           summary: '协作流程已执行完毕',
           namespace: subagentKey,
+          executionEnvironment: isSandbox ? 'sandbox' : 'local',
           runtimeEngine: 'deepagents',
         });
       }
@@ -889,9 +1126,9 @@ export class DeepAgentExecutor implements AgentExecutor {
 
       const completedMessage = failedToolSummaries.length > 0
         ? [
-            `工具执行失败原因：\n${failedToolSummaries.map(item => `- ${item}`).join('\n')}`,
-            finalMessage,
-          ].join('\n\n')
+          `工具执行失败原因：\n${failedToolSummaries.map(item => `- ${item}`).join('\n')}`,
+          finalMessage,
+        ].join('\n\n')
         : finalMessage;
 
       await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
@@ -925,7 +1162,7 @@ export class DeepAgentExecutor implements AgentExecutor {
         final: true,
         ...(finalStreamMessageId ? { streamEventId: `msg-${finalStreamMessageId}` } : {}),
       };
-      
+
       // 9. 结合任务模式完成当前 Run 记录
       if (context.task.mode === 'plan') {
         await this.appService.completeRuntimeRunWithPlanApproval(
@@ -942,6 +1179,12 @@ export class DeepAgentExecutor implements AgentExecutor {
           intermediateMessages,
         );
       }
+
+      // 10. 若为远程沙盒后端，在 Run 成功完成后将产物同步输出到物理工作区
+      if (isSandbox && backend instanceof RemoteDockerSandboxBackend) {
+        await exportSandboxOutputsToWorkspace(backend, backendRootDir, initialFiles);
+      }
+
       return true;
     } catch (error) {
       // 若包含待用户审批中断，保持返回 true 代表运行挂起非致命失败
@@ -950,11 +1193,11 @@ export class DeepAgentExecutor implements AgentExecutor {
       }
       throw error;
     } finally {
-      // 清理本次运行的批准记录与挂起句柄，释放后端实例
-      this.approvedExecuteCommandsByRun.delete(context.run.id);
-      this.clearPendingExecuteApprovals(context.run.id);
-      if ('close' in backend && typeof backend.close === 'function') {
-        await backend.close();
+      // 释放当前运行的后端实例。
+      if ('stop' in backend && typeof (backend as any).stop === 'function') {
+        await (backend as any).stop();
+      } else if ('close' in backend && typeof (backend as any).close === 'function') {
+        await (backend as any).close();
       }
     }
   }
@@ -1006,11 +1249,16 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param rootDir 后端根目录
    * @returns 解析后的后端虚拟路径数组
    */
-  private async resolveSkillSources(runId: string, skillIds: string[], rootDir: string) {
+  private async resolveSkillSources(
+    runId: string,
+    skillIds: string[],
+    rootDir: string,
+    sandboxBackend?: RemoteDockerSandboxBackend,
+  ) {
     let uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
     const skillsRoot = getGlobalSkillsRoot();
 
-    // 如果前端未选择任何技能，自动扫描系统全局技能目录 ~/.anybuddy/skills 下所有包含 SKILL.md 的有效技能
+    // 如果前端未选择任何技能，自动扫描系统全局技能目录 ~/.culclaw/skills 下所有包含 SKILL.md 的有效技能
     if (uniqueSkillIds.length === 0 && existsSync(skillsRoot)) {
       try {
         const entries = await readdir(skillsRoot, { withFileTypes: true });
@@ -1049,11 +1297,18 @@ export class DeepAgentExecutor implements AgentExecutor {
       const skillDir = path.join(skillsRoot, skillId);
       const skillFile = path.join(skillDir, 'SKILL.md');
       if (existsSync(skillFile)) {
-        const cachedPath = await mirrorSkillIntoBackend(rootDir, skillDir, skillId);
-        if (cachedPath) {
-          const virtualPath = this.toBackendVirtualPath(rootDir, cachedPath);
+        if (sandboxBackend) {
+          const virtualPath = await mirrorSkillIntoRemoteSandboxBackend(sandboxBackend, skillDir, skillId);
           if (virtualPath) {
-            picked = { source: skillDir, cachedPath, virtualPath };
+            picked = { source: skillDir, cachedPath: virtualPath, virtualPath };
+          }
+        } else {
+          const cachedPath = await mirrorSkillIntoBackend(rootDir, skillDir, skillId);
+          if (cachedPath) {
+            const virtualPath = this.toBackendVirtualPath(rootDir, cachedPath);
+            if (virtualPath) {
+              picked = { source: skillDir, cachedPath, virtualPath };
+            }
           }
         }
       }
@@ -1133,26 +1388,63 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * 创建并初始化 LocalShellBackend 实例，并按 AnyBuddy 任务模式注入安全拦截门禁
+   * 创建并初始化 Backend 实例（默认权限使用远程 Docker 沙盒，完全访问权限使用 LocalShellBackend）
    * 
    * @param context 执行上下文
    * @param rootDir 后端根目录
-   * @returns LocalShellBackend 实例
    */
   private async createBackend(context: ExecuteAgentParams['context'], rootDir: string) {
-    const backend = await LocalShellBackend.create({
-      rootDir,
-      virtualMode: true,
-    });
-    const originalExecute = backend.execute.bind(backend);
-    console.debug('[DeepAgentBackend] create', {
+    const isFullAccess = context.task.permissionMode === 'full_access';
+
+    if (isFullAccess) {
+      const backend = await LocalShellBackend.create({
+        rootDir,
+        virtualMode: true,
+      });
+      console.debug('[DeepAgentBackend] 创建完全访问权限后端 LocalShellBackend', {
+        runId: context.run.id,
+        taskId: context.task.id,
+        permissionMode: context.task.permissionMode,
+      });
+
+      // 非 craft 模式（如 plan 模式）下，禁止写文件和修改文件
+      if (context.task.mode !== 'craft') {
+        backend.write = async (filePath: string) => ({
+          error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
+          filesUpdate: null,
+        });
+        backend.edit = async (filePath: string) => ({
+          error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before editing files. Blocked edit: ${filePath}`,
+          filesUpdate: null,
+        });
+      }
+
+      return { backend, isSandbox: false, initialFiles: {} as Record<string, string> };
+    }
+
+    // 默认权限模式：使用远程 Docker 沙盒，并上传工作区快照。
+    const initialFiles = await loadInitialWorkspaceFiles(rootDir);
+    const backend = RemoteDockerSandboxBackend.fromEnvironment();
+    const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles)
+      .map(([filePath, content]) => [filePath, new TextEncoder().encode(content)] as [string, Uint8Array]);
+    try {
+      const uploadResults = await backend.uploadFiles(initialFileUploads);
+      const failedUploads = uploadResults.filter(item => item.error);
+      if (failedUploads.length > 0) {
+        throw new Error(`远程 Docker 沙盒初始化文件上传失败：${failedUploads.map(item => item.path).join(', ')}`);
+      }
+    } catch (error) {
+      await backend.close();
+      throw error;
+    }
+
+    console.debug('[DeepAgentBackend] 创建默认权限远程 Docker 沙盒后端', {
       runId: context.run.id,
       taskId: context.task.id,
       permissionMode: context.task.permissionMode,
-      executeRequiresApproval: context.task.permissionMode === 'read_write',
+      initialFileCount: Object.keys(initialFiles).length,
     });
 
-    // 非 craft 模式（如 plan 模式）下，禁止写文件和修改文件
     if (context.task.mode !== 'craft') {
       backend.write = async (filePath: string) => ({
         error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
@@ -1164,94 +1456,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       });
     }
 
-    // 在 craft 模式且为 read_write 权限模式下，拦截系统命令执行，要求弹窗提醒用户审批
-    if (context.task.mode === 'craft' && context.task.permissionMode === 'read_write') {
-      backend.execute = async (command: string) => {
-        const approvedCommands = this.approvedExecuteCommandsByRun.get(context.run.id);
-        const normalizedCommand = normalizeExecuteApprovalCommand(command);
-        if (approvedCommands?.has(normalizedCommand)) {
-          return originalExecute(command);
-        }
-
-        const approval = await this.appService.requestRuntimeApproval(
-          context.run.id,
-          `即将执行本地命令，请确认是否允许：${command}`,
-          {
-            toolName: 'execute',
-            command,
-            permissionMode: context.task.permissionMode,
-          },
-        );
-        return await new Promise<Awaited<ReturnType<typeof originalExecute>>>((resolve, reject) => {
-          this.pendingExecuteApprovals.set(approval.id, {
-            runId: context.run.id,
-            originalCommand: command,
-            execute: async (approvedCommand: string) => originalExecute(approvedCommand),
-            resolve,
-            reject,
-          });
-        });
-      };
-    }
-
-    return backend;
-  }
-
-  /**
-   * 将命令加入某次 Run 的白名单允许集合
-   * 
-   * @param runId 运行 ID
-   * @param command 命令文本
-   */
-  approveExecuteCommand(runId: string, command: string) {
-    const normalizedCommand = normalizeExecuteApprovalCommand(command);
-    if (!normalizedCommand) {
-      return;
-    }
-    const approvedCommands = this.approvedExecuteCommandsByRun.get(runId) ?? new Set<string>();
-    approvedCommands.add(normalizedCommand);
-    this.approvedExecuteCommandsByRun.set(runId, approvedCommands);
-  }
-
-  /**
-   * 处理从渲染进程传回的人工审批结果通知
-   * 
-   * @param approval 审批实体对象
-   * @returns 是否找到并处理了对应的挂起审批记录
-   */
-  resolvePendingExecuteApproval(approval: HumanApproval) {
-    const pending = this.pendingExecuteApprovals.get(approval.id);
-    if (!pending) {
-      return false;
-    }
-
-    this.pendingExecuteApprovals.delete(approval.id);
-    if (approval.decision === 'rejected') {
-      pending.reject(new Error('用户拒绝执行本地命令。'));
-      return true;
-    }
-
-    const args = approval.editedArgs ?? approval.originalArgs ?? {};
-    const command = typeof args.command === 'string' && args.command.trim()
-      ? args.command
-      : pending.originalCommand;
-
-    this.approveExecuteCommand(pending.runId, command);
-    void pending.execute(command).then(pending.resolve, pending.reject);
-    return true;
-  }
-
-  /**
-   * 清理指定 RunID 关联的所有未完成命令审批 Promise
-   * 
-   * @param runId 运行 ID
-   */
-  private clearPendingExecuteApprovals(runId: string) {
-    for (const [approvalId, pending] of this.pendingExecuteApprovals) {
-      if (pending.runId === runId) {
-        this.pendingExecuteApprovals.delete(approvalId);
-      }
-    }
+    return { backend, isSandbox: true, initialFiles };
   }
 
   /**
@@ -1260,9 +1465,8 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param _context 执行上下文
    */
   private resolvePermissions(_context: ExecuteAgentParams['context']) {
-    // LocalShellBackend 是支持 DeepAgents execute 的必备组件。
-    // DeepAgents 的路径权限限制已被故意禁用，因为它们与具有 shell 功能的后端不兼容；
-    // AnyBuddy 通过 createBackend() 中的审批门禁来实施 read_write 执行安全防护。
+    // 默认权限通过远程 Docker 容器隔离执行；完全访问权限保持 LocalShellBackend 的原有行为。
+    // 不使用 DeepAgents 的逐命令 interruptOn，避免在沙盒运行中请求人工审批。
     return undefined;
   }
 }

@@ -57,6 +57,16 @@ AnyBuddy 将 Agent 的工作方式与能力边界分开配置，避免将产品�
 - 项目使用 pnpm 管理依赖和运行脚本。
 - 需要可运行 Electron 桌面应用的系统环境。
 
+### 远程 Docker 沙盒
+
+默认权限模式通过远程 Docker 容器执行 Agent 命令。启动应用前需要设置：
+
+```bash
+SANDBOX_SERVER_URL=http://sandbox-server:8080
+```
+
+可选环境变量为 `SANDBOX_SERVER_TOKEN`（Bearer Token）和 `SANDBOX_SERVER_TIMEOUT_MS`（请求超时毫秒数，默认 `120000`）。远程服务需要提供 `POST /execute`、`POST /files/upload`、`POST /files/download` 与 `POST /close`；请求和响应结构见 `src/main/services/remote-docker-sandbox-backend.ts` 中的中文注释。容器必须支持 POSIX shell，以及 `awk`、`grep`、`find`、`stat` 等基础命令。完全访问权限仍使用本地 `LocalShellBackend`。
+
 ### 安装依赖
 
 ```bash

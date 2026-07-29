@@ -1,5 +1,5 @@
 {
-  "name": "anybuddy",
+  "name": "culclaw",
   "description": "Desktop AI assistant application.",
   "author": {
     "name": "ymx"
@@ -52,6 +52,7 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
     "electron": "^42.7.0",
+    "sass": "^1.102.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.2"
   }
