@@ -97,7 +97,7 @@ export class RemoteDockerSandboxBackend extends BaseSandbox {
       throw new Error('远程沙盒 /execute 返回格式无效。');
     }
 
-    return response as ExecuteResponse;
+    return response as unknown as ExecuteResponse;
   }
 
   /** 批量上传初始工作区、技能和 Agent 生成的文件。 */

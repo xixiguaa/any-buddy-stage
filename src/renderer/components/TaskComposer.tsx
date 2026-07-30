@@ -1233,7 +1233,7 @@ export default function TaskComposer({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
                   {[
-                    { value: 'read_write', label: '✍️ 默认权限', desc: 'Agent 使用 Node VFS 沙盒运行，运行完成后输出物才会写入工作区。' },
+                    { value: 'read_write', label: '✍️ 默认权限', desc: 'Agent 使用 Docker 沙盒运行，运行完成后输出物才会写入工作区。' },
                     { value: 'full_access', label: '🔑 完全访问权限', desc: 'Agent 使用本地 Shell backend，可读写文件并直接执行命令。' }
                   ].map(opt => {
                     const isSelected = permissionMode === opt.value
