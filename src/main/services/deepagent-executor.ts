@@ -1457,7 +1457,7 @@ export class DeepAgentExecutor implements AgentExecutor {
     const sandboxLease = workspaceId
       ? await SshDockerSandboxBackend.acquireWorkspaceSandbox(workspaceId)
       : undefined;
-    // 从 sandbox.ini 或环境变量创建 SSH Docker 沙盒后端。
+    // 从 culclaw.ini 或环境变量创建 SSH Docker 沙盒后端。
     const backend = sandboxLease?.backend ?? (await SshDockerSandboxBackend.fromEnvironment());
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);

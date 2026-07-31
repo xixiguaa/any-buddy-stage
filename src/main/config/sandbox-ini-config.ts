@@ -35,16 +35,16 @@ const INI_ENVIRONMENT_KEYS: Record<string, string> = {
   'image_type': 'SANDBOX_DOCKER_IMAGE_TYPE',
 }
 
-/** 获取默认 sandbox.ini 文件路径（开发环境为项目根目录，打包后为 exe 同级目录） */
+/** 获取默认 culclaw.ini 文件路径（开发环境为项目根目录，打包后为 exe 同级目录） */
 export function getSandboxIniPath(): string {
   try {
     if (app?.isPackaged) {
-      return join(dirname(process.execPath), 'sandbox.ini')
+      return join(dirname(process.execPath), 'culclaw.ini')
     }
   } catch {
     // 忽略非 Electron 环境错误
   }
-  return join(process.cwd(), 'sandbox.ini')
+  return join(process.cwd(), 'culclaw.ini')
 }
 
 /** 去除 INI 值两侧可能的单双引号 */
@@ -60,7 +60,7 @@ function normalizeIniValue(value: string) {
 }
 
 /**
- * 直接读取配置文件（优先读取 sandbox.ini，其次尝试 .env）解析为键值字典，不注入当前进程 process.env。
+ * 直接读取配置文件（优先读取 culclaw.ini，其次尝试 .env）解析为键值字典，不注入当前进程 process.env。
  */
 export async function readSandboxIni(filePath?: string): Promise<Record<string, string>> {
   const primaryPath = filePath || getSandboxIniPath()

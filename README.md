@@ -80,11 +80,11 @@ SANDBOX_DOCKER_IMAGE=node:22-bookworm-slim
 
 设置 `SANDBOX_SSH_HOST` 后，应用会使用 SSH 后端；也可以将 `SANDBOX_SERVER_URL` 写成 `ssh://user@host:22` 触发 SSH 后端。远程 SSH 用户必须有权限执行 Docker。未设置 `SANDBOX_SSH_HOST_FINGERPRINT` 时，`ssh2` 会接受服务器提供的主机密钥，生产环境建议配置该值；密码会通过进程环境传入，请勿提交到仓库。容器需要提供 POSIX shell、`base64`、`dirname`、`mkdir`、`tr` 等基础命令；可通过 `SANDBOX_DOCKER_IMAGE` 指定已有镜像。可选的 `SANDBOX_SSH_TIMEOUT_MS`、`SANDBOX_SSH_MAX_OUTPUT_BYTES` 和 `SANDBOX_SSH_MAX_TRANSFER_BYTES` 分别控制命令超时、命令输出上限（默认 1 MiB）和文件传输输出上限（默认 64 MiB）。
 
-### sandbox.ini 配置
+### culclaw.ini 配置
 
-桌面应用启动时会读取 `sandbox.ini`：开发环境读取项目根目录，打包后读取应用 `.exe` 同级目录。可参考 `sandbox.ini.example` 配置 `[ssh]` 和 `[docker]`。INI 中已填写的字段优先，未填写的字段仍可通过同名 `SANDBOX_*` 环境变量提供，以兼容旧配置。
+桌面应用启动时会读取 `culclaw.ini`：开发环境读取项目根目录，打包后读取应用 `.exe` 同级目录。可参考 `culclaw.ini.example` 配置 `[ssh]` 和 `[docker]`。INI 中已填写的字段优先，未填写的字段仍可通过同名 `SANDBOX_*` 环境变量提供，以兼容旧配置。
 
-`sandbox.ini` 包含明文密码，已加入 `.gitignore`，不会被打进安装包。发布后请手动将该文件放到 `.exe` 同级目录，并限制文件访问权限。
+`culclaw.ini` 包含明文密码，已加入 `.gitignore`，不会被打进安装包。发布后请手动将该文件放到 `.exe` 同级目录，并限制文件访问权限。
 
 ### 安装依赖
 

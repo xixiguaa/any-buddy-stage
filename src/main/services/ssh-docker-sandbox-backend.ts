@@ -224,7 +224,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     this.containerName = `culclaw-sandbox-${randomUUID()}`;
   }
 
-  /** 从 sandbox.ini 配置文件或环境变量读取 SSH 和 Docker 配置。 */
+  /** 从 culclaw.ini 配置文件或环境变量读取 SSH 和 Docker 配置。 */
   static async fromEnvironment(
     iniPath?: string,
     environment: Record<string, string | undefined> = process.env,
