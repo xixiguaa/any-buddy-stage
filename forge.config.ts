@@ -22,7 +22,10 @@ const config: ForgeConfig = {
     // Keep runtime dependencies available for Packager's production dependency pruning.
     ignore: shouldIgnorePackagedFile,
   },
-  rebuildConfig: {},
+  // ssh2 的 cpu-features 是可选原生加速模块，不参与 Electron 重编译；保留项目必需的 better-sqlite3。
+  rebuildConfig: {
+    onlyModules: ['better-sqlite3'],
+  },
   makers: [
     new MakerSquirrel({
       authors: 'ymx',

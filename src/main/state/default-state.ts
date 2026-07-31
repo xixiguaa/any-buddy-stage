@@ -71,6 +71,7 @@ export function createDefaultState(): AppState {
     experts: DEFAULT_EXPERTS,
     expertTeams: DEFAULT_EXPERT_TEAMS,
     modelConfigs: [],
+    taskArtifacts: [],
     mcpConfigRaw: JSON.stringify({ mcpServers: {} }, null, 2),
     settings: {
       ...createDefaultSettings(),

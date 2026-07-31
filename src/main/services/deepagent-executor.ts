@@ -9,9 +9,15 @@ import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
 import { OpenAIModelService } from './openai-model-service.js';
-import { RemoteDockerSandboxBackend } from './remote-docker-sandbox-backend.js';
+import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
+
+type SshSandboxBackend = SshDockerSandboxBackend;
+
+function isSshSandboxBackend(candidate: unknown): candidate is SshSandboxBackend {
+  return candidate instanceof SshDockerSandboxBackend;
+}
 
 // CulClaw 只允许显式专家团成员作为子 Agent，禁用 DeepAgents 默认通用子 Agent。
 registerHarnessProfile('openai', {
@@ -227,8 +233,16 @@ import { CONFIG_DIR_NAME } from '../../shared/constants.js';
  * @param maxFiles 文件加载上限（防止内存开销过大）
  * @param maxFileSize 单文件读取最大体积限制（默认 2MB）
  */
-async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFileSize = 2 * 1024 * 1024): Promise<Record<string, string>> {
-  const initialFiles: Record<string, string> = {};
+type WorkspaceFileSnapshot = Record<string, Uint8Array>;
+
+/** 比较文件原始字节，避免文本解码破坏二进制产物。 */
+function fileContentEquals(left: Uint8Array, right: Uint8Array) {
+  if (left.byteLength !== right.byteLength) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFileSize = 2 * 1024 * 1024): Promise<WorkspaceFileSnapshot> {
+  const initialFiles: WorkspaceFileSnapshot = {};
   const ignoredDirs = new Set(['node_modules', '.git', 'out', 'dist', '.vite', '.tmp-tests', 'userData', 'brain', CULCLAW_DIRNAME, SYSTEM_SKILL_CACHE_DIRNAME]);
 
   async function walk(dir: string) {
@@ -248,8 +262,8 @@ async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFi
             if (fileStat.size <= maxFileSize) {
               const relative = path.relative(rootDir, fullPath).replace(/\\/g, '/');
               const virtualPath = `/${relative}`;
-              const content = await readFile(fullPath, 'utf-8');
-              initialFiles[virtualPath] = content;
+              const content = await readFile(fullPath);
+              initialFiles[virtualPath] = new Uint8Array(content);
             }
           } catch {
             // 忽略读取失败的单文件
@@ -274,7 +288,7 @@ async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFi
  * @returns 沙盒内 Skill 目录路径；同步失败时返回 null
  */
 async function mirrorSkillIntoRemoteSandboxBackend(
-  backend: RemoteDockerSandboxBackend,
+  backend: SshSandboxBackend,
   sourceSkillDir: string,
   skillId: string,
 ): Promise<string | null> {
@@ -319,43 +333,34 @@ async function mirrorSkillIntoRemoteSandboxBackend(
  * @param backend 远程 Docker 沙盒后端
  * @param rootDir 工作区物理根目录
  * @param initialFiles 初始载入的文件内容字典
+ * @param appService 应用服务实例（可选，用于关联任务产物）
+ * @param taskId 任务 ID（可选，用于关联任务产物）
  */
 async function exportSandboxOutputsToWorkspace(
-  backend: RemoteDockerSandboxBackend,
+  backend: SshSandboxBackend,
   rootDir: string,
-  initialFiles: Record<string, string>,
+  initialFiles: WorkspaceFileSnapshot,
+  appService?: AppService,
+  taskId?: string,
 ) {
   try {
-    const globResult = await backend.glob('**/*');
-    if (!globResult || !Array.isArray(globResult.files) || globResult.files.length === 0) {
-      return;
-    }
-
-    const pathsToDownload: string[] = [];
-    for (const fileInfo of globResult.files) {
-      const vPath = fileInfo.path.startsWith('/') ? fileInfo.path : `/${fileInfo.path}`;
-      // 过滤系统缓存目录
-      if (vPath.startsWith('/.system-skill-cache')) continue;
-      pathsToDownload.push(vPath);
-    }
-
-    if (pathsToDownload.length === 0) return;
-
-    const downloaded = await backend.downloadFiles(pathsToDownload);
+    const downloaded = await backend.downloadWorkspaceFiles();
     for (const item of downloaded) {
       if (item.error || !item.content) continue;
 
       const vPath = item.path.startsWith('/') ? item.path : `/${item.path}`;
+      // 过滤系统缓存目录
+      if (vPath.startsWith('/.system-skill-cache')) continue;
       const relativePath = vPath.slice(1);
       if (!relativePath) continue;
 
-      const contentStr = typeof item.content === 'string'
-        ? item.content
-        : new TextDecoder().decode(item.content);
+      const content = typeof item.content === 'string'
+        ? new TextEncoder().encode(item.content)
+        : item.content;
 
       const initialContent = initialFiles[vPath];
       // 仅当文件属于新创建，或内容相比初始载入被修改时，才同步输出到物理工作区
-      if (initialContent === undefined || initialContent !== contentStr) {
+      if (initialContent === undefined || !fileContentEquals(initialContent, content)) {
         const resolvedRootDir = path.resolve(rootDir);
         const destPath = path.resolve(resolvedRootDir, relativePath);
         const destinationRelativePath = path.relative(resolvedRootDir, destPath);
@@ -365,8 +370,11 @@ async function exportSandboxOutputsToWorkspace(
           continue;
         }
         await mkdir(path.dirname(destPath), { recursive: true });
-        await writeFile(destPath, contentStr, 'utf-8');
-        console.debug('[DeepAgentBackend] 沙盒完成，导出写入新文件到工作区:', destPath);
+        await writeFile(destPath, content);
+        if (appService && taskId) {
+          await appService.recordTaskArtifact(taskId, destPath);
+        }
+        console.debug('[DeepAgentBackend] 沙盒完成，导出写入新文件到工作区并关联任务:', destPath);
       }
     }
   } catch (error) {
@@ -712,7 +720,11 @@ export class DeepAgentExecutor implements AgentExecutor {
     const primaryWorkspace = taskWorkspaces.find(workspace => workspace.role === 'primary')?.workspace;
 
     const backendRootDir = primaryWorkspace?.path ?? process.cwd();
-    const { backend, isSandbox, initialFiles } = await this.createBackend(context, backendRootDir);
+    const { backend, isSandbox, initialFiles, disposeBackend, releaseSandbox, restoreBackend } = await this.createBackend(
+      context,
+      backendRootDir,
+      primaryWorkspace?.id,
+    );
 
     const fileExecutionConstraintPrompt = isSandbox
       ? [
@@ -753,7 +765,7 @@ export class DeepAgentExecutor implements AgentExecutor {
         context.run.id,
         context.task.skillIds,
         backendRootDir,
-        isSandbox && backend instanceof RemoteDockerSandboxBackend ? backend : undefined,
+        isSandbox && isSshSandboxBackend(backend) ? backend : undefined,
       );
 
       // 5. 解析专家团子 Agent 成员配置
@@ -1180,11 +1192,6 @@ export class DeepAgentExecutor implements AgentExecutor {
         );
       }
 
-      // 10. 若为远程沙盒后端，在 Run 成功完成后将产物同步输出到物理工作区
-      if (isSandbox && backend instanceof RemoteDockerSandboxBackend) {
-        await exportSandboxOutputsToWorkspace(backend, backendRootDir, initialFiles);
-      }
-
       return true;
     } catch (error) {
       // 若包含待用户审批中断，保持返回 true 代表运行挂起非致命失败
@@ -1193,11 +1200,23 @@ export class DeepAgentExecutor implements AgentExecutor {
       }
       throw error;
     } finally {
-      // 释放当前运行的后端实例。
-      if ('stop' in backend && typeof (backend as any).stop === 'function') {
-        await (backend as any).stop();
-      } else if ('close' in backend && typeof (backend as any).close === 'function') {
-        await (backend as any).close();
+      // 容器删除前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
+      if (isSandbox && isSshSandboxBackend(backend)) {
+        await exportSandboxOutputsToWorkspace(backend, backendRootDir, initialFiles, this.appService, context.task.id);
+      }
+
+      // 恢复共享后端上本轮临时安装的权限钩子。
+      restoreBackend?.();
+
+      // 仅释放本轮创建的临时后端；工作区沙箱由租约和工作区生命周期管理。
+      try {
+        if (disposeBackend && 'stop' in backend && typeof (backend as any).stop === 'function') {
+          await (backend as any).stop();
+        } else if (disposeBackend && 'close' in backend && typeof (backend as any).close === 'function') {
+          await (backend as any).close();
+        }
+      } finally {
+        await releaseSandbox?.();
       }
     }
   }
@@ -1253,7 +1272,7 @@ export class DeepAgentExecutor implements AgentExecutor {
     runId: string,
     skillIds: string[],
     rootDir: string,
-    sandboxBackend?: RemoteDockerSandboxBackend,
+    sandboxBackend?: SshSandboxBackend,
   ) {
     let uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
     const skillsRoot = getGlobalSkillsRoot();
@@ -1393,7 +1412,11 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param context 执行上下文
    * @param rootDir 后端根目录
    */
-  private async createBackend(context: ExecuteAgentParams['context'], rootDir: string) {
+  private async createBackend(
+    context: ExecuteAgentParams['context'],
+    rootDir: string,
+    workspaceId?: string,
+  ) {
     const isFullAccess = context.task.permissionMode === 'full_access';
 
     if (isFullAccess) {
@@ -1419,14 +1442,25 @@ export class DeepAgentExecutor implements AgentExecutor {
         });
       }
 
-      return { backend, isSandbox: false, initialFiles: {} as Record<string, string> };
+      return {
+        backend,
+        isSandbox: false,
+        initialFiles: {} as WorkspaceFileSnapshot,
+        disposeBackend: true,
+        releaseSandbox: undefined,
+        restoreBackend: undefined,
+      };
     }
 
-    // 默认权限模式：使用远程 Docker 沙盒，并上传工作区快照。
+    // 默认权限模式：直接通过 SSH 使用远程 Docker 沙盒，并上传工作区快照。
+    // 工作区有稳定 ID 时复用对应沙箱，否则保留无工作区场景的一次性后端行为。
+    const sandboxLease = workspaceId
+      ? await SshDockerSandboxBackend.acquireWorkspaceSandbox(workspaceId)
+      : undefined;
+    // 从 sandbox.ini 或环境变量创建 SSH Docker 沙盒后端。
+    const backend = sandboxLease?.backend ?? (await SshDockerSandboxBackend.fromEnvironment());
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
-    const backend = RemoteDockerSandboxBackend.fromEnvironment();
-    const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles)
-      .map(([filePath, content]) => [filePath, new TextEncoder().encode(content)] as [string, Uint8Array]);
+    const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);
     try {
       const uploadResults = await backend.uploadFiles(initialFileUploads);
       const failedUploads = uploadResults.filter(item => item.error);
@@ -1434,7 +1468,11 @@ export class DeepAgentExecutor implements AgentExecutor {
         throw new Error(`远程 Docker 沙盒初始化文件上传失败：${failedUploads.map(item => item.path).join(', ')}`);
       }
     } catch (error) {
-      await backend.close();
+      if (sandboxLease) {
+        await sandboxLease.release();
+      } else {
+        await backend.close();
+      }
       throw error;
     }
 
@@ -1445,6 +1483,8 @@ export class DeepAgentExecutor implements AgentExecutor {
       initialFileCount: Object.keys(initialFiles).length,
     });
 
+    const originalWrite = sandboxLease ? backend.write : undefined;
+    const originalEdit = sandboxLease ? backend.edit : undefined;
     if (context.task.mode !== 'craft') {
       backend.write = async (filePath: string) => ({
         error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
@@ -1456,7 +1496,21 @@ export class DeepAgentExecutor implements AgentExecutor {
       });
     }
 
-    return { backend, isSandbox: true, initialFiles };
+    const restoreBackend = sandboxLease
+      ? () => {
+        if (originalWrite) backend.write = originalWrite;
+        if (originalEdit) backend.edit = originalEdit;
+      }
+      : undefined;
+
+    return {
+      backend,
+      isSandbox: true,
+      initialFiles,
+      disposeBackend: !sandboxLease,
+      releaseSandbox: sandboxLease?.release,
+      restoreBackend,
+    };
   }
 
   /**

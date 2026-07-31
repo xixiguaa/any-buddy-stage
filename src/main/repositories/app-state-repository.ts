@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig, ExpertPreset, ExpertTeamPreset } from '../../shared/types.js'
+import type { AppState, Workspace, Task, TaskWorkspace, Message, TaskDraft, AgentRun, AgentEvent, HumanApproval, AppSettings, ModelConfig, ExpertPreset, ExpertTeamPreset, TaskArtifactRecord } from '../../shared/types.js'
 
 export class AppStateRepository {
   private db: Database.Database | null = null
@@ -169,6 +169,18 @@ export class AppStateRepository {
       CREATE TABLE IF NOT EXISTS app_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS task_artifacts (
+        id TEXT PRIMARY KEY,
+        taskId TEXT NOT NULL,
+        workspaceId TEXT,
+        relativePath TEXT NOT NULL,
+        absolutePath TEXT NOT NULL,
+        fileName TEXT NOT NULL,
+        extension TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
       );
     `)
 
@@ -416,6 +428,19 @@ export class AppStateRepository {
       appConfigMap[row.key] = row.value
     }
 
+    const taskArtifactsRows = db.prepare('SELECT * FROM task_artifacts').all() as any[]
+    const taskArtifacts: TaskArtifactRecord[] = taskArtifactsRows.map(row => ({
+      id: row.id,
+      taskId: row.taskId,
+      workspaceId: row.workspaceId || undefined,
+      relativePath: row.relativePath,
+      absolutePath: row.absolutePath,
+      fileName: row.fileName,
+      extension: row.extension,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }))
+
     return {
       version: 1,
       tasks,
@@ -429,6 +454,7 @@ export class AppStateRepository {
       experts: experts.length ? experts : initialState.experts,
       expertTeams: expertTeams.length ? expertTeams : initialState.expertTeams,
       modelConfigs: modelConfigs.length ? modelConfigs : initialState.modelConfigs,
+      taskArtifacts,
       mcpConfigRaw: appConfigMap.mcpConfigRaw || initialState.mcpConfigRaw,
       settings,
     }
@@ -452,6 +478,7 @@ export class AppStateRepository {
       db.prepare('DELETE FROM settings').run()
       db.prepare('DELETE FROM model_configs').run()
       db.prepare('DELETE FROM app_config').run()
+      db.prepare('DELETE FROM task_artifacts').run()
 
       // Insert workspaces
       const insertWorkspace = db.prepare(`
@@ -682,6 +709,24 @@ export class AppStateRepository {
         VALUES (?, ?)
       `)
       insertAppConfig.run('mcpConfigRaw', s.mcpConfigRaw)
+
+      const insertTaskArtifact = db.prepare(`
+        INSERT INTO task_artifacts (id, taskId, workspaceId, relativePath, absolutePath, fileName, extension, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      for (const ta of s.taskArtifacts ?? []) {
+        insertTaskArtifact.run(
+          ta.id,
+          ta.taskId,
+          ta.workspaceId || null,
+          ta.relativePath,
+          ta.absolutePath,
+          ta.fileName,
+          ta.extension,
+          ta.createdAt,
+          ta.updatedAt
+        )
+      }
     })
 
     runTransaction(state)

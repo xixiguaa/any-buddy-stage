@@ -225,6 +225,8 @@ export type AppState = {
   experts: ExpertPreset[]
   expertTeams: ExpertTeamPreset[]
   modelConfigs: ModelConfig[]
+  /** 任务与产物关联持久化记录 */
+  taskArtifacts?: TaskArtifactRecord[]
   mcpConfigRaw: string
   settings: AppSettings
 }
@@ -307,10 +309,34 @@ export type CreateAgentRunInput = {
   expertId?: string
 }
 
+/** 任务关联产物持久化记录 */
+export interface TaskArtifactRecord {
+  /** 记录 ID */
+  id: string
+  /** 关联的任务 ID */
+  taskId: string
+  /** 关联的工作区 ID */
+  workspaceId?: string
+  /** 相对工作区路径 */
+  relativePath: string
+  /** 磁盘绝对路径 */
+  absolutePath: string
+  /** 文件名 */
+  fileName: string
+  /** 扩展名 */
+  extension: string
+  /** 创建时间 */
+  createdAt: string
+  /** 修改时间 */
+  updatedAt: string
+}
+
 /** 工作区扫描出的产物文件对象 */
 export interface WorkspaceArtifact {
   /** 成果唯一标识 (可由相对路径或 hash 生成) */
   id: string
+  /** 关联的任务 ID */
+  taskId?: string
   /** 文件显示名称，例如 "GPT-5.5产品调研报告.docx" */
   name: string
   /** 相对工作区根目录的路径，例如 "reports/GPT-5.5产品调研报告.docx" */

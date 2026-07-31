@@ -1,6 +1,7 @@
 import { AlertCircle, Edit2, Play, Terminal, XCircle } from 'lucide-react'
 import { Button, Input, Modal } from 'antd'
-import { getPlanApprovalText, useTaskDetail } from './TaskDetailContext.js'
+import { useTaskDetail } from './TaskDetailContext.js'
+import { getPlanApprovalText } from './task-detail-utils.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 
 /**

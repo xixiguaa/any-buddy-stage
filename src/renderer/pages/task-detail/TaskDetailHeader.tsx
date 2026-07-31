@@ -1,6 +1,7 @@
 import { Tag } from 'antd'
 import type { TaskMode } from '../../../shared/types.js'
-import { getStatusLabelAndColor, useTaskDetail } from './TaskDetailContext.js'
+import { useTaskDetail } from './TaskDetailContext.js'
+import { getStatusLabelAndColor } from './task-detail-utils.js'
 
 /**
  * 提取模式标签与样式映射

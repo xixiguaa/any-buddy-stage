@@ -115,34 +115,30 @@ function DocxPreviewer({ file }: { file: WorkspaceArtifact }) {
     }
   }, [file.absolutePath])
 
-  if (loading) {
-    return (
-      <div style={{ display: 'grid', placeItems: 'center', height: '100%', padding: '40px' }}>
-        <Spin tip="正在渲染 DOCX 文档..." />
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div style={{ display: 'grid', placeItems: 'center', height: '100%', padding: '40px' }}>
-        <Empty description={`DOCX 预览失败: ${error}`} />
-      </div>
-    )
-  }
-
   return (
-    <div
-      ref={containerRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        overflow: 'auto',
-        background: '#f8fafc',
-        padding: '16px',
-        boxSizing: 'border-box',
-      }}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%', background: '#f8fafc' }}>
+      {/* 加载时也保留 DOCX 容器，避免异步渲染时 ref 尚未挂载。 */}
+      <div
+        ref={containerRef}
+        style={{
+          width: '100%',
+          height: '100%',
+          overflow: 'auto',
+          padding: '16px',
+          boxSizing: 'border-box',
+        }}
+      />
+      {loading && (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: '40px' }}>
+          <Spin tip="正在渲染 DOCX 文档..." />
+        </div>
+      )}
+      {error && (
+        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: '40px', background: '#f8fafc' }}>
+          <Empty description={`DOCX 预览失败: ${error}`} />
+        </div>
+      )}
+    </div>
   )
 }
 

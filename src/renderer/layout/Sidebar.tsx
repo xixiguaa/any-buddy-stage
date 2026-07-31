@@ -20,6 +20,7 @@ import {
   SlidersOutlined
 } from '@ant-design/icons'
 import { Sparkles, ShieldAlert, Award, MoreHorizontal } from 'lucide-react'
+import logoImg from '../assets/img/logo.png'
 import { useAppStore } from '../stores/app-store.js'
 import { createCulclawClients } from '../api/clients.js'
 import { rendererApi } from '../api/bridge.js'
@@ -338,23 +339,16 @@ export default function Sidebar() {
           {!collapsed ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{
-                  background: '#6F2BDC',
-                  color: '#ffffff',
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '8px',
-                  display: 'grid',
-                  placeItems: 'center',
-                  fontWeight: 'bold',
-                  fontSize: '16px'
-                }}>
-                  W
-                </div>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#0f172a', lineHeight: '1.2' }}>anybuddy</div>
-                  <div style={{ fontSize: '10px', color: '#94a3b8' }}>v1.1.5 · local AI</div>
-                </div>
+                {/* 使用项目 logo 图片 */}
+                <img
+                  src={logoImg}
+                  alt="logo"
+                  style={{
+                    width: '130px',
+                    height: '36px',
+                    objectFit: "fill"
+                  }}
+                />
               </div>
               <Space size={2}>
                 <Tooltip title="收起侧边栏">

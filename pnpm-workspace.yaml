@@ -7,11 +7,13 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   esbuild: true
+  ssh2: true
 
 blockExoticSubdeps: false
 
-# 忽略 @napi-rs/canvas 在非 Windows 平台的可选二进制包，避免网络下载失败
+# 忽略当前平台不需要的可选原生包，避免下载或编译失败
 ignoredOptionalDependencies:
+  - cpu-features
   - '@napi-rs/canvas-darwin-arm64'
   - '@napi-rs/canvas-darwin-x64'
   - '@napi-rs/canvas-linux-arm-gnueabihf'

@@ -1,0 +1,14 @@
+[ssh]
+host=your-server.example.com
+user=ubuntu
+password=replace-with-password
+port=22
+# key_path=C:\Users\your-name\.ssh\id_ed25519
+# key_passphrase=replace-with-key-passphrase
+# host_fingerprint=SHA256:replace-with-server-fingerprint
+timeout_ms=120000
+max_output_bytes=1048576
+max_transfer_bytes=67108864
+
+[docker]
+image=node:22-bookworm-slim

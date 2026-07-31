@@ -3,17 +3,32 @@ import { join } from 'node:path'
 import { AppEventBus } from './runtime/event-bus.js'
 import { AppStateRepository } from './repositories/app-state-repository.js'
 import { AppService } from './services/app-service.js'
+import { SshDockerSandboxBackend } from './services/ssh-docker-sandbox-backend.js'
 import { registerIpcHandlers } from './ipc/register-ipc-handlers.js'
 import { installGlobalErrorHandlers, logProcessError } from './runtime/error-logger.js'
 import { createMainWindow } from './window/create-main-window.js'
 
 const bus = new AppEventBus()
 let mainWindow: BrowserWindow | null = null
+let sandboxCleanupComplete = false
+let sandboxCleanupPromise: Promise<void> | undefined
 
 installGlobalErrorHandlers()
 
 function openMainWindow() {
   mainWindow = createMainWindow()
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    // 开发环境通过快捷键手动切换调试控制台，避免启动时自动打开。
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      const isDevToolsShortcut =
+        input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i')
+
+      if (input.type === 'keyDown' && isDevToolsShortcut) {
+        event.preventDefault()
+        mainWindow?.webContents.toggleDevTools()
+      }
+    })
+  }
   mainWindow.on('closed', () => {
     if (mainWindow?.isDestroyed()) {
       mainWindow = null
@@ -29,6 +44,23 @@ async function bootstrap() {
 
   const repository = new AppStateRepository(join(app.getPath('userData'), DB_FILE_NAME))
   const service = new AppService(repository, bus)
+
+  app.on('before-quit', event => {
+    if (sandboxCleanupComplete) return
+
+    event.preventDefault()
+    if (sandboxCleanupPromise) return
+
+    sandboxCleanupPromise = SshDockerSandboxBackend.closeAllWorkspaceSandboxes()
+      .catch(error => {
+        logProcessError({ scope: 'sandbox-cleanup' }, error)
+      })
+      .finally(() => {
+        sandboxCleanupComplete = true
+        app.quit()
+      })
+  })
+
   await service.init()
   registerIpcHandlers(service)
 

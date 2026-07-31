@@ -4,6 +4,7 @@ dist
 out
 *.log
 *.tsbuildinfo
+sandbox.ini
 src/main/state.json
 .tmp-tests/
 .opencode

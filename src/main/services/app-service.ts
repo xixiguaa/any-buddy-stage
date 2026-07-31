@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { shell, dialog } from 'electron'
 import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import path, { join } from 'node:path'
 import os from 'node:os'
 import { AppEventBus } from '../runtime/event-bus.js'
 import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
 import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js'
 import { OpenAIModelService } from './openai-model-service.js'
+import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js'
 import { ChatOpenAI } from '@langchain/openai'
 import type {
   AgentEvent,
@@ -33,6 +34,7 @@ import type {
   Workspace,
   WorkspaceSummary,
   ModelConfig,
+  TaskArtifactRecord,
 } from '../../shared/types.js'
 import { createId, nowIso } from '../../shared/utils.js'
 
@@ -582,7 +584,7 @@ export class AppService {
    * 若未指定工作区，则自动在用户目录 AnyBuddy 文件夹下创建 "年-月-日 时-分秒" 格式的工作区并绑定。
    */
   async createTask(input: CreateTaskInput): Promise<Task> {
-    return this.mutate(state => {
+    const task = await this.mutate(state => {
       const now = nowIso()
       const resolvedModelId = this.resolveTaskModelId(input.modelId)
 
@@ -658,6 +660,8 @@ export class AppService {
 
       return task
     })
+
+    return task
   }
 
   /**
@@ -843,6 +847,67 @@ ${initialPrompt.slice(0, 1000)}
       })
   }
 
+  /** 关联并记录任务产物文件 */
+  async recordTaskArtifact(taskId: string, filePath: string, workspaceId?: string): Promise<TaskArtifactRecord | null> {
+    const ext = path.extname(filePath).toLowerCase().replace(/^\./, '')
+    if (!ext) return null
+
+    const fileName = path.basename(filePath)
+    const taskWorkspaces = this.listTaskWorkspaces(taskId)
+    let matchedWs = taskWorkspaces.find(tw => tw.workspaceId === workspaceId)?.workspace
+    if (!matchedWs && taskWorkspaces.length > 0) {
+      matchedWs = taskWorkspaces[0].workspace
+    }
+    const basePath = matchedWs ? matchedWs.path : path.dirname(filePath)
+    const relPath = path.relative(basePath, filePath).replace(/\\/g, '/')
+
+    let updatedTask: Task | null = null
+    const record = await this.mutate(state => {
+      if (!state.taskArtifacts) {
+        state.taskArtifacts = []
+      }
+      const existingIdx = state.taskArtifacts.findIndex(
+        item => item.taskId === taskId && item.absolutePath === filePath
+      )
+      const now = nowIso()
+      const record: TaskArtifactRecord = {
+        id: existingIdx >= 0 ? state.taskArtifacts[existingIdx].id : createId('artifact'),
+        taskId,
+        workspaceId: matchedWs?.id,
+        relativePath: relPath,
+        absolutePath: filePath,
+        fileName,
+        extension: ext,
+        createdAt: existingIdx >= 0 ? state.taskArtifacts[existingIdx].createdAt : now,
+        updatedAt: now,
+      }
+      if (existingIdx >= 0) {
+        state.taskArtifacts[existingIdx] = record
+      } else {
+        state.taskArtifacts.unshift(record)
+      }
+
+      // 产物落盘后更新任务时间，以便渲染进程收到运行时补丁并重新扫描产物。
+      const task = state.tasks.find(item => item.id === taskId)
+      if (task) {
+        task.updatedAt = now
+        updatedTask = { ...task }
+      }
+      return record
+    })
+
+    if (updatedTask) {
+      this.emitTaskRuntimePatch(taskId, { task: updatedTask })
+    }
+    return record
+  }
+
+  /** 获取指定任务绑定的产物记录列表 */
+  listTaskArtifacts(taskId: string): TaskArtifactRecord[] {
+    return (this.snapshot.taskArtifacts || [])
+      .filter(item => item.taskId === taskId)
+  }
+
   /** 清空任务的未读事件计数 */
   async markRead(taskId: string): Promise<Task> {
     return this.mutate(state => {
@@ -969,7 +1034,7 @@ ${initialPrompt.slice(0, 1000)}
 
   /** 创建新的本地项目工作区 */
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
-    return this.mutate(state => {
+    const workspace = await this.mutate(state => {
       const now = nowIso()
       const workspace: Workspace = {
         id: createId('workspace'),
@@ -985,6 +1050,8 @@ ${initialPrompt.slice(0, 1000)}
       state.workspaces.unshift(workspace)
       return workspace
     })
+
+    return workspace
   }
 
   /** 归档/移除工作区 */
@@ -996,6 +1063,11 @@ ${initialPrompt.slice(0, 1000)}
         workspace.updatedAt = nowIso()
       }
       state.taskWorkspaces = state.taskWorkspaces.filter(rel => rel.workspaceId !== workspaceId || rel.role === 'primary')
+    })
+
+    // 归档后异步等待正在运行的任务结束，并按工作区标签清理远程遗留容器。
+    void SshDockerSandboxBackend.releaseWorkspaceSandbox(workspaceId).catch(error => {
+      console.warn('[AppService] 释放工作区沙箱失败:', workspaceId, error)
     })
   }
 

@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { AlertCircle, Edit2, Play, ShieldAlert, Terminal, XCircle } from 'lucide-react'
 import { Button, Tag } from 'antd'
-import { getPlanApprovalText, getStatusLabelAndColor, useTaskDetail } from './TaskDetailContext.js'
+import { useTaskDetail } from './TaskDetailContext.js'
+import { getPlanApprovalText, getStatusLabelAndColor } from './task-detail-utils.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 
 function formatAccessMode(value: 'read_only' | 'read_write') {

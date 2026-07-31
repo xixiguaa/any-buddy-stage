@@ -27,6 +27,33 @@ function sanitizeModelConfigs(models: ModelConfig[]) {
   return models.filter(model => !(model.id === 'local-preview' && model.provider === 'builtin'))
 }
 
+/** 保留任务产物落盘等较新的任务更新时间，避免被旧的运行状态补丁覆盖。 */
+function getLatestUpdatedAt(current: string, candidate?: string): string {
+  return candidate && candidate > current ? candidate : current
+}
+
+/**
+ * 当前详情页已确认主运行状态时，同步左侧任务摘要。
+ * 正常路径由 task 补丁完成同步；仅在该补丁缺失时使用运行状态兜底。
+ */
+function mergeCurrentRunStatusIntoTaskSummary(
+  tasks: TaskSummary[],
+  taskDetail: Task | null | undefined,
+  run: AgentRun | undefined,
+): TaskSummary[] {
+  if (!taskDetail || !run || run.kind !== 'main' || taskDetail.lastRunId !== run.id) {
+    return tasks
+  }
+
+  return tasks.map(task => task.id === run.taskId
+    ? {
+        ...task,
+        status: run.status,
+        updatedAt: getLatestUpdatedAt(task.updatedAt, run.updatedAt),
+      }
+    : task)
+}
+
 export type SidebarTimeRange = 'all' | 'today' | 'last_7_days' | 'last_30_days'
 
 type AppStoreState = {
@@ -408,6 +435,10 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     }
   }
 
+  if (!payload.task) {
+    nextTasks = mergeCurrentRunStatusIntoTaskSummary(nextTasks, nextTaskDetail, activeRun)
+  }
+
   return {
     agentRuns: nextRuns,
     taskEvents: nextEvents,
@@ -435,6 +466,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
   let taskDetail = state.taskDetail
   let nextTasks = state.tasks
   let hasVisibleMessageChange = false
+  let hasTaskPatch = false
 
   for (const payload of matchingPayloads) {
     if (payload.kind === 'snapshot') {
@@ -514,6 +546,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     }
 
     if (payload.task) {
+      hasTaskPatch = true
       if (taskDetail && taskDetail.id === taskId) {
         taskDetail = { ...taskDetail, ...payload.task }
       }
@@ -531,9 +564,13 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     taskDetail = {
       ...taskDetail,
       status: activeRun?.status ?? taskDetail.status,
-      updatedAt: activeRun?.updatedAt ?? taskDetail.updatedAt,
+      updatedAt: getLatestUpdatedAt(taskDetail.updatedAt, activeRun?.updatedAt),
       lastRunId: activeRun?.id ?? taskDetail.lastRunId,
     }
+  }
+
+  if (!hasTaskPatch) {
+    nextTasks = mergeCurrentRunStatusIntoTaskSummary(nextTasks, taskDetail, activeRun)
   }
 
   return {

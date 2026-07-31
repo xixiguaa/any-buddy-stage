@@ -59,13 +59,32 @@ AnyBuddy 将 Agent 的工作方式与能力边界分开配置，避免将产品�
 
 ### 远程 Docker 沙盒
 
-默认权限模式通过远程 Docker 容器执行 Agent 命令。启动应用前需要设置：
+默认权限模式直接通过 SSH 连接远程服务器，并在远程 Docker 容器中执行 Agent 命令。完全访问权限仍使用本地 `LocalShellBackend`。
+
+### SSH 远程 Docker 沙盒
+
+如果远程服务器没有 HTTP 沙盒服务，但可以通过 SSH 使用 Docker，可使用内置 `ssh2` 客户端执行远程 Docker 命令：
 
 ```bash
-SANDBOX_SERVER_URL=http://sandbox-server:8080
+SANDBOX_SSH_HOST=your-server.example.com
+SANDBOX_SSH_USER=ubuntu
+SANDBOX_SSH_PORT=22
+SANDBOX_SSH_PASSWORD=your-password
+# 或使用密钥认证：SANDBOX_SSH_KEY_PATH=/path/to/id_ed25519
+# 可选：SANDBOX_SSH_KEY_PASSPHRASE=your-key-passphrase
+# 可选：SANDBOX_SSH_HOST_FINGERPRINT=SHA256:...
+SANDBOX_DOCKER_IMAGE=node:22-bookworm-slim
 ```
 
-可选环境变量为 `SANDBOX_SERVER_TOKEN`（Bearer Token）和 `SANDBOX_SERVER_TIMEOUT_MS`（请求超时毫秒数，默认 `120000`）。远程服务需要提供 `POST /execute`、`POST /files/upload`、`POST /files/download` 与 `POST /close`；请求和响应结构见 `src/main/services/remote-docker-sandbox-backend.ts` 中的中文注释。容器必须支持 POSIX shell，以及 `awk`、`grep`、`find`、`stat` 等基础命令。完全访问权限仍使用本地 `LocalShellBackend`。
+同一个工作区下的任务共享同一个 SSH Docker 沙箱。工作区创建后会异步预热容器，任务首次运行会等待预热完成；应用退出或工作区归档时会清理对应容器。
+
+设置 `SANDBOX_SSH_HOST` 后，应用会使用 SSH 后端；也可以将 `SANDBOX_SERVER_URL` 写成 `ssh://user@host:22` 触发 SSH 后端。远程 SSH 用户必须有权限执行 Docker。未设置 `SANDBOX_SSH_HOST_FINGERPRINT` 时，`ssh2` 会接受服务器提供的主机密钥，生产环境建议配置该值；密码会通过进程环境传入，请勿提交到仓库。容器需要提供 POSIX shell、`base64`、`dirname`、`mkdir`、`tr` 等基础命令；可通过 `SANDBOX_DOCKER_IMAGE` 指定已有镜像。可选的 `SANDBOX_SSH_TIMEOUT_MS`、`SANDBOX_SSH_MAX_OUTPUT_BYTES` 和 `SANDBOX_SSH_MAX_TRANSFER_BYTES` 分别控制命令超时、命令输出上限（默认 1 MiB）和文件传输输出上限（默认 64 MiB）。
+
+### sandbox.ini 配置
+
+桌面应用启动时会读取 `sandbox.ini`：开发环境读取项目根目录，打包后读取应用 `.exe` 同级目录。可参考 `sandbox.ini.example` 配置 `[ssh]` 和 `[docker]`。INI 中已填写的字段优先，未填写的字段仍可通过同名 `SANDBOX_*` 环境变量提供，以兼容旧配置。
+
+`sandbox.ini` 包含明文密码，已加入 `.gitignore`，不会被打进安装包。发布后请手动将该文件放到 `.exe` 同级目录，并限制文件访问权限。
 
 ### 安装依赖
 
