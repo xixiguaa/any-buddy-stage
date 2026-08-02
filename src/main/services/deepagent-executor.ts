@@ -172,6 +172,19 @@ function normalizeMessageContent(content: unknown): string | null {
 }
 
 /**
+ * 移除推理模型（如 DeepSeek-R1、Qwen-Reasoning 等）意外写入正文的 <think> 块，避免思维链进入消息流与持久化记录。
+ */
+export function stripThinkingContent(content: string): string {
+  const withoutThinkBlocks = content
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '')
+    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
+    .replace(/<think\b[^>]*$/gi, '');
+
+  // 流式分块可能将 <think> 标签切开，暂时隐藏标签前缀，等下一块到达后再统一处理。
+  return withoutThinkBlocks.replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, '').trim();
+}
+
+/**
  * 规范化角色标识为标准的 ModelMessage 角色类型
  * 
  * @param role 原始角色字符串
@@ -846,6 +859,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       });
 
       // 临时映射与状态存储变量
+      const rawAccumulatedMessagesMap = new Map<string, string>();
       const accumulatedMessagesMap = new Map<string, string>();
       // 保留每个流式段的来源，以便运行结束后把已展示内容转为历史消息。
       const streamedMessageMetadataById = new Map<string, {
@@ -1047,23 +1061,27 @@ export class DeepAgentExecutor implements AgentExecutor {
 
             // 7.3 处理助手流式文本 Token 输出
             const tokenText = readChunkText(message);
-            if (tokenText && toolCallChunks.length === 0 && !isToolResultMessage(message)) {
+            if (tokenText && !isToolResultMessage(message)) {
               const chunkMessageId = readMessageId(message);
               const streamSegment = streamSegmentBySource.get(source) ?? 0;
               const msgId = chunkMessageId
                 ? `chunk-${chunkMessageId}`
                 : `stream-${source}-${streamSegment}`;
-              const nextText = `${accumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
+              const nextRawText = `${rawAccumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
+              rawAccumulatedMessagesMap.set(msgId, nextRawText);
+              const nextText = stripThinkingContent(nextRawText);
               accumulatedMessagesMap.set(msgId, nextText);
               streamedMessageMetadataById.set(msgId, {
                 namespace: source,
                 subagentName: currentSubagentName,
               });
-              latestAssistantMessage = nextText;
-              latestAssistantMessageId = msgId;
-              if (source === 'main') {
-                mainAssistantMessage = nextText;
-                mainAssistantMessageId = msgId;
+              if (nextText.trim().length > 0) {
+                latestAssistantMessage = nextText;
+                latestAssistantMessageId = msgId;
+                if (source === 'main') {
+                  mainAssistantMessage = nextText;
+                  mainAssistantMessageId = msgId;
+                }
               }
               // 实时更新 Agent 消息事件到 AppService
               await this.appService.upsertAgentMessageEvent(context.run.id, `msg-${msgId}`, nextText, {

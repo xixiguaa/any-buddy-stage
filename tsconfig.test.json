@@ -8,6 +8,7 @@
     "sourceMap": false
   },
   "include": [
+    "src/main/services/deepagent-executor.test.ts",
     "src/main/services/agent-runtime-service.test.ts",
     "src/main/services/ssh-docker-sandbox-backend.test.ts",
     "src/main/services/tool-registry-service.test.ts",

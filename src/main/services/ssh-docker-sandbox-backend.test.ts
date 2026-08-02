@@ -5,13 +5,12 @@ import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
 test('releaseWorkspaceSandbox cleans remote containers when the local pool is empty', async () => {
   const backendClass = SshDockerSandboxBackend as any;
   const originalFromEnvironment = backendClass.fromEnvironment;
-  const commands: string[] = [];
+  const commands: string[][] = [];
   let closeCount = 0;
 
   backendClass.fromEnvironment = async () => ({
-    dockerCommand: 'docker',
-    async runSsh(command: string) {
-      commands.push(command);
+    async runDocker(args: string[]) {
+      commands.push(args);
       return commands.length === 1
         ? {
             stdout: 'abcdef012345\n012345abcdef\nnot-a-container-id\n',
@@ -34,8 +33,44 @@ test('releaseWorkspaceSandbox cleans remote containers when the local pool is em
   }
 
   assert.deepEqual(commands, [
-    "docker ps -aq --filter 'label=culclaw.sandbox.id=workspace-workspace-a'",
-    "docker rm -f 'abcdef012345' '012345abcdef'",
+    ['ps', '-aq', '--filter', 'label=culclaw.sandbox.id=workspace-workspace-a'],
+    ['rm', '-f', 'abcdef012345', '012345abcdef'],
   ]);
   assert.equal(closeCount, 1);
+});
+
+test('local docker passes the upload script as one Docker argument', () => {
+  const backend = new SshDockerSandboxBackend({ mode: 'local' });
+  const backendState = backend as any;
+  backendState.containerId = 'sandbox-container';
+  const script = 'while IFS="|" read -r encodedPath encodedContent; do echo "$encodedPath"; done';
+
+  assert.deepEqual(backendState.buildDockerExecArgs(script, true), [
+    'exec',
+    '-i',
+    '-w',
+    '/workspace',
+    'sandbox-container',
+    'sh',
+    '-lc',
+    script,
+  ]);
+});
+
+test('fromEnvironment resolves local docker mode by default when no SSH host is configured', async () => {
+  const backend = await SshDockerSandboxBackend.fromEnvironment(undefined, {
+    SANDBOX_TYPE: 'local',
+  });
+  assert.equal(backend.mode, 'local');
+  await backend.close();
+});
+
+test('fromEnvironment resolves ssh docker mode when SSH host is provided', async () => {
+  const backend = await SshDockerSandboxBackend.fromEnvironment(undefined, {
+    SANDBOX_TYPE: 'ssh',
+    SANDBOX_SSH_HOST: '127.0.0.1',
+    SANDBOX_SSH_PASSWORD: 'test-password',
+  });
+  assert.equal(backend.mode, 'ssh');
+  await backend.close();
 });

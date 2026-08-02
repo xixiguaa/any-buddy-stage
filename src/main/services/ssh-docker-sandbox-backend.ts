@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Writable } from 'node:stream';
@@ -33,8 +34,9 @@ const DOCKER_IMAGES_BY_TYPE = {
 type DockerImageType = keyof typeof DOCKER_IMAGES_BY_TYPE;
 const CONTAINER_WORKDIR = '/workspace';
 
-type SshDockerSandboxBackendOptions = {
-  host: string;
+export type SshDockerSandboxBackendOptions = {
+  mode?: 'local' | 'ssh';
+  host?: string;
   username?: string;
   port?: number;
   privateKeyPath?: string;
@@ -102,6 +104,7 @@ function resolveDockerImage(imageType: DockerImageType | undefined, image: strin
  */
 export class SshDockerSandboxBackend extends BaseSandbox {
   readonly id: string;
+  readonly mode: 'local' | 'ssh';
 
   /** 主进程内按工作区复用的远程 Docker 沙箱。 */
   private static readonly workspaceSandboxPool = new Map<string, WorkspaceSandboxPoolEntry>();
@@ -205,14 +208,15 @@ export class SshDockerSandboxBackend extends BaseSandbox {
   constructor(options: SshDockerSandboxBackendOptions) {
     super();
 
-    this.host = validateHost(options.host);
+    this.mode = options.mode ?? (options.host ? 'ssh' : 'local');
+    this.host = validateHost(options.host ?? 'localhost');
     this.username = validateUsername(options.username);
     this.port = validatePort(options.port ?? 22);
     this.privateKeyPath = options.privateKeyPath?.trim() || undefined;
     this.password = options.password;
     this.passphrase = options.passphrase;
     this.hostFingerprint = normalizeFingerprint(options.hostFingerprint);
-    if (!this.password && !this.privateKeyPath) {
+    if (this.mode === 'ssh' && !this.password && !this.privateKeyPath) {
       throw new Error('请配置 SANDBOX_SSH_PASSWORD 或 SANDBOX_SSH_KEY_PATH。');
     }
     this.timeoutMs = validatePositiveNumber(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs');
@@ -231,11 +235,31 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     options: Pick<SshDockerSandboxBackendOptions, 'sandboxId'> = {},
   ) {
     const iniConfig = await readSandboxIni(iniPath);
-    const getConf = (key: string): string | undefined => iniConfig[key]?.trim() || environment[key]?.trim();
+    const getConf = (key: string): string | undefined => environment[key]?.trim() || iniConfig[key]?.trim();
+
+    const rawMode = getConf('SANDBOX_TYPE') || getConf('SANDBOX_MODE');
+    let mode: 'local' | 'ssh' = 'local';
+    const normalizedMode = rawMode?.trim().toLowerCase();
+
+    if (normalizedMode?.includes('local')) {
+      mode = 'local';
+    } else if (normalizedMode?.includes('ssh') || normalizedMode?.includes('remote')) {
+      mode = 'ssh';
+    } else {
+      const configuredServerUrl = getConf('SANDBOX_SERVER_URL');
+      const configuredSshHost = getConf('SANDBOX_SSH_HOST');
+      const configuredPassword = getConf('SANDBOX_SSH_PASSWORD');
+      const configuredKeyPath = getConf('SANDBOX_SSH_KEY_PATH');
+      if ((configuredSshHost || configuredServerUrl?.toLowerCase().startsWith('ssh://')) && (configuredPassword || configuredKeyPath)) {
+        mode = 'ssh';
+      } else {
+        mode = 'local';
+      }
+    }
 
     const configuredServerUrl = getConf('SANDBOX_SERVER_URL');
     let sshUrl: URL | undefined;
-    if (!getConf('SANDBOX_SSH_HOST') && configuredServerUrl?.toLowerCase().startsWith('ssh://')) {
+    if (mode === 'ssh' && !getConf('SANDBOX_SSH_HOST') && configuredServerUrl?.toLowerCase().startsWith('ssh://')) {
       try {
         sshUrl = new URL(configuredServerUrl);
         if (sshUrl.protocol !== 'ssh:') {
@@ -246,8 +270,8 @@ export class SshDockerSandboxBackend extends BaseSandbox {
       }
     }
 
-    const host = getConf('SANDBOX_SSH_HOST') || sshUrl?.hostname;
-    if (!host) {
+    const host = getConf('SANDBOX_SSH_HOST') || sshUrl?.hostname || (mode === 'local' ? 'localhost' : undefined);
+    if (mode === 'ssh' && !host) {
       throw new Error('缺少 SANDBOX_SSH_HOST 或有效的 SANDBOX_SERVER_URL 配置，无法创建 SSH Docker 沙盒。');
     }
 
@@ -259,6 +283,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     const urlPort = sshUrl?.port ? Number(sshUrl.port) : undefined;
 
     return new SshDockerSandboxBackend({
+      mode,
       host,
       username,
       port: parseEnvironmentNumber(
@@ -296,7 +321,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
   /** 在远程 Docker 容器内执行命令。 */
   async execute(command: string): Promise<ExecuteResponse> {
     await this.ensureContainer();
-    const result = await this.runSsh(this.buildDockerExecCommand(command));
+    const result = await this.runDocker(this.buildDockerExecArgs(command));
     const output = result.stdout && result.stderr
       ? `${result.stdout}\n${result.stderr}`
       : result.stdout || result.stderr;
@@ -332,8 +357,8 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     if (candidates.length === 0) return responses;
     await this.ensureContainer();
 
-    const result = await this.runSsh(
-      this.buildDockerExecCommand(this.createUploadScript(), true),
+    const result = await this.runDocker(
+      this.buildDockerExecArgs(this.createUploadScript(), true),
       async stdin => {
         for (const candidate of candidates) {
           const encodedContent = Buffer.from(candidate.content).toString('base64');
@@ -371,8 +396,8 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     if (candidates.length === 0) return responses;
     await this.ensureContainer();
 
-    const result = await this.runSsh(
-      this.buildDockerExecCommand(this.createDownloadScript(), true),
+    const result = await this.runDocker(
+      this.buildDockerExecArgs(this.createDownloadScript(), true),
       async stdin => {
         for (const candidate of candidates) {
           await writeChunk(stdin, `${candidate.encodedPath}\n`);
@@ -391,8 +416,8 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     await this.ensureContainer();
 
     // 使用 NUL 分隔，避免文件名含换行符时破坏传输列表。
-    const listed = await this.runSsh(
-      this.buildDockerExecCommand('find . -type f -print0'),
+    const listed = await this.runDocker(
+      this.buildDockerExecArgs('find . -type f -print0'),
       undefined,
       this.maxTransferBytes,
     );
@@ -495,9 +520,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     const labelFilter = `label=culclaw.sandbox.id=${sandboxId}`;
 
     try {
-      const listed = await backend.runSsh(
-        `${backend.dockerCommand} ps -aq --filter ${shellQuote(labelFilter)}`,
-      );
+      const listed = await backend.runDocker(['ps', '-aq', '--filter', labelFilter]);
       if (listed.exitCode !== 0) {
         throw new Error(backend.formatCommandFailure(listed, '查询远程 Docker 工作区容器'));
       }
@@ -508,9 +531,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
         .filter(containerId => /^[a-f0-9]{12,64}$/i.test(containerId));
       if (containerIds.length === 0) return;
 
-      const removed = await backend.runSsh(
-        `${backend.dockerCommand} rm -f ${containerIds.map(shellQuote).join(' ')}`,
-      );
+      const removed = await backend.runDocker(['rm', '-f', ...containerIds]);
       if (removed.exitCode !== 0) {
         throw new Error(backend.formatCommandFailure(removed, '删除远程 Docker 工作区容器'));
       }
@@ -538,20 +559,19 @@ export class SshDockerSandboxBackend extends BaseSandbox {
 
   private async createContainer(): Promise<void> {
     const command = [
-      this.dockerCommand,
       'run',
       '-d',
       '--name',
-      shellQuote(this.containerName),
+      this.containerName,
       '--label',
-      shellQuote(`culclaw.sandbox.id=${this.id}`),
-      shellQuote(this.dockerImage),
+      `culclaw.sandbox.id=${this.id}`,
+      this.dockerImage,
       'sh',
       '-lc',
-      shellQuote(`mkdir -p ${shellQuote(this.containerWorkdir)} && while :; do sleep 3600; done`),
-    ].join(' ');
+      `mkdir -p ${shellQuote(this.containerWorkdir)} && while :; do sleep 3600; done`,
+    ];
 
-    const result = await this.runSsh(command);
+    const result = await this.runDocker(command);
     if (result.exitCode !== 0) {
       throw new Error(this.formatCommandFailure(result, '创建远程 Docker 容器'));
     }
@@ -563,58 +583,59 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     this.containerId = containerId;
   }
 
-  private buildDockerExecCommand(command: string, interactive = false): string {
+  private buildDockerExecArgs(command: string, interactive = false): string[] {
     if (!this.containerId) {
       throw new Error('远程 Docker 容器尚未创建。');
     }
 
     return [
-      this.dockerCommand,
       'exec',
       ...(interactive ? ['-i'] : []),
       '-w',
-      shellQuote(this.containerWorkdir),
-      shellQuote(this.containerId),
+      this.containerWorkdir,
+      this.containerId,
       'sh',
       '-lc',
-      shellQuote(command),
-    ].join(' ');
+      command,
+    ];
   }
 
+  /** 构造文件上传 Shell 脚本，压缩为单行避免 SSH 模式下换行符被宿主 Shell 切割导致 exit code 255 报错 */
   private createUploadScript(): string {
     return [
       'while IFS="|" read -r encodedPath encodedContent; do',
-      '  [ -n "$encodedPath" ] || continue',
-      '  path=$(printf "%s" "$encodedPath" | base64 -d 2>/dev/null) || { printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue; }',
-      '  case "$path" in /*) ;; *) printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue ;; esac',
-      '  parent=$(dirname "$path")',
+      '  [ -n "$encodedPath" ] || continue;',
+      '  path=$(printf "%s" "$encodedPath" | base64 -d 2>/dev/null) || { printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue; };',
+      '  case "$path" in /*) ;; *) printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue ;; esac;',
+      '  parent=$(dirname "$path");',
       '  if mkdir -p "$parent" && printf "%s" "$encodedContent" | base64 -d > "$path"; then',
-      '    printf "OK|%s\\n" "$encodedPath"',
+      '    printf "OK|%s\\n" "$encodedPath";',
       '  else',
-      '    printf "ERR|%s|permission_denied\\n" "$encodedPath"',
-      '  fi',
+      '    printf "ERR|%s|permission_denied\\n" "$encodedPath";',
+      '  fi;',
       'done',
-    ].join('\n');
+    ].join(' ');
   }
 
+  /** 构造文件下载 Shell 脚本，压缩为单行避免 SSH 模式下换行符被宿主 Shell 切割导致 exit code 255 报错 */
   private createDownloadScript(): string {
     return [
       'while IFS="|" read -r encodedPath; do',
-      '  [ -n "$encodedPath" ] || continue',
-      '  path=$(printf "%s" "$encodedPath" | base64 -d 2>/dev/null) || { printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue; }',
-      '  case "$path" in /*) ;; *) printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue ;; esac',
+      '  [ -n "$encodedPath" ] || continue;',
+      '  path=$(printf "%s" "$encodedPath" | base64 -d 2>/dev/null) || { printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue; };',
+      '  case "$path" in /*) ;; *) printf "ERR|%s|invalid_path\\n" "$encodedPath"; continue ;; esac;',
       '  if [ -d "$path" ]; then',
-      '    printf "ERR|%s|is_directory\\n" "$encodedPath"',
+      '    printf "ERR|%s|is_directory\\n" "$encodedPath";',
       '  elif [ -f "$path" ] && [ -r "$path" ]; then',
-      '    content=$(base64 < "$path" 2>/dev/null | tr -d "\\n")',
-      '    printf "OK|%s|%s\\n" "$encodedPath" "$content"',
+      '    content=$(base64 < "$path" 2>/dev/null | tr -d "\\r\\n");',
+      '    printf "OK|%s|%s\\n" "$encodedPath" "$content";',
       '  elif [ -f "$path" ]; then',
-      '    printf "ERR|%s|permission_denied\\n" "$encodedPath"',
+      '    printf "ERR|%s|permission_denied\\n" "$encodedPath";',
       '  else',
-      '    printf "ERR|%s|file_not_found\\n" "$encodedPath"',
-      '  fi',
+      '    printf "ERR|%s|file_not_found\\n" "$encodedPath";',
+      '  fi;',
       'done',
-    ].join('\n');
+    ].join(' ');
   }
 
   private applyUploadResults(
@@ -800,6 +821,125 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     connection.destroy();
   }
 
+  /**
+   * 统一执行 Docker CLI；本地模式不经宿主 Shell，避免 Windows Cmd 改写容器内脚本。
+   */
+  private async runDocker(
+    args: string[],
+    input?: SshInputWriter,
+    maxOutputBytes = this.maxOutputBytes,
+    allowClosed = false,
+  ): Promise<SshCommandResult> {
+    if (this.mode === 'local') {
+      return this.runLocalDocker(args, input, maxOutputBytes, allowClosed);
+    }
+
+    return this.runSsh(
+      [this.dockerCommand, ...args.map(shellQuote)].join(' '),
+      input,
+      maxOutputBytes,
+      allowClosed,
+    );
+  }
+
+  /**
+   * 在本地 Docker 模式下直接执行 Docker CLI，并将每个参数原样传递给容器。
+   */
+  private async runLocalDocker(
+    args: string[],
+    input?: SshInputWriter,
+    maxOutputBytes = this.maxOutputBytes,
+    allowClosed = false,
+  ): Promise<SshCommandResult> {
+    if (this.closed && !allowClosed) {
+      throw new Error(`Docker 沙盒 ${this.id} 已关闭。`);
+    }
+
+    if (args.some(argument => argument.includes('\0'))) {
+      throw new Error('Docker 命令参数不能包含 NUL 字符。');
+    }
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let capturedBytes = 0;
+    let truncated = false;
+    const outputLimit = Math.max(1, Math.floor(maxOutputBytes));
+
+    const capture = (chunks: Buffer[], value: Buffer) => {
+      const remaining = outputLimit - capturedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+
+      if (value.length > remaining) {
+        chunks.push(value.subarray(0, remaining));
+        capturedBytes += remaining;
+        truncated = true;
+        return;
+      }
+
+      chunks.push(value);
+      capturedBytes += value.length;
+    };
+
+    return new Promise<SshCommandResult>((resolve, reject) => {
+      const child = spawn(this.dockerCommand, args, {
+        shell: false,
+        env: process.env,
+      });
+
+      let settled = false;
+      const rejectOnce = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        try {
+          child.kill();
+        } catch {
+          // 忽略关闭清理异常
+        }
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
+      const timer = setTimeout(() => {
+        rejectOnce(new Error(`本地 Docker 命令执行超时 (${this.timeoutMs}ms)`));
+      }, this.timeoutMs);
+
+      child.stdout?.on('data', (chunk: Buffer) => {
+        capture(stdoutChunks, chunk);
+      });
+
+      child.stderr?.on('data', (chunk: Buffer) => {
+        capture(stderrChunks, chunk);
+      });
+
+      child.on('error', err => {
+        clearTimeout(timer);
+        rejectOnce(err);
+      });
+
+      child.on('close', code => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+        resolve({
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf8'),
+          exitCode: code,
+          truncated,
+        });
+      });
+
+      void (async () => {
+        if (input && child.stdin) {
+          await input(child.stdin);
+        }
+        // 上传脚本按行读取标准输入；所有内容写完后必须关闭输入，容器才能结束循环。
+        child.stdin?.end();
+      })().catch(rejectOnce);
+    });
+  }
+
   private async runSsh(
     remoteCommand: string,
     input?: SshInputWriter,
@@ -929,9 +1069,15 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     }
   }
 
+  /** 格式化失败命令提示，对于 Docker Daemon 未启动等常见异常追加诊断指导 */
   private formatCommandFailure(result: SshCommandResult, operation: string): string {
     const detail = (result.stderr || result.stdout).trim().slice(0, 500);
-    return `${operation}失败（SSH exit code ${result.exitCode ?? 'unknown'}）${detail ? `：${detail}` : '。'}`;
+    const executor = this.mode === 'local' ? 'Docker' : 'SSH';
+    let message = `${operation}失败（${executor} exit code ${result.exitCode ?? 'unknown'}）${detail ? `：${detail}` : '。'}`;
+    if (/failed to connect to the docker API|dockerDesktopLinuxEngine|daemon is not running/i.test(detail)) {
+      message += '（提示：目标机器上的 Docker Desktop 或 Docker Daemon 未启动，请先打开 Docker 确保 Engine 处于 Running 状态。）';
+    }
+    return message;
   }
 
   private toFileError(value: unknown): FileOperationError | null {

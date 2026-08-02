@@ -1,6 +1,8 @@
-import { app } from 'electron'
+import electron from 'electron'
 import { dirname, join } from 'node:path'
 import { readFile } from 'node:fs/promises'
+
+const app = electron?.app || (electron as unknown as { app?: typeof electron.app })?.app
 
 /** INI 配置键与通用配置项到 SANDBOX_* 规范名映射 */
 const INI_ENVIRONMENT_KEYS: Record<string, string> = {
@@ -18,6 +20,10 @@ const INI_ENVIRONMENT_KEYS: Record<string, string> = {
   'ssh.server_url': 'SANDBOX_SERVER_URL',
   'docker.image': 'SANDBOX_DOCKER_IMAGE',
   'docker.image_type': 'SANDBOX_DOCKER_IMAGE_TYPE',
+  'docker.mode': 'SANDBOX_TYPE',
+  'docker.type': 'SANDBOX_TYPE',
+  'sandbox.type': 'SANDBOX_TYPE',
+  'sandbox.mode': 'SANDBOX_TYPE',
   // 无 section 头的别名回退映射
   'host': 'SANDBOX_SSH_HOST',
   'user': 'SANDBOX_SSH_USER',
@@ -33,6 +39,8 @@ const INI_ENVIRONMENT_KEYS: Record<string, string> = {
   'server_url': 'SANDBOX_SERVER_URL',
   'image': 'SANDBOX_DOCKER_IMAGE',
   'image_type': 'SANDBOX_DOCKER_IMAGE_TYPE',
+  'mode': 'SANDBOX_TYPE',
+  'type': 'SANDBOX_TYPE',
 }
 
 /** 获取默认 culclaw.ini 文件路径（开发环境为项目根目录，打包后为 exe 同级目录） */
@@ -47,9 +55,13 @@ export function getSandboxIniPath(): string {
   return join(process.cwd(), 'culclaw.ini')
 }
 
-/** 去除 INI 值两侧可能的单双引号 */
+/** 去除 INI 值两侧可能的单双引号及尾部行内注释 */
 function normalizeIniValue(value: string) {
-  const trimmed = value.trim()
+  let trimmed = value.trim()
+  const commentIndex = trimmed.search(/\s+[#;]/)
+  if (commentIndex !== -1) {
+    trimmed = trimmed.slice(0, commentIndex).trim()
+  }
   if (trimmed.length >= 2) {
     const quote = trimmed[0]
     if ((quote === '"' || quote === "'") && trimmed.at(-1) === quote) {

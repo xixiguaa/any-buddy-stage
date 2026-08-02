@@ -1,14 +1,32 @@
+[docker]
+# 沙箱运行模式：
+# - local : 本地 Docker 模式（直接使用本地 Docker CLI，无需配置 SSH 密钥/密码）
+# - ssh   : 远程 SSH Docker 模式（连接远程服务器并在远程 Docker 中运行沙盒）
+# - auto  : 未配置时默认模式（若配置了 [ssh] 的 host 则自动使用 ssh，否则使用 local）
+mode=local
+
+# 沙盒容器使用的镜像；如果只需要 Node，可改为 node:22-bookworm-slim，
+# 需要 Python 时使用 nikolaik/python-nodejs:python3.12-nodejs22-slim。
+image=node:22-bookworm-slim
+# 也可改用 image_type=node / python / combined 走预设镜像：
+# image_type=combined
+
 [ssh]
-host=your-server.example.com
-user=ubuntu
-password=replace-with-password
-port=22
-# key_path=C:\Users\your-name\.ssh\id_ed25519
+# 当 [docker] mode=ssh 或连接远程服务器时使用以下 SSH 参数：
+# host=192.168.1.100
+# user=root
+# password=replace-with-password
+# port=22
+# key_path=C:\Users\Administrator\.ssh\id_ed25519
 # key_passphrase=replace-with-key-passphrase
 # host_fingerprint=SHA256:replace-with-server-fingerprint
 timeout_ms=120000
 max_output_bytes=1048576
 max_transfer_bytes=67108864
 
-[docker]
-image=node:22-bookworm-slim
+; ----------------------------------------------------------------------------
+; 说明与权限分类：
+; 1. 本地 Docker 沙箱 (mode=local)：本地安装有 Docker 环境即可开箱即用，免配置 SSH。
+; 2. 远程 SSH Docker 沙箱 (mode=ssh)：连接单位/远程服务器的 Docker 隔离沙盒环境。
+; 3. 完全访问模式 (full_access)：无需 Docker，直接在物理主机/宿主机中执行命令。
+; ----------------------------------------------------------------------------

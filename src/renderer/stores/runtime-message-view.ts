@@ -157,13 +157,22 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+/** 移除助手消息中残留的 <think> 思维链，确保 UI 卡片展示文本干净 */
+function stripThinkingContent(content: string): string {
+  return content
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think\s*>/gi, '')
+    .replace(/<think\b[^>]*>[\s\S]*$/gi, '')
+    .trim();
+}
+
 export function summarizeRuntimeEvent(event: AgentEvent): Message | null {
   const createdAt = event.createdAt;
 
   switch (event.type) {
     case 'agent_message': {
       const role = typeof event.payload.role === 'string' ? event.payload.role : 'assistant';
-      const content = typeof event.payload.content === 'string' ? event.payload.content : '';
+      const rawContent = typeof event.payload.content === 'string' ? event.payload.content : '';
+      const content = role === 'assistant' ? stripThinkingContent(rawContent) : rawContent;
       if (!content.trim()) {
         return null;
       }
