@@ -23,6 +23,8 @@ export default function TaskDetailComposerSection() {
         defaultPermissionMode={task.permissionMode}
         defaultActiveExpertId={task.activeExpertId}
         defaultActiveExpertTeamId={task.activeExpertTeamId}
+        defaultSkillIds={task.skillIds}
+        defaultConnectorIds={task.connectorIds}
         hideTitle={true}
         hideWorkspacePicker={true}
         buttonLabel="发送"

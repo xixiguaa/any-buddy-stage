@@ -121,6 +121,8 @@ export default function TaskComposer({
   defaultPermissionMode,
   defaultActiveExpertId,
   defaultActiveExpertTeamId,
+  defaultSkillIds,
+  defaultConnectorIds,
   draft,
   onDraftChange,
   onClearDraft,
@@ -149,6 +151,8 @@ export default function TaskComposer({
   defaultPermissionMode?: CreateTaskInput['permissionMode']
   defaultActiveExpertId?: string
   defaultActiveExpertTeamId?: string
+  defaultSkillIds?: string[]
+  defaultConnectorIds?: string[]
   draft?: TaskDraft
   onDraftChange?: (draft: Omit<TaskDraft, 'taskId' | 'updatedAt'>) => Promise<void> | void
   onClearDraft?: () => Promise<void> | void
@@ -176,9 +180,11 @@ export default function TaskComposer({
   const [mode, setMode] = useState<CreateTaskInput['mode']>(defaultMode)
   const [modelId, setModelId] = useState(effectiveModelId)
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId ?? '')
-  /* 已移除关联工作区相关 state */
-  const [skills, setSkills] = useState(draft?.selectedSkillIds.join(', ') || '')
-  const [connectors, setConnectors] = useState(draft?.selectedConnectorIds.join(', ') || 'mcp')
+  /* 优先从草稿读取，若无草稿则从任务默认绑定持久化状态中初始化技能与连接器 */
+  const defaultSkillIdsStr = defaultSkillIds?.join(', ') || ''
+  const defaultConnectorIdsStr = defaultConnectorIds?.join(', ') || 'mcp'
+  const [skills, setSkills] = useState(draft?.selectedSkillIds ? draft.selectedSkillIds.join(', ') : defaultSkillIdsStr)
+  const [connectors, setConnectors] = useState(draft?.selectedConnectorIds ? draft.selectedConnectorIds.join(', ') : defaultConnectorIdsStr)
   const [activeExpertId, setActiveExpertId] = useState<string | undefined>(draft?.selectedExpertId ?? draft?.selectedExpertIds?.[0] ?? defaultActiveExpertId)
   const [activeExpertTeamId, setActiveExpertTeamId] = useState<string | undefined>(draft?.selectedExpertTeamId ?? defaultActiveExpertTeamId)
   const normalizePermissionMode = (value?: CreateTaskInput['permissionMode']): 'read_write' | 'full_access' => {
@@ -409,7 +415,9 @@ export default function TaskComposer({
     if (draft) return
     setActiveExpertId(defaultActiveExpertId)
     setActiveExpertTeamId(defaultActiveExpertTeamId)
-  }, [defaultActiveExpertId, defaultActiveExpertTeamId, draft])
+    setSkills(defaultSkillIdsStr)
+    setConnectors(defaultConnectorIdsStr)
+  }, [defaultActiveExpertId, defaultActiveExpertTeamId, defaultSkillIdsStr, defaultConnectorIdsStr, draft])
 
   useEffect(() => {
     onDraftChangeRef.current?.({

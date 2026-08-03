@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
+import { isAllowedArtifactFile, SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
+
+test('artifact export excludes dependencies and package manager files', () => {
+  assert.equal(isAllowedArtifactFile('node_modules/example/package.json'), false);
+  assert.equal(isAllowedArtifactFile('nested/node_modules/example/report.pdf'), false);
+  assert.equal(isAllowedArtifactFile('package.json'), false);
+  assert.equal(isAllowedArtifactFile('package-lock.json'), false);
+  assert.equal(isAllowedArtifactFile('pnpm-lock.yaml'), false);
+  assert.equal(isAllowedArtifactFile('yarn.lock'), false);
+  assert.equal(isAllowedArtifactFile('deliverables/report.pdf'), true);
+  assert.equal(isAllowedArtifactFile('deliverables/data.json'), true);
+});
 
 test('releaseWorkspaceSandbox cleans remote containers when the local pool is empty', async () => {
   const backendClass = SshDockerSandboxBackend as any;

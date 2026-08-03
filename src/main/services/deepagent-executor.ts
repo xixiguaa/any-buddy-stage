@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
 import { OpenAIModelService } from './openai-model-service.js';
-import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
+import { isAllowedArtifactFile, SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
 
@@ -366,6 +366,9 @@ async function exportSandboxOutputsToWorkspace(
       if (vPath.startsWith('/.system-skill-cache')) continue;
       const relativePath = vPath.slice(1);
       if (!relativePath) continue;
+
+      // 使用后端相同的规则，避免依赖目录和包管理文件被导出。
+      if (!isAllowedArtifactFile(relativePath)) continue;
 
       const content = typeof item.content === 'string'
         ? new TextEncoder().encode(item.content)
