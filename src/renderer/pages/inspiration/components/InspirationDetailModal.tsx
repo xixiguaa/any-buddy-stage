@@ -51,7 +51,8 @@ export default function InspirationDetailModal({
 
   if (!detail) {
     return (
-      <Modal open onCancel={onClose} footer={null}>
+      /* 垂直居中显示未找到提示 Modal */
+      <Modal open onCancel={onClose} footer={null} centered>
         <div style={{ padding: '20px', textAlign: 'center' }}>未找到该灵感详情</div>
       </Modal>
     )

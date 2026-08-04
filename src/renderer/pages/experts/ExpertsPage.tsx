@@ -324,13 +324,14 @@ export default function ExpertsPage() {
                                 ({member.role})
                               </span>
                             </div>
-                            {member.specialty && (
+                             {member.specialty && (
+                              /* 背景改为灰色 #f8fafc，字体改为紫色 #6F2BDC */
                               <div
                                 style={{
                                   fontSize: '11px',
-                                  color: '#1e40af',
-                                  background: '#eff6ff',
-                                  border: '1px solid #dbeafe',
+                                  color: '#6F2BDC',
+                                  background: '#f8fafc',
+                                  border: '1px solid #e2e8f0',
                                   borderRadius: '4px',
                                   padding: '4px 8px',
                                   lineHeight: '1.5',
@@ -471,9 +472,17 @@ export default function ExpertsPage() {
         open={isExpertModalOpen}
         onCancel={resetExpertModal}
         onOk={handleCreateExpertPrompt}
+        centered
         title={editingExpertId ? '编辑自定义专家' : '添加自定义专家'}
         okText={editingExpertId ? '保存修改' : '前往对话创建'}
         cancelText="取消"
+        /* 使用紫色主题色确定按钮 */
+        okButtonProps={{
+          style: {
+            background: '#6F2BDC',
+            borderColor: '#6F2BDC',
+          },
+        }}
       >
         <div style={{ padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div>
@@ -516,6 +525,7 @@ export default function ExpertsPage() {
       <Modal
         open={Boolean(viewingTeam)}
         onCancel={() => setViewingTeam(null)}
+        centered
         footer={[
           <Button key="close" onClick={() => setViewingTeam(null)} style={{ borderRadius: 6 }}>
             关闭
@@ -544,7 +554,6 @@ export default function ExpertsPage() {
           </div>
         }
         width={720}
-        centered
       >
         {viewingTeam && (
           <div style={{ padding: '12px 0', maxHeight: '70vh', overflowY: 'auto', maxWidth: '100%', boxSizing: 'border-box' }}>
@@ -596,7 +605,8 @@ export default function ExpertsPage() {
                         <span style={{ fontWeight: 700, fontSize: '15px', color: '#0f172a' }}>
                           {member.name}
                         </span>
-                        <span style={{ fontSize: '11px', color: '#2563eb', background: '#eff6ff', border: '1px solid #dbeafe', padding: '2px 8px', borderRadius: '4px', fontWeight: 500 }}>
+                        /* 统一调整角色徽章背景为灰色 #f8fafc，字体为紫色 #6F2BDC */
+                        <span style={{ fontSize: '11px', color: '#6F2BDC', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: '4px', fontWeight: 500 }}>
                           {member.role}
                         </span>
                       </div>

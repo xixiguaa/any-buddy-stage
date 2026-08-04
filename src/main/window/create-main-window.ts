@@ -5,6 +5,10 @@ import { logProcessError } from '../runtime/error-logger.js'
 
 export function createMainWindow() {
   const currentDir = typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url))
+  // 打包后图标位于 resources 目录；开发环境仍从源码目录读取。
+  const windowIcon = app.isPackaged
+    ? join(process.resourcesPath, 'icon.ico')
+    : join(app.getAppPath(), 'src/renderer/assets/img/icon.ico')
   const win = new BrowserWindow({
     width: 1500,
     height: 940,
@@ -13,7 +17,7 @@ export function createMainWindow() {
     backgroundColor: '#f4f1eb',
     title: 'CulClaw',
     /* 设置应用窗口图标 */
-    icon: join(app.getAppPath(), 'src/renderer/assets/img/icon.ico'),
+    icon: windowIcon,
     webPreferences: {
       preload: join(currentDir, 'preload.cjs'),
       contextIsolation: true,

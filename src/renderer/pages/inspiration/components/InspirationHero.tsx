@@ -60,7 +60,7 @@ export default function InspirationHero({ query, onQueryChange }: InspirationHer
         }}
       />
 
-      <div style={{ position: 'relative', zIndex: 1, maxWidth: '820px' }}>
+      <div style={{ position: 'relative', zIndex: 1, width: '100%' }}>
         {/* 顶部胶囊 Badge */}
         <div
           style={{

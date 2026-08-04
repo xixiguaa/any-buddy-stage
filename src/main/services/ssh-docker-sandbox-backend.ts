@@ -129,10 +129,11 @@ function parseDockerImageType(value: string | undefined): DockerImageType | unde
   throw new Error('SANDBOX_DOCKER_IMAGE_TYPE 仅支持 node、python 或 combined。');
 }
 
-/** 根据镜像类型选择官方镜像；未指定类型时保留原有自定义镜像能力。 */
+/** 优先使用用户显式指定的镜像地址；未指定时根据镜像类型或默认配置选择镜像。 */
 function resolveDockerImage(imageType: DockerImageType | undefined, image: string | undefined): string {
+  if (image?.trim()) return image.trim();
   if (imageType) return DOCKER_IMAGES_BY_TYPE[imageType];
-  return validateNonEmpty(image?.trim() || DEFAULT_DOCKER_IMAGE, 'dockerImage');
+  return validateNonEmpty(DEFAULT_DOCKER_IMAGE, 'dockerImage');
 }
 
 /**

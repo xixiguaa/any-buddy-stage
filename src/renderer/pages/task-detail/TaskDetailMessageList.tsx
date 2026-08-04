@@ -701,6 +701,21 @@ const StreamingMessageList = memo(function StreamingMessageList() {
 
   if (streamingEntries.length === 0) return null
 
+
+  useEffect(() => {
+    if (streamingEntries.length === 0) return
+    if (typeof window === 'undefined') return
+    const raf = window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current
+      if (container && shouldAutoScrollRef.current) {
+        container.scrollTop = container.scrollHeight
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [streamingDataKey, scrollContainerRef, shouldAutoScrollRef, streamingEntries.length])
+
+  if (streamingEntries.length === 0) return null
+
   return (
     <>
       {streamingEntries.map((entry, index) => (
@@ -784,7 +799,7 @@ export default function TaskDetailMessageList() {
         flex: 1,
         overflowY: 'auto',
         padding: '24px',
-        background: '#f8fafc',
+        background: '#ffffff',
         display: 'flex',
         flexDirection: 'column',
         gap: '16px',
@@ -792,8 +807,6 @@ export default function TaskDetailMessageList() {
     >
       {renderedMessages}
       <StreamingMessageList />
-
-
 
       {isAgentWorking && (
         <div
@@ -813,14 +826,14 @@ export default function TaskDetailMessageList() {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span className="pulsing-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6366f1' }}></span>
+            <span className="pulsing-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#6F2BDC' }}></span>
             <span
               className="pulsing-dot"
-              style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#3b82f6', animationDelay: '0.2s' }}
+              style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#8b5cf6', animationDelay: '0.2s' }}
             ></span>
             <span
               className="pulsing-dot"
-              style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#10b981', animationDelay: '0.4s' }}
+              style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#c084fc', animationDelay: '0.4s' }}
             ></span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>

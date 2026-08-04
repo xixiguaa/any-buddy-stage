@@ -37,13 +37,7 @@ export default function InspirationGrid({
   }
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
-        gap: '24px',
-      }}
-    >
+    <div className="inspiration-grid">
       {cards.map((card) => (
         <InspirationCard
           key={card.id}

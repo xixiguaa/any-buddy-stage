@@ -10,6 +10,10 @@ import InspirationPage from './pages/inspiration/index.js'
 export default function App() {
   return (
     <ConfigProvider
+      /* 全局 Modal 居中配置 */
+      modal={{
+        centered: true,
+      }}
       theme={{
         token: {
           /* 全局主色：紫色 #6F2BDC */
@@ -49,6 +53,12 @@ export default function App() {
             /* 菜单选中态浅紫背景与紫字 */
             itemSelectedBg: '#F5EEFF',
             itemSelectedColor: '#6F2BDC',
+          },
+          Modal: {
+            /* 弹窗中的主色按钮统一紫色主题色 */
+            colorPrimary: '#6F2BDC',
+            colorPrimaryHover: '#5B21B6',
+            colorPrimaryActive: '#4C1D95',
           },
         },
       }}

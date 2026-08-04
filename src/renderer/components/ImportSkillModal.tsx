@@ -59,6 +59,7 @@ export default function ImportSkillModal({ open, onCancel, onSuccess }: ImportSk
       onCancel={onCancel}
       footer={null}
       width={480}
+      /* 垂直居中显示 Modal */
       centered
       destroyOnClose
     >

@@ -461,7 +461,7 @@ export default function TaskComposer({
           activeExpertTeamId,
         })
       } else if (onCreate) {
-        const taskTitle = title.trim() || initialMessage.split('\n')[0]?.trim().slice(0, 50) || '新任务'
+        const taskTitle = initialMessage.split('\n')[0]?.trim().slice(0, 50) || '新任务'
         await onCreate(
           {
             title: taskTitle,
@@ -605,44 +605,10 @@ export default function TaskComposer({
   return (
     /* 采用符合视觉设计的卡片容器样式 */
     <div className="task-composer-card" style={{
-      border: '1.5px solid #e9d5ff',
-      borderRadius: '20px',
-      padding: '16px 20px',
-      background: '#ffffff',
-      boxShadow: '0 8px 30px rgba(111, 43, 220, 0.04)',
       display: 'flex',
       flexDirection: 'column',
       gap: '12px'
     }}>
-      {/* 优雅精致的对话标题输入栏 */}
-      {!hideTitle && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          paddingBottom: '8px',
-          borderBottom: '1px solid #f1f5f9'
-        }}>
-          <Input
-            variant="borderless"
-            prefix={<EditOutlined style={{ color: '#94a3b8', fontSize: 14, marginRight: 6 }} />}
-            placeholder="设置对话标题（可选）..."
-            value={title}
-            onChange={event => setTitle(event.target.value)}
-            allowClear
-            style={{
-              fontSize: '15px',
-              fontWeight: 600,
-              color: '#0f172a',
-              padding: '6px 10px',
-              borderRadius: '8px',
-              backgroundColor: title ? '#ffffff' : 'transparent',
-              boxShadow: title ? '0 1px 2px rgba(0,0,0,0.04)' : 'none',
-              transition: 'all 0.2s ease'
-            }}
-          />
-        </div>
-      )}
-
       {/* Summoned Expert / Expert Team Tag Badge */}
       {(summonedExpert || summonedExpertTeam) && (
         <div style={{

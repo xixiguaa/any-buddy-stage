@@ -1,0 +1,29 @@
+/* ==========================================
+   灵感广场 (Inspiration) 模块 SCSS 样式
+   ========================================== */
+
+.inspiration-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+  width: 100%;
+}
+
+/* 屏幕宽度缩小响应式调整：4列 -> 3列 -> 2列 -> 1列 */
+@media (max-width: 1440px) {
+  .inspiration-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 1080px) {
+  .inspiration-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .inspiration-grid {
+    grid-template-columns: repeat(1, 1fr);
+  }
+}

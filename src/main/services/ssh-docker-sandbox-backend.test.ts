@@ -85,3 +85,13 @@ test('fromEnvironment resolves ssh docker mode when SSH host is provided', async
   assert.equal(backend.mode, 'ssh');
   await backend.close();
 });
+
+test('fromEnvironment prioritizes explicit SANDBOX_DOCKER_IMAGE over SANDBOX_DOCKER_IMAGE_TYPE', async () => {
+  const backend = await SshDockerSandboxBackend.fromEnvironment(undefined, {
+    SANDBOX_TYPE: 'local',
+    SANDBOX_DOCKER_IMAGE_TYPE: 'node',
+    SANDBOX_DOCKER_IMAGE: 'custom-mirror/node:22-slim',
+  });
+  assert.equal((backend as any).dockerImage, 'custom-mirror/node:22-slim');
+  await backend.close();
+});

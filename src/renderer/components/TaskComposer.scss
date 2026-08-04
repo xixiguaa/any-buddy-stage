@@ -6,7 +6,7 @@ $accent-purple: #6F2BDC;
 $accent-hover: #5B21B6;
 $purple-light: #e9d5ff;
 $purple-text: #a855f7;
-$border-focus: #c084fc;
+$border-focus: #6F2BDC;
 
 .task-composer-card {
   border: 1.5px solid var(--accent-border, $purple-light);
@@ -14,12 +14,12 @@ $border-focus: #c084fc;
   padding: 16px 20px;
   background: #ffffff;
   box-shadow: 0 8px 30px rgba(111, 43, 220, 0.04);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: all 0.2s ease-in-out;
 
   &:focus-within,
   &:hover {
-    border-color: $border-focus;
-    box-shadow: 0 8px 30px rgba(111, 43, 220, 0.08);
+    border-color: #6F2BDC !important;
+    box-shadow: 0 0 0 2px rgba(111, 43, 220, 0.15), 0 8px 30px rgba(111, 43, 220, 0.08) !important;
   }
 }
 
@@ -37,6 +37,18 @@ $border-focus: #c084fc;
     resize: none !important;
     font-size: 15px !important;
     line-height: 1.6 !important;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  &:focus,
+  &:focus-within,
+  &.ant-input-focused,
+  .ant-input:focus,
+  .ant-input:focus-within {
+    border: none !important;
+    outline: none !important;
     box-shadow: none !important;
   }
 

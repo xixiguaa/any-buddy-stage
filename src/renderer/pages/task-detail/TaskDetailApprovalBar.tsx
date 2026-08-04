@@ -92,9 +92,10 @@ export default function TaskDetailApprovalBar() {
           open={isPlanApprovalModalOpen}
           onCancel={() => setClosedPlanApprovalId(activePlanApproval.id)}
           footer={null}
+          centered
           title={
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0f172a' }}>
-              <span style={{ color: '#2563eb', display: 'flex', alignItems: 'center' }}>
+              <span style={{ color: '#6F2BDC', display: 'flex', alignItems: 'center' }}>
                 <AlertCircle size={18} />
               </span>
               <span style={{ fontWeight: 700 }}>方案确认</span>
@@ -134,14 +135,15 @@ export default function TaskDetailApprovalBar() {
               >
                 取消
               </Button>
+              {/* 使用紫色主题色按钮 */}
               <Button
                 type="primary"
                 size="middle"
                 icon={<Play size={14} style={{ marginRight: '4px' }} />}
                 onClick={() => void handleApprovePlanWithFeedback(activePlanApproval.id)}
                 style={{
-                  background: '#0f172a',
-                  borderColor: '#0f172a',
+                  background: '#6F2BDC',
+                  borderColor: '#6F2BDC',
                   borderRadius: '8px',
                   fontWeight: 600,
                   display: 'flex',
@@ -161,9 +163,10 @@ export default function TaskDetailApprovalBar() {
         open={editApprovalId !== null}
         onCancel={() => setEditApprovalId(null)}
         onOk={() => void handleResumeWithEditedArgs()}
+        centered
         title={
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#0f172a' }}>
-            <span style={{ color: '#4f46e5', display: 'flex', alignItems: 'center' }}>
+            <span style={{ color: '#6F2BDC', display: 'flex', alignItems: 'center' }}>
               <Edit2 size={16} />
             </span>
             <span style={{ fontWeight: 700 }}>编辑参数并恢复执行</span>
@@ -171,10 +174,11 @@ export default function TaskDetailApprovalBar() {
         }
         okText="按编辑参数恢复"
         cancelText="取消"
+        /* 使用紫色渐变主题色按钮 */
         okButtonProps={{
           style: {
-            background: 'linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%)',
-            borderColor: '#4f46e5',
+            background: 'linear-gradient(135deg, #7C3AED 0%, #6F2BDC 100%)',
+            borderColor: '#6F2BDC',
             borderRadius: '6px',
             fontWeight: 600,
           },

@@ -193,22 +193,21 @@ export default function Sidebar() {
     })
   }
 
-  // 获取状态 Tag 标签（优化尺寸与边距，避免抖动）
+  // 获取状态 Tag 标签（适配主题紫色透明底背景）
   const getStatusTag = (status: string) => {
-    const tagStyle = { margin: 0, fontSize: '10px', height: '20px', lineHeight: '18px', padding: '0 6px', display: 'inline-flex', alignItems: 'center' }
+    const tagStyle = { margin: 0, fontSize: '10px', height: '20px', lineHeight: '18px', padding: '0 6px', display: 'inline-flex', alignItems: 'center', borderRadius: '4px', fontWeight: 500 }
     switch (status) {
       case 'running':
-        return <Tag color="processing" style={tagStyle}>Running</Tag>
+        return <Tag style={{ ...tagStyle, background: 'rgba(111, 43, 220, 0.1)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.2)' }}>Running</Tag>
       case 'waiting_approval':
-        return <Tag color="warning" style={tagStyle}>Paused</Tag>
-      case 'failed':
-        return <Tag color="error" style={tagStyle}>Failed</Tag>
-      case 'completed':
-        return <Tag color="success" style={tagStyle}>Done</Tag>
       case 'paused':
-        return <Tag color="warning" style={tagStyle}>Paused</Tag>
+        return <Tag style={{ ...tagStyle, background: 'rgba(111, 43, 220, 0.08)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.15)' }}>Paused</Tag>
+      case 'failed':
+        return <Tag style={{ ...tagStyle, background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)' }}>Failed</Tag>
+      case 'completed':
+        return <Tag style={{ ...tagStyle, background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.2)' }}>Done</Tag>
       default:
-        return <Tag color="default" style={tagStyle}>{status}</Tag>
+        return <Tag style={{ ...tagStyle, background: 'rgba(111, 43, 220, 0.08)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.15)' }}>{status}</Tag>
     }
   }
 
@@ -521,7 +520,7 @@ export default function Sidebar() {
                             {task.title}
                           </span>
                           <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                            {isHovered ? (
+                            {isHovered && (
                               <DeleteOutlined
                                 style={{
                                   color: '#ef4444',
@@ -534,14 +533,6 @@ export default function Sidebar() {
                                   handleDeleteTask(task)
                                 }}
                               />
-                            ) : (
-                              <>
-                                {task.status === 'running' && <Badge status="processing" />}
-                                {task.status === 'waiting_approval' && <Badge status="warning" />}
-                                {task.status === 'failed' && <Badge status="error" />}
-                                {task.status === 'completed' && <Badge status="success" />}
-                                {task.status === 'paused' && <Badge status="warning" />}
-                              </>
                             )}
                           </span>
                         </NavLink>
@@ -780,24 +771,33 @@ export default function Sidebar() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: collapsed ? 'center' : 'space-between',
-            padding: '4px'
+            padding: '4px 0'
           }}>
             <Dropdown menu={userMenuItems} trigger={['click']} placement="topRight">
               <div
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '10px',
+                  justifyContent: collapsed ? 'center' : 'flex-start',
+                  gap: collapsed ? 0 : '10px',
                   cursor: 'pointer',
                   overflow: 'hidden',
                   width: '100%',
-                  padding: '6px 8px',
+                  padding: collapsed ? '6px 0' : '6px 8px',
                   borderRadius: '8px',
                   transition: 'background 0.2s',
                 }}
               >
-                {/* 底部设置 Avatar 使用主题紫色 */}
-                <Avatar size={32} icon={<SettingOutlined />} style={{ backgroundColor: '#6F2BDC', color: '#ffffff' }} />
+                {/* 底部设置 Avatar 使用主题紫色，配置 flexShrink: 0 防止侧边栏收起时被弹性压缩变形 */}
+                <Avatar
+                  size={32}
+                  icon={<SettingOutlined />}
+                  style={{
+                    flexShrink: 0,
+                    backgroundColor: '#6F2BDC',
+                    color: '#ffffff',
+                  }}
+                />
                 {!collapsed && (
                   <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flex: 1 }}>
                     <span style={{ fontSize: '13px', fontWeight: 600, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -818,6 +818,7 @@ export default function Sidebar() {
         footer={null}
         title="Search tasks"
         width={560}
+        centered
         styles={{ body: { padding: '8px 0' } }}
       >
         <div style={{ padding: '0 16px 12px 16px' }}>
@@ -879,8 +880,8 @@ export default function Sidebar() {
         onCancel={() => setShowSettingsModal(false)}
         footer={null}
         width={820}
+        centered
         styles={{ body: { padding: 0 } }}
-        style={{ top: '60px' }}
       >
         <div style={{ display: 'flex', height: '560px', borderRadius: '12px', overflow: 'hidden' }}>
           {/* 左侧菜单 */}

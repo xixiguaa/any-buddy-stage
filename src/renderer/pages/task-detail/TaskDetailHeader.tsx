@@ -36,8 +36,12 @@ export default function TaskDetailHeader() {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <h2 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>{task.title}</h2>
-          <Tag color={statusInfo.color}>{statusInfo.label}</Tag>
-          <Tag color={modeInfo.color} title={modeInfo.desc}>⚡ {modeInfo.label}</Tag>
+          <Tag style={{ background: 'rgba(111, 43, 220, 0.1)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.2)', borderRadius: '6px', fontWeight: 600, fontSize: '12px', margin: 0 }}>
+            {statusInfo.label}
+          </Tag>
+          <Tag style={{ background: 'rgba(111, 43, 220, 0.08)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.18)', borderRadius: '6px', fontWeight: 600, fontSize: '12px', margin: 0 }} title={modeInfo.desc}>
+            ⚡ {modeInfo.label}
+          </Tag>
         </div>
         <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
           主空间: <span style={{ fontWeight: 600, color: '#475569' }}>{primaryWorkspace?.name ?? '无主空间'}</span>

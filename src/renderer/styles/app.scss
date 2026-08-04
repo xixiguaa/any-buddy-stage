@@ -2,6 +2,7 @@
 @use './sidebar';
 @use './task-detail';
 @use './welcome';
+@use './inspiration';
 @use '../components/TaskComposer';
 
 /* ==========================================
@@ -79,8 +80,8 @@ a {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 16px 16px 16px 0;
-  background: var(--bg);
+  padding: 0;
+  background: #ffffff;
   min-width: 0;
   box-sizing: border-box;
 }
@@ -228,3 +229,34 @@ textarea::-webkit-scrollbar-thumb {
   0% { transform: scale(0.85); opacity: 0.5; box-shadow: 0 0 4px #3b82f6; }
   100% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 12px #3b82f6; }
 }
+
+/* ==========================================
+   全局 Ant Design Modal 弹窗统一垂直居中与紫色主题按钮
+   ========================================== */
+/* 全局 Ant Design Modal 弹窗统一居中与紫色主题按钮 */
+.ant-modal-centered {
+  .ant-modal {
+    padding-bottom: 0;
+  }
+}
+
+/* 弹窗底部操作按钮与确认弹窗按钮统一紫色主题色 */
+.ant-modal-footer,
+.ant-modal-confirm-btns {
+  .ant-btn-primary {
+    background-color: #6F2BDC !important;
+    border-color: #6F2BDC !important;
+
+    &:hover,
+    &:focus {
+      background-color: #5B21B6 !important;
+      border-color: #5B21B6 !important;
+    }
+
+    &:active {
+      background-color: #4C1D95 !important;
+      border-color: #4C1D95 !important;
+    }
+  }
+}
+

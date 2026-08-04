@@ -18,6 +18,8 @@ const config: ForgeConfig = {
   packagerConfig: {
     /* 设置打包后的应用程序图标 */
     icon: './src/renderer/assets/img/icon.ico',
+    // 将窗口图标复制到 resources 目录，供打包后的主进程读取。
+    extraResource: ['./src/renderer/assets/img/icon.ico'],
     asar: {
       unpack: '**/*.node',
     },
