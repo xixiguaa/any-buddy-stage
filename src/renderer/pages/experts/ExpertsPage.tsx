@@ -293,15 +293,56 @@ export default function ExpertsPage() {
                       {team.description}
                     </p>
 
-                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+                    {/* 团队成员组成信息块 */}
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: '100%', boxSizing: 'border-box' }}>
                       <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                         <TeamOutlined /> 团队成员组成 ({team.members.length}人):
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: '100%', boxSizing: 'border-box' }}>
                         {team.members.map(member => (
-                          <div key={member.id} style={{ fontSize: '12px', color: '#334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontWeight: 600 }}>{member.name} <span style={{ color: '#64748b', fontWeight: 400 }}>({member.role})</span></span>
-                            <Tag style={{ margin: 0, fontSize: '10px' }} color="geekblue">{member.specialty}</Tag>
+                          <div
+                            key={member.id}
+                            style={{
+                              fontSize: '12px',
+                              color: '#334155',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 6,
+                              padding: '8px 10px',
+                              background: '#ffffff',
+                              borderRadius: 6,
+                              border: '1px solid #f1f5f9',
+                              maxWidth: '100%',
+                              boxSizing: 'border-box',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%' }}>
+                              <span style={{ fontWeight: 600, color: '#0f172a' }}>
+                                {member.name}
+                              </span>
+                              <span style={{ color: '#64748b', fontSize: '11px' }}>
+                                ({member.role})
+                              </span>
+                            </div>
+                            {member.specialty && (
+                              <div
+                                style={{
+                                  fontSize: '11px',
+                                  color: '#1e40af',
+                                  background: '#eff6ff',
+                                  border: '1px solid #dbeafe',
+                                  borderRadius: '4px',
+                                  padding: '4px 8px',
+                                  lineHeight: '1.5',
+                                  wordBreak: 'break-all',
+                                  overflowWrap: 'anywhere',
+                                  maxWidth: '100%',
+                                  boxSizing: 'border-box',
+                                }}
+                              >
+                                {member.specialty}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -471,19 +512,19 @@ export default function ExpertsPage() {
         </div>
       </Modal>
 
-      {/* Expert Team Detail Modal */}
+      {/* 专家团队详情 Modal 弹窗 */}
       <Modal
         open={Boolean(viewingTeam)}
         onCancel={() => setViewingTeam(null)}
         footer={[
-          <Button key="close" onClick={() => setViewingTeam(null)}>
+          <Button key="close" onClick={() => setViewingTeam(null)} style={{ borderRadius: 6 }}>
             关闭
           </Button>,
           <Button
             key="start"
             type="primary"
             icon={<ThunderboltOutlined />}
-            style={{ background: '#6F2BDC', border: 'none' }}
+            style={{ background: '#6F2BDC', border: 'none', borderRadius: 6 }}
             onClick={() => {
               if (viewingTeam) {
                 const team = viewingTeam
@@ -502,35 +543,123 @@ export default function ExpertsPage() {
             <Tag color="purple">内置团队 (不可编辑)</Tag>
           </div>
         }
-        width={640}
+        width={720}
+        centered
       >
         {viewingTeam && (
-          <div style={{ padding: '12px 0' }}>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 4 }}>团队描述</div>
-              <div style={{ fontSize: '14px', color: '#1e293b', background: '#f8fafc', padding: 12, borderRadius: 8 }}>
+          <div style={{ padding: '12px 0', maxHeight: '70vh', overflowY: 'auto', maxWidth: '100%', boxSizing: 'border-box' }}>
+            {/* 团队概述描述 */}
+            <div style={{ marginBottom: 20, maxWidth: '100%', boxSizing: 'border-box' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: 6 }}>团队概述</div>
+              <div
+                style={{
+                  fontSize: '14px',
+                  color: '#1e293b',
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  lineHeight: '1.6',
+                  wordBreak: 'break-all',
+                  overflowWrap: 'anywhere',
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
+                }}
+              >
                 {viewingTeam.description}
               </div>
             </div>
 
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 8 }}>Agent 团队组成人员及分工</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Agent 团队组成人员及分工 */}
+            <div style={{ maxWidth: '100%', boxSizing: 'border-box' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <TeamOutlined style={{ color: '#6F2BDC' }} />
+                <span>Agent 团队组成人员及分工 ({viewingTeam.members.length}人)</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: '100%', boxSizing: 'border-box' }}>
                 {viewingTeam.members.map(member => (
-                  <Card key={member.id} size="small" style={{ borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <span style={{ fontWeight: 700, fontSize: '14px', color: '#0f172a' }}>
-                        {member.name} <Tag color="blue" style={{ marginLeft: 6 }}>{member.role}</Tag>
+                  <Card
+                    key={member.id}
+                    size="small"
+                    style={{
+                      borderRadius: 10,
+                      border: '1px solid #e2e8f0',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+                      maxWidth: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                    styles={{ body: { padding: '14px 16px', maxWidth: '100%', boxSizing: 'border-box' } }}
+                  >
+                    {/* 头部：姓名、角色、擅长 (使用原生 CSS 文本徽章，完全替代 Tag 标签) */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 8, maxWidth: '100%' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', maxWidth: '100%' }}>
+                        <span style={{ fontWeight: 700, fontSize: '15px', color: '#0f172a' }}>
+                          {member.name}
+                        </span>
+                        <span style={{ fontSize: '11px', color: '#2563eb', background: '#eff6ff', border: '1px solid #dbeafe', padding: '2px 8px', borderRadius: '4px', fontWeight: 500 }}>
+                          {member.role}
+                        </span>
+                      </div>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          color: '#0891b2',
+                          background: '#ecfeff',
+                          border: '1px solid #cff4fc',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                          fontWeight: 500,
+                          wordBreak: 'break-all',
+                          overflowWrap: 'anywhere',
+                          maxWidth: '100%',
+                          boxSizing: 'border-box',
+                          display: 'inline-block',
+                        }}
+                      >
+                        {member.specialty}
                       </span>
-                      <Tag color="cyan">{member.specialty}</Tag>
                     </div>
-                    <div style={{ fontSize: '12px', color: '#64748b', marginBottom: 6 }}>
-                      <strong>提示词摘要：</strong>{member.systemPrompt}
+
+                    {/* 提示词摘要：使用多行折行引言框 */}
+                    <div
+                      style={{
+                        fontSize: '12px',
+                        color: '#475569',
+                        background: '#f8fafc',
+                        borderLeft: '3px solid #6F2BDC',
+                        padding: '10px 12px',
+                        borderRadius: '0 6px 6px 0',
+                        marginBottom: member.skills && member.skills.length > 0 ? 10 : 0,
+                        lineHeight: '1.6',
+                        wordBreak: 'break-all',
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        maxWidth: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      <strong style={{ color: '#334155' }}>提示词摘要：</strong>
+                      {member.systemPrompt}
                     </div>
+
+                    {/* 具备技能 (不用 Tag，改用原生轻量徽章) */}
                     {member.skills && member.skills.length > 0 && (
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8, maxWidth: '100%' }}>
+                        <span style={{ fontSize: '11px', color: '#94a3b8' }}>具备技能:</span>
                         {member.skills.map(skill => (
-                          <Tag key={skill} style={{ margin: 0, fontSize: '10px' }}>{skill}</Tag>
+                          <span
+                            key={skill}
+                            style={{
+                              fontSize: '10px',
+                              color: '#475569',
+                              background: '#f1f5f9',
+                              border: '1px solid #e2e8f0',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                            }}
+                          >
+                            {skill}
+                          </span>
                         ))}
                       </div>
                     )}

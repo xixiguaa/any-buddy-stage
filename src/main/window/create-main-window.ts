@@ -12,6 +12,8 @@ export function createMainWindow() {
     minHeight: 800,
     backgroundColor: '#f4f1eb',
     title: 'CulClaw',
+    /* 设置应用窗口图标 */
+    icon: join(app.getAppPath(), 'src/renderer/assets/img/icon.ico'),
     webPreferences: {
       preload: join(currentDir, 'preload.cjs'),
       contextIsolation: true,

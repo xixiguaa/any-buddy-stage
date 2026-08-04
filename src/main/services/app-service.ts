@@ -151,10 +151,11 @@ export class AppService {
   ) { }
 
   /**
-   * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置、同步扫描 AnyBuddy 工作区目录，并清理上次未正常关机残留卡住的活跃运行。
+   * 初始化应用服务：从数据库加载状态、初始化默认专家、从本地配置文件水合模型/MCP配置、同步扫描 culclaw 工作区目录，并清理上次未正常关机残留卡住的活跃运行。
    */
   async init() {
     this.state = await this.repository.load(createDefaultState())
+    await this.ensureDefaultSkills()
     await this.ensureDefaultExperts()
     await this.ensureDefaultExpertTeams()
     await this.hydrateConfigStateFromFiles()
@@ -179,6 +180,43 @@ export class AppService {
     }
     if (changed) {
       await this.persist()
+    }
+  }
+
+  /**
+   * 自动恢复并更新应用内置技能包至 ~/.culclaw/skills
+   */
+  private async ensureDefaultSkills() {
+    const userSkillsRoot = join(os.homedir(), CONFIG_DIR_NAME, 'skills')
+    const resourcesSkillsRoot = join(process.cwd(), 'resources', 'skills')
+
+    if (!existsSync(resourcesSkillsRoot)) {
+      return
+    }
+
+    try {
+      if (!existsSync(userSkillsRoot)) {
+        await mkdir(userSkillsRoot, { recursive: true })
+      }
+
+      const entries = readdirSync(resourcesSkillsRoot, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const skillId = entry.name
+          const srcDir = join(resourcesSkillsRoot, skillId)
+          const targetDir = join(userSkillsRoot, skillId)
+
+          // 若用户技能目录下缺失 SKILL.md，则自动装载
+          if (!existsSync(join(targetDir, 'SKILL.md'))) {
+            await mkdir(targetDir, { recursive: true })
+            const { cp } = await import('node:fs/promises')
+            await cp(srcDir, targetDir, { recursive: true })
+            console.log(`[AppService] 已自动水合内置技能: ${skillId}`)
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('[AppService] 自动水合内置技能失败:', error)
     }
   }
 
@@ -225,40 +263,50 @@ export class AppService {
     }
   }
 
-  /** 同步系统内置专家，同时保留用户创建的自定义专家。 */
+  /** 同步系统内置专家，同时保留用户创建的自定义专家，并清除已注销的旧内置专家。 */
   private async ensureDefaultExperts() {
     const defaultExpertsById = new Map(DEFAULT_EXPERTS.map(expert => [expert.id, expert]))
-    const existingIds = new Set(this.snapshot.experts.map(expert => expert.id))
+    const existingDefaultIds = new Set<string>()
     const syncedAt = nowIso()
     let changed = false
 
-    const experts = this.snapshot.experts.map(expert => {
-      const defaultExpert = defaultExpertsById.get(expert.id)
-      // 自定义专家由用户维护，即使 ID 与内置预设相同也不覆盖。
-      if (!defaultExpert || expert.isCustom) {
-        return expert
+    const experts: ExpertPreset[] = []
+
+    for (const expert of this.snapshot.experts) {
+      if (expert.isCustom) {
+        experts.push(expert)
+        continue
       }
+
+      const defaultExpert = defaultExpertsById.get(expert.id)
+      if (!defaultExpert) {
+        // 旧内置专家已不在预设清单中，予以清理移除
+        changed = true
+        continue
+      }
+
+      existingDefaultIds.add(expert.id)
 
       const isCurrent = expert.name === defaultExpert.name
         && expert.description === defaultExpert.description
         && expert.systemPrompt === defaultExpert.systemPrompt
-        && expert.isCustom === false
         && JSON.stringify(expert.skills) === JSON.stringify(defaultExpert.skills)
-      if (isCurrent) {
-        return expert
-      }
 
-      changed = true
-      return {
-        ...defaultExpert,
-        isCustom: false,
-        createdAt: expert.createdAt,
-        updatedAt: syncedAt,
+      if (isCurrent) {
+        experts.push(expert)
+      } else {
+        changed = true
+        experts.push({
+          ...defaultExpert,
+          isCustom: false,
+          createdAt: expert.createdAt,
+          updatedAt: syncedAt,
+        })
       }
-    })
+    }
 
     for (const defaultExpert of DEFAULT_EXPERTS) {
-      if (!existingIds.has(defaultExpert.id)) {
+      if (!existingDefaultIds.has(defaultExpert.id)) {
         experts.push({ ...defaultExpert, isCustom: false })
         changed = true
       }
@@ -273,40 +321,50 @@ export class AppService {
     })
   }
 
-  /** 同步系统内置专家团，同时保留用户创建的自定义专家团。 */
+  /** 同步系统内置专家团，同时保留用户创建的自定义专家团，并清除已注销的旧内置团队。 */
   private async ensureDefaultExpertTeams() {
     const defaultTeamsById = new Map(DEFAULT_EXPERT_TEAMS.map(team => [team.id, team]))
-    const existingIds = new Set((this.snapshot.expertTeams ?? []).map(team => team.id))
+    const existingDefaultIds = new Set<string>()
     const syncedAt = nowIso()
     let changed = false
 
-    const expertTeams = (this.snapshot.expertTeams ?? []).map(team => {
-      const defaultTeam = defaultTeamsById.get(team.id)
-      // 自定义专家团由用户维护，即使 ID 与内置预设相同也不覆盖。
-      if (!defaultTeam || team.isCustom) {
-        return team
+    const expertTeams: ExpertTeamPreset[] = []
+
+    for (const team of (this.snapshot.expertTeams ?? [])) {
+      if (team.isCustom) {
+        expertTeams.push(team)
+        continue
       }
+
+      const defaultTeam = defaultTeamsById.get(team.id)
+      if (!defaultTeam) {
+        // 旧内置团队已不在预设清单中，予以清理移除
+        changed = true
+        continue
+      }
+
+      existingDefaultIds.add(team.id)
 
       const isCurrent = team.name === defaultTeam.name
         && team.description === defaultTeam.description
         && team.systemPrompt === defaultTeam.systemPrompt
-        && team.isCustom === false
         && JSON.stringify(team.members) === JSON.stringify(defaultTeam.members)
-      if (isCurrent) {
-        return team
-      }
 
-      changed = true
-      return {
-        ...defaultTeam,
-        isCustom: false,
-        createdAt: team.createdAt,
-        updatedAt: syncedAt,
+      if (isCurrent) {
+        expertTeams.push(team)
+      } else {
+        changed = true
+        expertTeams.push({
+          ...defaultTeam,
+          isCustom: false,
+          createdAt: team.createdAt,
+          updatedAt: syncedAt,
+        })
       }
-    })
+    }
 
     for (const defaultTeam of DEFAULT_EXPERT_TEAMS) {
-      if (!existingIds.has(defaultTeam.id)) {
+      if (!existingDefaultIds.has(defaultTeam.id)) {
         expertTeams.push({ ...defaultTeam, isCustom: false })
         changed = true
       }

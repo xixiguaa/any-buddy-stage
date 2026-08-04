@@ -16,6 +16,8 @@ const shouldIgnorePackagedFile = (file: string) => {
 
 const config: ForgeConfig = {
   packagerConfig: {
+    /* 设置打包后的应用程序图标 */
+    icon: './src/renderer/assets/img/icon.ico',
     asar: {
       unpack: '**/*.node',
     },
@@ -30,6 +32,8 @@ const config: ForgeConfig = {
     new MakerSquirrel({
       authors: 'ymx',
       description: 'Desktop AI assistant application.',
+      /* 设置 Windows Squirrel 安装包 setup.exe 的图标 */
+      setupIcon: './src/renderer/assets/img/icon.ico',
     }),
     new MakerZIP({}, ['win32']),
   ],
