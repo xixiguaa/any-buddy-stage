@@ -9,7 +9,6 @@ import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
 import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js'
 import { OpenAIModelService } from './openai-model-service.js'
-import { SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js'
 import { ChatOpenAI } from '@langchain/openai'
 import type {
   AgentEvent,
@@ -799,34 +798,15 @@ ${initialPrompt.slice(0, 1000)}
     }
   }
 
-  /** 彻底删除任务及其关联的消息、草稿、工作区绑定和 Agent 运行记录 */
+  /** 删除任务及其关联的消息、草稿、工作区绑定和 Agent 运行记录。 */
   async deleteTask(taskId: string): Promise<void> {
-    const orphanedWorkspaceIds = await this.mutate(state => {
-      // 在删除绑定前记录该任务涉及的全部工作区，主工作区和附加工作区均需检查。
-      const boundWorkspaceIds = new Set(
-        state.taskWorkspaces
-          .filter(relation => relation.taskId === taskId)
-          .map(relation => relation.workspaceId),
-      )
-
+    await this.mutate(state => {
       state.tasks = state.tasks.filter(task => task.id !== taskId)
       state.messages = state.messages.filter(message => message.taskId !== taskId)
       state.drafts = state.drafts.filter(draft => draft.taskId !== taskId)
-      state.taskWorkspaces = state.taskWorkspaces.filter(rel => rel.taskId !== taskId)
+      state.taskWorkspaces = state.taskWorkspaces.filter(relation => relation.taskId !== taskId)
       state.agentRuns = state.agentRuns.filter(run => run.taskId !== taskId)
-
-      // 仅当没有任何其他任务继续绑定该工作区时，才允许释放其 Docker 沙盒。
-      return [...boundWorkspaceIds].filter(workspaceId => (
-        !state.taskWorkspaces.some(relation => relation.workspaceId === workspaceId)
-      ))
     })
-
-    for (const workspaceId of orphanedWorkspaceIds) {
-      // 不阻塞任务删除；正在执行的沙盒会由 release 内部等待并安全清理。
-      void SshDockerSandboxBackend.releaseWorkspaceSandbox(workspaceId).catch(error => {
-        console.warn('[AppService] 删除最后一个绑定任务后释放工作区沙箱失败:', workspaceId, error)
-      })
-    }
   }
 
   /** 清空指定任务下的所有运行日志、事件和审批记录 */
@@ -1115,7 +1095,7 @@ ${initialPrompt.slice(0, 1000)}
     return workspace
   }
 
-  /** 归档/移除工作区 */
+  /** 归档工作区；全局 Docker 沙箱不随单个工作区释放。 */
   async removeWorkspace(workspaceId: string): Promise<void> {
     await this.mutate(state => {
       const workspace = state.workspaces.find(item => item.id === workspaceId)
@@ -1125,45 +1105,32 @@ ${initialPrompt.slice(0, 1000)}
       }
       state.taskWorkspaces = state.taskWorkspaces.filter(rel => rel.workspaceId !== workspaceId || rel.role === 'primary')
     })
-
-    // 归档后异步等待正在运行的任务结束，并按工作区标签清理远程遗留容器。
-    void SshDockerSandboxBackend.releaseWorkspaceSandbox(workspaceId).catch(error => {
-      console.warn('[AppService] 释放工作区沙箱失败:', workspaceId, error)
-    })
   }
 
-  /**
-   * 恢复任务绑定的归档主工作区，并在恢复前创建新的 Docker 沙盒容器。
-   * 仅恢复数据库记录；本地工作区路径不存在时不会创建空目录。
-   */
-  async restoreArchivedPrimaryWorkspaceForSandbox(taskId: string): Promise<Workspace | null> {
+  /** 恢复任务绑定的归档主工作区记录，不影响全局 Docker 沙箱。 */
+  async restoreArchivedPrimaryWorkspace(taskId: string): Promise<Workspace | null> {
     const primaryRelation = this.snapshot.taskWorkspaces.find(item => item.taskId === taskId && item.role === 'primary')
     if (!primaryRelation) return null
 
     const workspace = this.snapshot.workspaces.find(item => item.id === primaryRelation.workspaceId)
     if (!workspace) {
-      throw new Error(`原工作区记录已不存在，无法恢复 Docker 沙盒：${primaryRelation.workspaceId}`)
+      throw new Error('原工作区记录已不存在，无法恢复：' + primaryRelation.workspaceId)
     }
     if (!workspace.isArchived) return workspace
     if (!existsSync(workspace.path)) {
-      throw new Error(`原工作区文件夹不存在，无法恢复 Docker 沙盒：${workspace.path}`)
+      throw new Error('原工作区文件夹不存在，无法恢复：' + workspace.path)
     }
 
-    // acquire 会等待旧容器清理完成；预热成功后才恢复数据库中的工作区记录。
-    await SshDockerSandboxBackend.prewarmWorkspaceSandbox(workspace.id)
-
-    const restoredWorkspace = await this.mutate(state => {
+    return this.mutate(state => {
       const target = state.workspaces.find(item => item.id === workspace.id)
       if (!target) {
-        throw new Error(`找不到原工作区记录：${workspace.id}`)
+        throw new Error('找不到原工作区记录：' + workspace.id)
       }
       target.isArchived = false
       target.updatedAt = nowIso()
       target.lastOpenedAt = target.updatedAt
       return { ...target }
     })
-
-    return restoredWorkspace
   }
 
   /** 在系统原生文件管理器 (Explorer/Finder) 中打开指定工作区文件夹 */

@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { spawn } from 'node:child_process';
-import type { CommandExecutor, SshCommandResult, SshInputWriter } from './command-executor.js';
+import type { CommandExecutor, CommandResult, InputWriter } from './command-executor.js';
 
 export type LocalCommandExecutorOptions = {
   id: string;
@@ -25,10 +25,10 @@ export class LocalCommandExecutor implements CommandExecutor {
 
   async runDocker(
     args: string[],
-    input?: SshInputWriter,
+    input?: InputWriter,
     maxOutputBytes = this.maxOutputBytes,
     allowClosed = false,
-  ): Promise<SshCommandResult> {
+  ): Promise<CommandResult> {
     if (this.closed && !allowClosed) {
       throw new Error(`Docker 沙盒 ${this.id} 已关闭。`);
     }
@@ -61,7 +61,7 @@ export class LocalCommandExecutor implements CommandExecutor {
       capturedBytes += value.length;
     };
 
-    return new Promise<SshCommandResult>((resolve, reject) => {
+    return new Promise<CommandResult>((resolve, reject) => {
       const child = spawn(this.dockerCommand, args, {
         shell: false,
         env: process.env,

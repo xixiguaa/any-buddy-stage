@@ -10,9 +10,8 @@ import {
   type FileUploadResponse,
 } from 'deepagents/node';
 import { readSandboxIni } from '../config/sandbox-ini-config.js';
-import type { CommandExecutor, SshCommandResult, SshInputWriter } from './executors/command-executor.js';
+import type { CommandExecutor, CommandResult, InputWriter } from './executors/command-executor.js';
 import { LocalCommandExecutor } from './executors/local-command-executor.js';
-import { SshCommandExecutor } from './executors/ssh-command-executor.js';
 
 const ALLOWED_ARTIFACT_EXTENSIONS = new Set([
   'docx', 'doc', 'pdf', 'md', 'markdown', 'txt', 'json', 'html',
@@ -45,7 +44,7 @@ const IGNORED_ARTIFACT_FILES = new Set([
   'bun.lockb',
 ]);
 
-/** 判断文件是否属于可以从沙盒导出的用户产物。 */
+/** 判断文件是否属于可以从沙箱导出的用户产物。 */
 export function isAllowedArtifactFile(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
   const pathSegments = normalizedPath.split('/').filter(Boolean);
@@ -58,8 +57,8 @@ export function isAllowedArtifactFile(filePath: string): boolean {
     return false;
   }
 
-  const ext = path.extname(fileName).replace(/^\./, '');
-  return ALLOWED_ARTIFACT_EXTENSIONS.has(ext);
+  const extension = path.extname(fileName).replace(/^\./, '');
+  return ALLOWED_ARTIFACT_EXTENSIONS.has(extension);
 }
 
 const FILE_OPERATION_ERRORS = new Set<FileOperationError>([
@@ -72,26 +71,17 @@ const FILE_OPERATION_ERRORS = new Set<FileOperationError>([
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
-// 默认镜像同时提供 Python 3.12 与 Node.js 22；仍可通过 SANDBOX_DOCKER_IMAGE 覆盖。
 const DEFAULT_DOCKER_IMAGE = 'nikolaik/python-nodejs:python3.12-nodejs22-slim';
 const DOCKER_IMAGES_BY_TYPE = {
   node: 'node:22-slim',
   python: 'python:3.12-slim',
   combined: DEFAULT_DOCKER_IMAGE,
 } as const;
-
-type DockerImageType = keyof typeof DOCKER_IMAGES_BY_TYPE;
 const CONTAINER_WORKDIR = '/workspace';
 
-export type SshDockerSandboxBackendOptions = {
-  mode?: 'local' | 'ssh';
-  host?: string;
-  username?: string;
-  port?: number;
-  privateKeyPath?: string;
-  password?: string;
-  passphrase?: string;
-  hostFingerprint?: string;
+type DockerImageType = keyof typeof DOCKER_IMAGES_BY_TYPE;
+
+export type DockerSandboxBackendOptions = {
   timeoutMs?: number;
   maxOutputBytes?: number;
   maxTransferBytes?: number;
@@ -113,13 +103,11 @@ type DownloadCandidate = {
   encodedPath: string;
 };
 
-/** 工作区沙箱池中的单个实例及其串行执行队列。 */
-type WorkspaceSandboxPoolEntry = {
-  backendPromise: Promise<SshDockerSandboxBackend>;
+type GlobalSandboxPoolEntry = {
+  backendPromise: Promise<DockerSandboxBackend>;
   executionTail: Promise<void>;
 };
 
-/** 解析镜像类型，避免错误配置导致远程 Docker 进入长时间拉取等待。 */
 function parseDockerImageType(value: string | undefined): DockerImageType | undefined {
   const imageType = value?.trim().toLowerCase();
   if (!imageType) return undefined;
@@ -129,26 +117,24 @@ function parseDockerImageType(value: string | undefined): DockerImageType | unde
   throw new Error('SANDBOX_DOCKER_IMAGE_TYPE 仅支持 node、python 或 combined。');
 }
 
-/** 优先使用用户显式指定的镜像地址；未指定时根据镜像类型或默认配置选择镜像。 */
 function resolveDockerImage(imageType: DockerImageType | undefined, image: string | undefined): string {
   if (image?.trim()) return image.trim();
   if (imageType) return DOCKER_IMAGES_BY_TYPE[imageType];
-  return validateNonEmpty(DEFAULT_DOCKER_IMAGE, 'dockerImage');
+  return DEFAULT_DOCKER_IMAGE;
 }
 
 /**
- * Docker 沙箱后端（支持 Local 本地 Docker 挂载与 SSH 远程 Docker 执行）
+ * 仅使用本地 Docker CLI 的全局共享沙箱。
+ *
+ * 所有任务复用同一个容器，并通过租约队列串行读写，避免不同任务互相覆盖容器内文件。
  */
-export class SshDockerSandboxBackend extends BaseSandbox {
+export class DockerSandboxBackend extends BaseSandbox {
   readonly id: string;
-  readonly mode: 'local' | 'ssh';
 
-  /** 主进程内按工作区复用的远程 Docker 沙箱。 */
-  private static readonly workspaceSandboxPool = new Map<string, WorkspaceSandboxPoolEntry>();
-  /** 已从池中移除、但仍在等待运行任务结束的沙箱清理任务。 */
-  private static readonly pendingWorkspaceSandboxCloses = new Set<Promise<void>>();
-  /** 正在清理远程容器的工作区；同工作区的新容器必须在清理后创建。 */
-  private static readonly pendingWorkspaceSandboxReleases = new Map<string, Promise<void>>();
+  /** 主进程内唯一的本地 Docker 沙箱实例。 */
+  private static globalSandboxEntry: GlobalSandboxPoolEntry | undefined;
+  /** 正在关闭的全局沙箱，避免关闭和重新获取交错。 */
+  private static pendingGlobalSandboxClose: Promise<void> | undefined;
 
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
@@ -162,17 +148,27 @@ export class SshDockerSandboxBackend extends BaseSandbox {
   private containerReadyPromise?: Promise<void>;
   private closed = false;
 
-  /**
-   * 独占获取工作区沙箱，避免同一工作区的多个任务同时读写同一个容器目录。
-   */
-  static async acquireWorkspaceSandbox(workspaceId: string) {
-    const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
-    // 归档清理使用相同的容器标签，等待完成可避免新容器被旧清理误删。
-    await SshDockerSandboxBackend.pendingWorkspaceSandboxReleases
-      .get(normalizedWorkspaceId)
-      ?.catch(() => undefined);
+  constructor(options: DockerSandboxBackendOptions = {}) {
+    super();
 
-    const entry = SshDockerSandboxBackend.getOrCreateWorkspaceSandboxEntry(workspaceId);
+    this.timeoutMs = validatePositiveNumber(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs');
+    this.maxOutputBytes = validatePositiveNumber(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes');
+    this.maxTransferBytes = validatePositiveNumber(options.maxTransferBytes ?? DEFAULT_MAX_TRANSFER_BYTES, 'maxTransferBytes');
+    this.dockerImage = resolveDockerImage(options.dockerImageType, options.dockerImage);
+    this.id = options.sandboxId ?? 'global-' + randomUUID();
+    this.containerName = 'culclaw-sandbox-' + randomUUID();
+    this.executor = new LocalCommandExecutor({
+      id: this.id,
+      timeoutMs: this.timeoutMs,
+      maxOutputBytes: this.maxOutputBytes,
+    });
+  }
+
+  /** 获取全局沙箱的独占租约，所有任务按开始顺序串行进入容器。 */
+  static async acquireGlobalSandbox() {
+    await DockerSandboxBackend.pendingGlobalSandboxClose?.catch(() => undefined);
+
+    const entry = DockerSandboxBackend.getOrCreateGlobalSandboxEntry();
     const previousExecution = entry.executionTail;
     let releaseExecution: (() => void) | undefined;
     const executionDone = new Promise<void>(resolve => {
@@ -183,7 +179,6 @@ export class SshDockerSandboxBackend extends BaseSandbox {
       .then(() => executionDone);
     entry.executionTail = executionTail;
 
-    // 队列尾部空闲后重置，避免长期运行时保留完整的历史 Promise 链。
     void executionTail.finally(() => {
       if (entry.executionTail === executionTail) {
         entry.executionTail = Promise.resolve();
@@ -210,183 +205,57 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     }
   }
 
-  /**
-   * 释放已归档工作区的沙箱，并清理此前应用进程遗留的同标签远程容器。
-   */
-  static async releaseWorkspaceSandbox(workspaceId: string): Promise<void> {
-    const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
-    const existingRelease = SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.get(normalizedWorkspaceId);
-    if (existingRelease) {
-      await existingRelease;
-      return;
-    }
-
-    const releasePromise = (async () => {
-      const entry = SshDockerSandboxBackend.workspaceSandboxPool.get(normalizedWorkspaceId);
-      if (entry) {
-        SshDockerSandboxBackend.workspaceSandboxPool.delete(normalizedWorkspaceId);
-        const closePromise = SshDockerSandboxBackend.closeWorkspaceSandboxEntry(entry);
-        SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.add(closePromise);
-        try {
-          await closePromise;
-        } finally {
-          SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.delete(closePromise);
-        }
-      }
-
-      await SshDockerSandboxBackend.removeRemoteWorkspaceContainers(normalizedWorkspaceId);
-    })();
-    SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.set(normalizedWorkspaceId, releasePromise);
-
-    try {
-      await releasePromise;
-    } finally {
-      if (SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.get(normalizedWorkspaceId) === releasePromise) {
-        SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.delete(normalizedWorkspaceId);
-      }
-    }
-  }
-
-  /** 预热工作区沙箱，确保调用方返回时容器已完成创建。 */
-  static async prewarmWorkspaceSandbox(workspaceId: string): Promise<void> {
-    const lease = await SshDockerSandboxBackend.acquireWorkspaceSandbox(workspaceId);
+  /** 预热全局沙箱，确保调用方返回时容器已完成创建。 */
+  static async prewarmGlobalSandbox(): Promise<void> {
+    const lease = await DockerSandboxBackend.acquireGlobalSandbox();
     await lease.release();
   }
 
-  /** 在应用退出时释放当前进程创建的全部工作区沙箱。 */
-  static async closeAllWorkspaceSandboxes(): Promise<void> {
-    const entries = Array.from(SshDockerSandboxBackend.workspaceSandboxPool.values());
-    SshDockerSandboxBackend.workspaceSandboxPool.clear();
-    const pendingCloses = Array.from(SshDockerSandboxBackend.pendingWorkspaceSandboxCloses);
-    const pendingReleases = Array.from(SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.values());
-    await Promise.allSettled([
-      ...entries.map(entry => SshDockerSandboxBackend.closeWorkspaceSandboxEntry(entry)),
-      ...pendingCloses,
-      ...pendingReleases,
-    ]);
-  }
-
-  constructor(options: SshDockerSandboxBackendOptions) {
-    super();
-
-    this.mode = options.mode ?? (options.host ? 'ssh' : 'local');
-    const host = validateHost(options.host ?? 'localhost');
-    const username = validateUsername(options.username);
-    const port = validatePort(options.port ?? 22);
-    const privateKeyPath = options.privateKeyPath?.trim() || undefined;
-
-    if (this.mode === 'ssh' && !options.password && !privateKeyPath) {
-      throw new Error('请配置 SANDBOX_SSH_PASSWORD 或 SANDBOX_SSH_KEY_PATH。');
+  /** 应用退出时等待运行中的租约结束，再关闭唯一的本地 Docker 容器。 */
+  static async closeGlobalSandbox(): Promise<void> {
+    if (DockerSandboxBackend.pendingGlobalSandboxClose) {
+      await DockerSandboxBackend.pendingGlobalSandboxClose;
+      return;
     }
 
-    this.timeoutMs = validatePositiveNumber(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs');
-    this.maxOutputBytes = validatePositiveNumber(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes');
-    this.maxTransferBytes = validatePositiveNumber(options.maxTransferBytes ?? DEFAULT_MAX_TRANSFER_BYTES, 'maxTransferBytes');
-    this.dockerImage = resolveDockerImage(options.dockerImageType, options.dockerImage);
-    this.id = options.sandboxId ?? `sandbox-${randomUUID()}`;
-    this.containerName = `culclaw-sandbox-${randomUUID()}`;
+    const entry = DockerSandboxBackend.globalSandboxEntry;
+    if (!entry) return;
 
-    // 组合选择 CommandExecutor 传输层
-    if (this.mode === 'local') {
-      this.executor = new LocalCommandExecutor({
-        id: this.id,
-        timeoutMs: this.timeoutMs,
-        maxOutputBytes: this.maxOutputBytes,
-      });
-    } else {
-      this.executor = new SshCommandExecutor({
-        id: this.id,
-        host,
-        username,
-        port,
-        privateKeyPath,
-        password: options.password,
-        passphrase: options.passphrase,
-        hostFingerprint: normalizeFingerprint(options.hostFingerprint),
-        timeoutMs: this.timeoutMs,
-        maxOutputBytes: this.maxOutputBytes,
-      });
-    }
+    DockerSandboxBackend.globalSandboxEntry = undefined;
+    let closePromise: Promise<void>;
+    closePromise = DockerSandboxBackend.closeGlobalSandboxEntry(entry).finally(() => {
+      if (DockerSandboxBackend.pendingGlobalSandboxClose === closePromise) {
+        DockerSandboxBackend.pendingGlobalSandboxClose = undefined;
+      }
+    });
+    DockerSandboxBackend.pendingGlobalSandboxClose = closePromise;
+    await closePromise;
   }
 
-  /** 从 culclaw.ini 配置文件或环境变量读取 SSH 和 Docker 配置。 */
+  /** 从 culclaw.ini 或环境变量读取本地 Docker 配置。 */
   static async fromEnvironment(
     iniPath?: string,
     environment: Record<string, string | undefined> = process.env,
-    options: Pick<SshDockerSandboxBackendOptions, 'sandboxId'> = {},
-  ) {
+    options: Pick<DockerSandboxBackendOptions, 'sandboxId'> = {},
+  ): Promise<DockerSandboxBackend> {
     const iniConfig = await readSandboxIni(iniPath);
     const getConf = (key: string): string | undefined => environment[key]?.trim() || iniConfig[key]?.trim();
 
-    const rawMode = getConf('SANDBOX_TYPE') || getConf('SANDBOX_MODE');
-    let mode: 'local' | 'ssh' = 'local';
-    const normalizedMode = rawMode?.trim().toLowerCase();
-
-    if (normalizedMode?.includes('local')) {
-      mode = 'local';
-    } else if (normalizedMode?.includes('ssh') || normalizedMode?.includes('remote')) {
-      mode = 'ssh';
-    } else {
-      const configuredServerUrl = getConf('SANDBOX_SERVER_URL');
-      const configuredSshHost = getConf('SANDBOX_SSH_HOST');
-      const configuredPassword = getConf('SANDBOX_SSH_PASSWORD');
-      const configuredKeyPath = getConf('SANDBOX_SSH_KEY_PATH');
-      if ((configuredSshHost || configuredServerUrl?.toLowerCase().startsWith('ssh://')) && (configuredPassword || configuredKeyPath)) {
-        mode = 'ssh';
-      } else {
-        mode = 'local';
-      }
-    }
-
-    const configuredServerUrl = getConf('SANDBOX_SERVER_URL');
-    let sshUrl: URL | undefined;
-    if (mode === 'ssh' && !getConf('SANDBOX_SSH_HOST') && configuredServerUrl?.toLowerCase().startsWith('ssh://')) {
-      try {
-        sshUrl = new URL(configuredServerUrl);
-        if (sshUrl.protocol !== 'ssh:') {
-          throw new Error('unsupported ssh url');
-        }
-      } catch {
-        throw new Error('SANDBOX_SERVER_URL 必须是有效的 ssh://user@host:port 地址。');
-      }
-    }
-
-    const host = getConf('SANDBOX_SSH_HOST') || sshUrl?.hostname || (mode === 'local' ? 'localhost' : undefined);
-    if (mode === 'ssh' && !host) {
-      throw new Error('缺少 SANDBOX_SSH_HOST 或有效的 SANDBOX_SERVER_URL 配置，无法创建 SSH Docker 沙盒。');
-    }
-
-    const timeoutRaw = getConf('SANDBOX_SSH_TIMEOUT_MS') ?? getConf('SANDBOX_SERVER_TIMEOUT_MS');
-    const username = getConf('SANDBOX_SSH_USER')
-      || (sshUrl?.username ? decodeURIComponent(sshUrl.username) : undefined);
-    const password = getConf('SANDBOX_SSH_PASSWORD')
-      || (sshUrl?.password ? decodeURIComponent(sshUrl.password) : undefined);
-    const urlPort = sshUrl?.port ? Number(sshUrl.port) : undefined;
-
-    return new SshDockerSandboxBackend({
-      mode,
-      host,
-      username,
-      port: parseEnvironmentNumber(
-        getConf('SANDBOX_SSH_PORT') ?? (urlPort ? String(urlPort) : undefined),
-        22,
-        'SANDBOX_SSH_PORT',
-        true,
+    return new DockerSandboxBackend({
+      timeoutMs: parseEnvironmentNumber(
+        getConf('SANDBOX_DOCKER_TIMEOUT_MS') ?? getConf('SANDBOX_TIMEOUT_MS'),
+        DEFAULT_TIMEOUT_MS,
+        'SANDBOX_DOCKER_TIMEOUT_MS',
       ),
-      privateKeyPath: getConf('SANDBOX_SSH_KEY_PATH') || undefined,
-      password: password || undefined,
-      passphrase: getConf('SANDBOX_SSH_KEY_PASSPHRASE') || undefined,
-      hostFingerprint: getConf('SANDBOX_SSH_HOST_FINGERPRINT') || undefined,
-      timeoutMs: parseEnvironmentNumber(timeoutRaw, DEFAULT_TIMEOUT_MS, 'SANDBOX_SSH_TIMEOUT_MS'),
       maxOutputBytes: parseEnvironmentNumber(
-        getConf('SANDBOX_SSH_MAX_OUTPUT_BYTES'),
+        getConf('SANDBOX_DOCKER_MAX_OUTPUT_BYTES') ?? getConf('SANDBOX_MAX_OUTPUT_BYTES'),
         DEFAULT_MAX_OUTPUT_BYTES,
-        'SANDBOX_SSH_MAX_OUTPUT_BYTES',
+        'SANDBOX_DOCKER_MAX_OUTPUT_BYTES',
       ),
       maxTransferBytes: parseEnvironmentNumber(
-        getConf('SANDBOX_SSH_MAX_TRANSFER_BYTES'),
+        getConf('SANDBOX_DOCKER_MAX_TRANSFER_BYTES') ?? getConf('SANDBOX_MAX_TRANSFER_BYTES'),
         DEFAULT_MAX_TRANSFER_BYTES,
-        'SANDBOX_SSH_MAX_TRANSFER_BYTES',
+        'SANDBOX_DOCKER_MAX_TRANSFER_BYTES',
       ),
       dockerImage: getConf('SANDBOX_DOCKER_IMAGE') || undefined,
       dockerImageType: parseDockerImageType(getConf('SANDBOX_DOCKER_IMAGE_TYPE')),
@@ -394,17 +263,17 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     });
   }
 
-  /** 立即创建 Docker 容器，用于在工作区创建阶段预热。 */
+  /** 立即创建容器，用于启动预热。 */
   async start(): Promise<void> {
     await this.ensureContainer();
   }
 
-  /** 在 Docker 容器内执行命令。 */
+  /** 在本地 Docker 容器内执行命令。 */
   async execute(command: string): Promise<ExecuteResponse> {
     await this.ensureContainer();
     const result = await this.runDocker(this.buildDockerExecArgs(command));
     const output = result.stdout && result.stderr
-      ? `${result.stdout}\n${result.stderr}`
+      ? result.stdout + '\n' + result.stderr
       : result.stdout || result.stderr;
 
     return {
@@ -421,16 +290,16 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     const responses = new Array<FileUploadResponse>(files.length);
     const candidates: UploadCandidate[] = [];
 
-    files.forEach(([path, content], index) => {
-      if (!isSandboxPath(path)) {
-        responses[index] = { path, error: 'invalid_path' };
+    files.forEach(([filePath, content], index) => {
+      if (!isSandboxPath(filePath)) {
+        responses[index] = { path: filePath, error: 'invalid_path' };
         return;
       }
 
       candidates.push({
         index,
-        path,
-        encodedPath: encodeBase64(path),
+        path: filePath,
+        encodedPath: encodeBase64(filePath),
         content,
       });
     });
@@ -438,13 +307,12 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     if (candidates.length === 0) return responses;
 
     await this.ensureContainer();
-
     const result = await this.runDocker(
       this.buildDockerExecArgs(this.createUploadScript(), true),
       async stdin => {
         for (const candidate of candidates) {
           const encodedContent = Buffer.from(candidate.content).toString('base64');
-          await writeChunk(stdin, `${candidate.encodedPath}|${encodedContent}\n`);
+          await writeChunk(stdin, candidate.encodedPath + '|' + encodedContent + '\n');
         }
       },
       this.maxTransferBytes,
@@ -455,35 +323,34 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     return responses;
   }
 
-  /** 批量下载容器文件，支持单个文件失败。 */
+  /** 批量下载容器文件，单个文件失败不会中断其他文件。 */
   async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
     if (paths.length === 0) return [];
 
     const responses = new Array<FileDownloadResponse>(paths.length);
     const candidates: DownloadCandidate[] = [];
 
-    paths.forEach((path, index) => {
-      if (!isSandboxPath(path)) {
-        responses[index] = { path, content: null, error: 'invalid_path' };
+    paths.forEach((filePath, index) => {
+      if (!isSandboxPath(filePath)) {
+        responses[index] = { path: filePath, content: null, error: 'invalid_path' };
         return;
       }
 
       candidates.push({
         index,
-        path,
-        encodedPath: encodeBase64(path),
+        path: filePath,
+        encodedPath: encodeBase64(filePath),
       });
     });
 
     if (candidates.length === 0) return responses;
 
     await this.ensureContainer();
-
     const result = await this.runDocker(
       this.buildDockerExecArgs(this.createDownloadScript(), true),
       async stdin => {
         for (const candidate of candidates) {
-          await writeChunk(stdin, `${candidate.encodedPath}\n`);
+          await writeChunk(stdin, candidate.encodedPath + '\n');
         }
       },
       this.maxTransferBytes,
@@ -494,7 +361,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     return responses;
   }
 
-  /** 下载容器工作区中的全部普通文件。 */
+  /** 下载容器工作目录中的全部可导出产物。 */
   async downloadWorkspaceFiles(): Promise<FileDownloadResponse[]> {
     await this.ensureContainer();
 
@@ -511,7 +378,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
       .map(filePath => filePath.replace(/^\.\//, ''))
       .filter(Boolean)
       .filter(filePath => isAllowedArtifactFile(filePath))
-      .map(filePath => `${this.containerWorkdir}/${filePath}`);
+      .map(filePath => this.containerWorkdir + '/' + filePath);
 
     const downloaded = await this.downloadFiles(containerPaths);
     return downloaded.map(item => ({
@@ -520,7 +387,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     }));
   }
 
-  /** 关闭并清理本次运行创建的 Docker 容器。 */
+  /** 关闭并清理本次进程创建的本地 Docker 容器。 */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -539,40 +406,39 @@ export class SshDockerSandboxBackend extends BaseSandbox {
         }
       }
     } catch (error) {
-      console.warn('[SshDockerSandbox] 清理 Docker 沙盒失败:', error);
+      console.warn('[DockerSandbox] 清理本地 Docker 沙箱失败:', error);
     } finally {
       await this.executor.close();
     }
   }
 
-  private static getOrCreateWorkspaceSandboxEntry(workspaceId: string): WorkspaceSandboxPoolEntry {
-    const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
-    const existing = SshDockerSandboxBackend.workspaceSandboxPool.get(normalizedWorkspaceId);
+  private static getOrCreateGlobalSandboxEntry(): GlobalSandboxPoolEntry {
+    const existing = DockerSandboxBackend.globalSandboxEntry;
     if (existing) return existing;
 
-    const backendPromise = SshDockerSandboxBackend.createWorkspaceSandbox(normalizedWorkspaceId);
-    const entry: WorkspaceSandboxPoolEntry = {
+    const backendPromise = DockerSandboxBackend.createGlobalSandbox();
+    const entry: GlobalSandboxPoolEntry = {
       backendPromise,
       executionTail: Promise.resolve(),
     };
-    SshDockerSandboxBackend.workspaceSandboxPool.set(normalizedWorkspaceId, entry);
+    DockerSandboxBackend.globalSandboxEntry = entry;
 
     void backendPromise.catch(() => {
-      if (SshDockerSandboxBackend.workspaceSandboxPool.get(normalizedWorkspaceId) === entry) {
-        SshDockerSandboxBackend.workspaceSandboxPool.delete(normalizedWorkspaceId);
+      if (DockerSandboxBackend.globalSandboxEntry === entry) {
+        DockerSandboxBackend.globalSandboxEntry = undefined;
       }
     });
     return entry;
   }
 
-  private static async createWorkspaceSandbox(workspaceId: string): Promise<SshDockerSandboxBackend> {
-    const backend = await SshDockerSandboxBackend.fromEnvironment(undefined, process.env, {
-      sandboxId: `workspace-${workspaceId}`,
+  private static async createGlobalSandbox(): Promise<DockerSandboxBackend> {
+    const backend = await DockerSandboxBackend.fromEnvironment(undefined, process.env, {
+      sandboxId: 'global',
     });
 
     try {
       await backend.start();
-      console.debug('[SshDockerSandbox] 工作区沙箱已预热:', workspaceId);
+      console.debug('[DockerSandbox] 全局本地 Docker 沙箱已预热');
       return backend;
     } catch (error) {
       await backend.close();
@@ -580,40 +446,15 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     }
   }
 
-  private static async closeWorkspaceSandboxEntry(entry: WorkspaceSandboxPoolEntry): Promise<void> {
+  private static async closeGlobalSandboxEntry(entry: GlobalSandboxPoolEntry): Promise<void> {
     await entry.executionTail.catch(() => undefined);
     const backend = await entry.backendPromise.catch(() => undefined);
     await backend?.close();
   }
 
-  private static async removeRemoteWorkspaceContainers(workspaceId: string): Promise<void> {
-    const sandboxId = `workspace-${workspaceId}`;
-    const backend = await SshDockerSandboxBackend.fromEnvironment(undefined, process.env, { sandboxId });
-    const labelFilter = `label=culclaw.sandbox.id=${sandboxId}`;
-
-    try {
-      const listed = await backend.runDocker(['ps', '-aq', '--filter', labelFilter]);
-      if (listed.exitCode !== 0) {
-        throw new Error(backend.formatCommandFailure(listed, '查询 Docker 工作区容器'));
-      }
-
-      const containerIds = listed.stdout
-        .split(/\s+/)
-        .filter(containerId => /^[a-f0-9]{12,64}$/i.test(containerId));
-      if (containerIds.length === 0) return;
-
-      const removed = await backend.runDocker(['rm', '-f', ...containerIds]);
-      if (removed.exitCode !== 0) {
-        throw new Error(backend.formatCommandFailure(removed, '删除 Docker 工作区容器'));
-      }
-    } finally {
-      await backend.close();
-    }
-  }
-
   private async ensureContainer(): Promise<void> {
     if (this.closed) {
-      throw new Error(`Docker 沙盒 ${this.id} 已关闭。`);
+      throw new Error('Docker 沙箱 ' + this.id + ' 已关闭。');
     }
 
     if (!this.containerReadyPromise) {
@@ -624,7 +465,7 @@ export class SshDockerSandboxBackend extends BaseSandbox {
 
   private toWorkspaceVirtualPath(containerPath: string): string {
     const relativePath = containerPath.slice(this.containerWorkdir.length).replace(/^\/+/, '');
-    return `/${relativePath}`;
+    return '/' + relativePath;
   }
 
   private async createContainer(): Promise<void> {
@@ -634,11 +475,11 @@ export class SshDockerSandboxBackend extends BaseSandbox {
       '--name',
       this.containerName,
       '--label',
-      `culclaw.sandbox.id=${this.id}`,
+      'culclaw.sandbox.id=' + this.id,
       this.dockerImage,
       'sh',
       '-lc',
-      `mkdir -p ${shellQuote(this.containerWorkdir)} && while :; do sleep 3600; done`,
+      'mkdir -p ' + shellQuote(this.containerWorkdir) + ' && while :; do sleep 3600; done',
     ];
 
     const result = await this.runDocker(command);
@@ -655,10 +496,10 @@ export class SshDockerSandboxBackend extends BaseSandbox {
 
   private runDocker(
     args: string[],
-    input?: SshInputWriter,
+    input?: InputWriter,
     maxOutputBytes = this.maxOutputBytes,
     allowClosed = false,
-  ): Promise<SshCommandResult> {
+  ): Promise<CommandResult> {
     return this.executor.runDocker(args, input, maxOutputBytes, allowClosed);
   }
 
@@ -802,21 +643,23 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     return queues;
   }
 
-  private assertTransferSucceeded(result: SshCommandResult, operation: string): void {
+  private assertTransferSucceeded(result: CommandResult, operation: string): void {
     if (result.truncated) {
-      throw new Error(`${operation}响应超过 SANDBOX_SSH_MAX_TRANSFER_BYTES 限制。`);
+      throw new Error(operation + '响应超过 SANDBOX_DOCKER_MAX_TRANSFER_BYTES 限制。');
     }
     if (result.exitCode !== 0) {
       throw new Error(this.formatCommandFailure(result, operation));
     }
   }
 
-  private formatCommandFailure(result: SshCommandResult, operation: string): string {
+  private formatCommandFailure(result: CommandResult, operation: string): string {
     const detail = (result.stderr || result.stdout).trim().slice(0, 500);
-    const executor = this.mode === 'local' ? 'Docker' : 'SSH';
-    let message = `${operation}失败（${executor} exit code ${result.exitCode ?? 'unknown'}）${detail ? `：${detail}` : '。'}`;
+    let message = operation + '失败，Docker exit code ' + (result.exitCode ?? 'unknown');
+    if (detail) {
+      message += '：' + detail;
+    }
     if (/failed to connect to the docker API|dockerDesktopLinuxEngine|daemon is not running/i.test(detail)) {
-      message += '（提示：目标机器上的 Docker Desktop 或 Docker Daemon 未启动，请先打开 Docker 确保 Engine 处于 Running 状态。）';
+      message += '（提示：本机 Docker Desktop 或 Docker Daemon 未启动，请先打开 Docker 并确保 Engine 处于 Running 状态。）';
     }
     return message;
   }
@@ -868,69 +711,29 @@ function shellQuote(value: string): string {
   if (value.includes('\0')) {
     throw new Error('Shell 参数不能包含 NUL 字符。');
   }
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 function isSandboxPath(value: string): boolean {
   return value.startsWith('/') && !value.includes('\0');
 }
 
-function validateHost(value: string): string {
-  const host = validateNonEmpty(value.trim(), 'host');
-  if (/\s/.test(host)) {
-    throw new Error('SSH host 不能包含空白字符。');
-  }
-  return host;
-}
-
-function validateUsername(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  if (/\s|@/.test(value)) {
-    throw new Error('SSH username 不能包含空白字符或 @。');
-  }
-  return value;
-}
-
-function normalizeFingerprint(value: string | undefined): string | undefined {
-  const fingerprint = value?.trim();
-  return fingerprint || undefined;
-}
-
-function validatePort(value: number): number {
-  if (!Number.isInteger(value) || value < 1 || value > 65_535) {
-    throw new Error('SSH port 必须是 1 到 65535 之间的整数。');
-  }
-  return value;
-}
-
 function validatePositiveNumber(value: number, name: string): number {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${name} 必须是大于 0 的数字。`);
+    throw new Error(name + ' 必须是大于 0 的数字。');
   }
   return value;
-}
-
-function validateNonEmpty(value: string, name: string): string {
-  if (!value) {
-    throw new Error(`${name} 不能为空。`);
-  }
-  return value;
-}
-
-function normalizeWorkspaceId(value: string): string {
-  return validateNonEmpty(value.trim(), 'workspaceId');
 }
 
 function parseEnvironmentNumber(
   value: string | undefined,
   fallback: number,
   name: string,
-  integer = false,
 ): number {
   if (!value?.trim()) return fallback;
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0 || (integer && !Number.isInteger(parsed))) {
-    throw new Error(`${name} 必须是大于 0 的${integer ? '整数' : '数字'}。`);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(name + ' 必须是大于 0 的数字。');
   }
   return parsed;
 }

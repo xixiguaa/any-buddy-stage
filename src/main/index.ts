@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { AppEventBus } from './runtime/event-bus.js'
 import { AppStateRepository } from './repositories/app-state-repository.js'
 import { AppService } from './services/app-service.js'
-import { SshDockerSandboxBackend } from './services/ssh-docker-sandbox-backend.js'
+import { DockerSandboxBackend } from './services/docker-sandbox-backend.js'
 import { registerIpcHandlers } from './ipc/register-ipc-handlers.js'
 import { installGlobalErrorHandlers, logProcessError } from './runtime/error-logger.js'
 import { createMainWindow } from './window/create-main-window.js'
@@ -51,7 +51,7 @@ async function bootstrap() {
     event.preventDefault()
     if (sandboxCleanupPromise) return
 
-    sandboxCleanupPromise = SshDockerSandboxBackend.closeAllWorkspaceSandboxes()
+    sandboxCleanupPromise = DockerSandboxBackend.closeGlobalSandbox()
       .catch(error => {
         logProcessError({ scope: 'sandbox-cleanup' }, error)
       })

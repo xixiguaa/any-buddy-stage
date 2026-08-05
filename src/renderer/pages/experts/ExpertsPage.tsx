@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Tabs, Card, Tag, Button, Space, Modal, Input, Row, Col, Empty, Tooltip, Select } from 'antd'
 import {
   PlusOutlined,
@@ -27,9 +27,43 @@ const SKILL_DESCRIPTIONS: Record<string, string> = {
   'web-search': '聚合网络多渠道精准搜集与总结要点技能包',
 }
 
+type SingleExpertSourceTask = {
+  type: 'single_expert'
+  taskId: string
+  activeExpertId: string
+  expertIds: string[]
+}
+
+function getSingleExpertSourceTask(state: unknown): SingleExpertSourceTask | undefined {
+  if (!state || typeof state !== 'object') return undefined
+
+  const sourceTask = (state as { sourceTask?: unknown }).sourceTask
+  if (!sourceTask || typeof sourceTask !== 'object') return undefined
+
+  const candidate = sourceTask as Partial<SingleExpertSourceTask>
+  if (
+    candidate.type !== 'single_expert' ||
+    typeof candidate.taskId !== 'string' ||
+    typeof candidate.activeExpertId !== 'string' ||
+    !Array.isArray(candidate.expertIds) ||
+    !candidate.expertIds.every(expertId => typeof expertId === 'string')
+  ) {
+    return undefined
+  }
+
+  return {
+    type: candidate.type,
+    taskId: candidate.taskId,
+    activeExpertId: candidate.activeExpertId,
+    expertIds: candidate.expertIds,
+  }
+}
+
 export default function ExpertsPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const saveDraft = useAppStore(state => state.saveDraft)
+  const selectTask = useAppStore(state => state.selectTask)
   const setSummonedExpert = useAppStore(state => state.setSummonedExpert)
   const setSummonedExpertTeam = useAppStore(state => state.setSummonedExpertTeam)
   const experts = useAppStore(state => state.experts)
@@ -37,6 +71,8 @@ export default function ExpertsPage() {
   const createExpert = useAppStore(state => state.createExpert)
   const deleteExpert = useAppStore(state => state.deleteExpert)
   const mcpConfigRaw = useAppStore(state => state.mcpConfigRaw)
+  // 仅接受任务内单专家入口携带的瞬态来源信息，不写入全局状态。
+  const singleExpertSourceTask = getSingleExpertSourceTask(location.state)
 
   const [activeTab, setActiveTab] = useState('experts')
   const [expertSubTab, setExpertSubTab] = useState('single')
@@ -81,6 +117,51 @@ export default function ExpertsPage() {
   }, [localSkills, skillSearch])
 
   const handleStartTask = async (expert: ExpertPreset) => {
+    if (singleExpertSourceTask) {
+      try {
+        if (expert.id !== singleExpertSourceTask.activeExpertId) {
+          const clients = createCulclawClients(rendererApi)
+          const expertIds = singleExpertSourceTask.expertIds.includes(expert.id)
+            ? singleExpertSourceTask.expertIds
+            : [...singleExpertSourceTask.expertIds, expert.id]
+          const updateResult = await clients.task.update(singleExpertSourceTask.taskId, {
+            activeExpertId: expert.id,
+            activeExpertTeamId: undefined,
+            expertIds,
+            skillIds: expert.skills,
+          })
+          if (!updateResult.ok) {
+            throw new Error(updateResult.error.message)
+          }
+
+          // 保留未发送的输入内容，同时把草稿选择同步到刚切换的专家。
+          const sourceDraft = useAppStore.getState().drafts[singleExpertSourceTask.taskId]
+          if (sourceDraft) {
+            await saveDraft(singleExpertSourceTask.taskId, {
+              content: sourceDraft.content,
+              selectedMode: sourceDraft.selectedMode,
+              selectedSkillIds: expert.skills,
+              selectedConnectorIds: sourceDraft.selectedConnectorIds,
+              selectedExpertIds: [expert.id],
+              selectedExpertId: expert.id,
+              selectedExpertTeamId: undefined,
+            })
+          }
+        }
+
+        setSummonedExpert(expert, { addToRecent: true })
+        setSummonedExpertTeam(null)
+        await selectTask(singleExpertSourceTask.taskId)
+        navigate(`/tasks/${singleExpertSourceTask.taskId}`, { replace: true })
+      } catch (error) {
+        Modal.error({
+          title: '切换专家失败',
+          content: error instanceof Error ? error.message : '请稍后重试',
+        })
+      }
+      return
+    }
+
     setSummonedExpert(expert, { addToRecent: true })
     setSummonedExpertTeam(null)
     const defaultPrompt = `帮我创建一个 ${expert.name}，擅长 ${expert.description}。我的经验是：[请在此补充您的行业背景与相关经验]`
@@ -160,19 +241,8 @@ export default function ExpertsPage() {
       resetExpertModal()
       return
     }
-    setSummonedExpert(tempExpert, { addToRecent: true })
-    setSummonedExpertTeam(null)
-    const prompt = `帮我创建一个 ${expertName}，擅长 ${expertDesc}。我的经验是：[请在此补充您的行业背景与相关经验]`
-    await saveDraft('__new_task__', {
-      content: prompt,
-      selectedSkillIds: expertSkills,
-      selectedConnectorIds: ['mcp'],
-      selectedExpertIds: [tempExpert.id],
-      selectedExpertId: tempExpert.id,
-      selectedExpertTeamId: undefined,
-    })
+    await handleStartTask(tempExpert)
     resetExpertModal()
-    navigate('/tasks/new')
   }
 
   const expertSubTabItems = [

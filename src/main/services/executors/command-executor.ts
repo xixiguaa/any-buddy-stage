@@ -1,13 +1,13 @@
 import type { Writable } from 'node:stream';
 
-export type SshCommandResult = {
+export type CommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
   truncated: boolean;
 };
 
-export type SshInputWriter = (stdin: Writable) => Promise<void>;
+export type InputWriter = (stdin: Writable) => Promise<void>;
 
 export interface CommandExecutor {
   /**
@@ -15,10 +15,10 @@ export interface CommandExecutor {
    */
   runDocker(
     args: string[],
-    input?: SshInputWriter,
+    input?: InputWriter,
     maxOutputBytes?: number,
     allowClosed?: boolean,
-  ): Promise<SshCommandResult>;
+  ): Promise<CommandResult>;
 
   /**
    * 关闭底层连接或资源

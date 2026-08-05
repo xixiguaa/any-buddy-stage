@@ -61,9 +61,9 @@ export class AgentRuntimeService {
       throw new Error(`Task not found: ${taskId}`);
     }
 
-    // Docker 模式下，继续已删除工作区的旧任务时恢复原记录并同步预热新容器。
+    // 默认 Docker 沙箱需要恢复被归档的主工作区记录；完全访问模式直接使用本地 Shell。
     if (task.permissionMode !== 'full_access') {
-      await this.appService.restoreArchivedPrimaryWorkspaceForSandbox(taskId);
+      await this.appService.restoreArchivedPrimaryWorkspace(taskId);
       task = this.appService.getTask(taskId);
       if (!task) {
         throw new Error(`Task not found: ${taskId}`);

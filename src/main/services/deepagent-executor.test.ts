@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stripThinkingContent } from './deepagent-executor.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  captureSandboxArtifactSnapshot,
+  exportSandboxOutputsToWorkspace,
+  stripThinkingContent,
+} from './deepagent-executor.js';
 
 test('stripThinkingContent removes complete and incomplete think blocks', () => {
   assert.equal(
@@ -25,5 +32,37 @@ test('stripThinkingContent handles multiline and attributed think blocks', () =>
   assert.equal(
     stripThinkingContent('<think>docx 包安装成功。现在我写一个 Node.js 脚本来生成 docx 文件。\n\n让我准备 GPT5.5 产品调研文档</think>\n\ndocx 包安装成功,现在编写生成脚本。'),
     'docx 包安装成功,现在编写生成脚本。',
+  );
+});
+
+test('第二次改写同路径产物时，按容器执行前快照同步到主机工作区', async (t) => {
+  const workspacePath = await mkdtemp(path.join(os.tmpdir(), 'culclaw-artifact-sync-'));
+  t.after(async () => {
+    await rm(workspacePath, { recursive: true, force: true });
+  });
+
+  const encode = (value: string) => new TextEncoder().encode(value);
+  const sandboxFiles = new Map<string, Uint8Array>([
+    ['/deliverables/report.md', encode('第一版')],
+  ]);
+  const backend = {
+    async downloadWorkspaceFiles() {
+      return Array.from(sandboxFiles, ([filePath, content]) => ({
+        path: filePath,
+        content,
+        error: null,
+      }));
+    },
+  };
+
+  // 首轮产物已存在于复用容器；第二轮改写后仍应回传到物理工作区。
+  const beforeSecondRun = await captureSandboxArtifactSnapshot(backend, {});
+  sandboxFiles.set('/deliverables/report.md', encode('第二版'));
+
+  await exportSandboxOutputsToWorkspace(backend, workspacePath, beforeSecondRun);
+
+  assert.equal(
+    await readFile(path.join(workspacePath, 'deliverables', 'report.md'), 'utf8'),
+    '第二版',
   );
 });

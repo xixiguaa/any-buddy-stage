@@ -133,6 +133,7 @@ export default function TaskComposer({
   buttonLabel,
   isResponding = false,
   onStop,
+  manageExpertsSourceTask,
 }: {
   workspaces: WorkspaceSummary[]
   onCreate?: (input: CreateTaskInput, initialMessage: string) => Promise<void>
@@ -163,6 +164,11 @@ export default function TaskComposer({
   buttonLabel?: string
   isResponding?: boolean
   onStop?: () => Promise<void> | void
+  manageExpertsSourceTask?: {
+    taskId: string
+    activeExpertId: string
+    expertIds: string[]
+  }
 }) {
   const navigate = useNavigate()
   const workspaceOptions = useMemo(() => workspaces.filter(workspace => !workspace.isArchived), [workspaces])
@@ -307,8 +313,6 @@ export default function TaskComposer({
   useEffect(() => {
     onDraftChangeRef.current = onDraftChange
   }, [onDraftChange])
-
-
 
   useEffect(() => {
     setPermissionMode(normalizePermissionMode(defaultPermissionMode))
@@ -916,7 +920,17 @@ export default function TaskComposer({
                         onClick={(event) => {
                           event.stopPropagation()
                           setShowRecentExperts(false)
-                          navigate('/experts')
+                          // 仅从单专家任务进入专家库时携带复用来源；路由 state 不落盘。
+                          navigate('/experts', {
+                            state: manageExpertsSourceTask
+                              ? {
+                                  sourceTask: {
+                                    type: 'single_expert',
+                                    ...manageExpertsSourceTask,
+                                  },
+                                }
+                              : undefined,
+                          })
                         }}
                         onMouseEnter={() => setHoveredItem('other_experts')}
                         onMouseLeave={() => setHoveredItem(null)}
@@ -1209,7 +1223,7 @@ export default function TaskComposer({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 4px' }}>
                   {[
-                    { value: 'read_write', label: '✍️ 默认权限', desc: 'Agent 使用 Docker 沙盒运行，运行完成后输出物才会写入工作区。' },
+                    { value: 'read_write', label: '✍️ 默认权限', desc: 'Agent 使用全局共享的本地 Docker 沙箱运行，运行完成后输出物才会写入工作区。' },
                     { value: 'full_access', label: '🔑 完全访问权限', desc: 'Agent 使用本地 Shell backend，可读写文件并直接执行命令。' }
                   ].map(opt => {
                     const isSelected = permissionMode === opt.value

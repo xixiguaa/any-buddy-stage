@@ -13,6 +13,15 @@ export default function TaskDetailComposerSection() {
   // 路由切换期间不使用上一任务的数据初始化当前编辑器。
   if (!task || !taskId || task.id !== taskId) return null
 
+  // 只有当前任务确为单专家对话时，才允许从专家库回写该任务。
+  const manageExpertsSourceTask = task.activeExpertId && !task.activeExpertTeamId
+    ? {
+        taskId,
+        activeExpertId: task.activeExpertId,
+        expertIds: task.expertIds,
+      }
+    : undefined
+
   return (
     <div style={{ padding: '16px 24px', borderTop: '1px solid #f1f5f9', background: '#ffffff' }}>
       <TaskComposer
@@ -25,6 +34,7 @@ export default function TaskDetailComposerSection() {
         defaultActiveExpertTeamId={task.activeExpertTeamId}
         defaultSkillIds={task.skillIds}
         defaultConnectorIds={task.connectorIds}
+        manageExpertsSourceTask={manageExpertsSourceTask}
         hideTitle={true}
         hideWorkspacePicker={true}
         buttonLabel="发送"

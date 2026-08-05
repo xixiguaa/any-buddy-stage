@@ -9,14 +9,14 @@ import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
 import { OpenAIModelService } from './openai-model-service.js';
-import { isAllowedArtifactFile, SshDockerSandboxBackend } from './ssh-docker-sandbox-backend.js';
+import { isAllowedArtifactFile, DockerSandboxBackend } from './docker-sandbox-backend.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
 
-type SshSandboxBackend = SshDockerSandboxBackend;
+type DockerSandboxBackendInstance = DockerSandboxBackend;
 
-function isSshSandboxBackend(candidate: unknown): candidate is SshSandboxBackend {
-  return candidate instanceof SshDockerSandboxBackend;
+function isDockerSandboxBackend(candidate: unknown): candidate is DockerSandboxBackendInstance {
+  return candidate instanceof DockerSandboxBackend;
 }
 
 // CulClaw 只允许显式专家团成员作为子 Agent，禁用 DeepAgents 默认通用子 Agent。
@@ -247,6 +247,7 @@ import { CONFIG_DIR_NAME } from '../../shared/constants.js';
  * @param maxFileSize 单文件读取最大体积限制（默认 2MB）
  */
 type WorkspaceFileSnapshot = Record<string, Uint8Array>;
+type SandboxArtifactBackend = Pick<DockerSandboxBackendInstance, 'downloadWorkspaceFiles'>;
 
 /** 比较文件原始字节，避免文本解码破坏二进制产物。 */
 function fileContentEquals(left: Uint8Array, right: Uint8Array) {
@@ -293,15 +294,56 @@ async function loadInitialWorkspaceFiles(rootDir: string, maxFiles = 2000, maxFi
 }
 
 /**
+ * 提取沙盒内可回传的产物，统一完成路径与二进制内容规范化。
+ */
+async function collectSandboxArtifactFiles(backend: SandboxArtifactBackend) {
+  const downloaded = await backend.downloadWorkspaceFiles();
+  return downloaded.flatMap(item => {
+    if (item.error || item.content === null || item.content === undefined) return [];
+
+    const virtualPath = item.path.startsWith('/') ? item.path : `/${item.path}`;
+    if (virtualPath.startsWith('/.system-skill-cache')) return [];
+
+    const relativePath = virtualPath.slice(1);
+    if (!relativePath || !isAllowedArtifactFile(relativePath)) return [];
+
+    const content = typeof item.content === 'string'
+      ? new TextEncoder().encode(item.content)
+      : item.content;
+    return [{ virtualPath, relativePath, content }];
+  });
+}
+
+/**
+ * 在 Agent 开始前记录容器真实的产物状态，避免共享/复用容器时误用主机快照作为差异基线。
+ * 快照失败时回退到主机初始文件，不能阻断本轮 Agent 执行。
+ */
+export async function captureSandboxArtifactSnapshot(
+  backend: SandboxArtifactBackend,
+  fallbackFiles: WorkspaceFileSnapshot,
+): Promise<WorkspaceFileSnapshot> {
+  try {
+    const snapshot: WorkspaceFileSnapshot = {};
+    for (const { virtualPath, content } of await collectSandboxArtifactFiles(backend)) {
+      snapshot[virtualPath] = content;
+    }
+    return snapshot;
+  } catch (error) {
+    console.warn('[DeepAgentBackend] 获取沙盒执行前产物快照失败，改用主机工作区快照:', error);
+    return fallbackFiles;
+  }
+}
+
+/**
  * 将全局 Skill 直接镜像到远程沙盒，避免默认权限模式在物理工作区创建技能缓存。
  *
- * @param backend 远程 Docker 沙盒后端
+ * @param backend 全局共享的本地 Docker 沙箱后端
  * @param sourceSkillDir 全局 Skill 源目录
  * @param skillId Skill 标识
  * @returns 沙盒内 Skill 目录路径；同步失败时返回 null
  */
 async function mirrorSkillIntoRemoteSandboxBackend(
-  backend: SshSandboxBackend,
+  backend: DockerSandboxBackendInstance,
   sourceSkillDir: string,
   skillId: string,
 ): Promise<string | null> {
@@ -332,57 +374,41 @@ async function mirrorSkillIntoRemoteSandboxBackend(
     if (uploadResults.some(item => item.error)) {
       return null;
     }
-    console.debug('[DeepAgentBackend] 同步全局 Skill 到远程 Docker 沙盒成功:', filesToUpload.length);
+    console.debug('[DeepAgentBackend] 同步全局 Skill 到本地 Docker 沙箱成功:', filesToUpload.length);
     return virtualSkillDir;
   } catch (error) {
-    console.debug('[DeepAgentBackend] 同步全局 Skill 到远程 Docker 沙盒失败:', error);
+    console.debug('[DeepAgentBackend] 同步全局 Skill 到本地 Docker 沙箱失败:', error);
     return null;
   }
 }
 
 /**
- * 将远程 Docker 沙盒运行完成后的新增/修改产物文件导出同步到物理工作区
+ * 将本地 Docker 沙箱运行完成后的新增/修改产物文件导出同步到物理工作区
  * 
  * @param backend 远程 Docker 沙盒后端
  * @param rootDir 工作区物理根目录
- * @param initialFiles 初始载入的文件内容字典
+ * @param baselineFiles 本轮容器执行前的产物内容字典
  * @param appService 应用服务实例（可选，用于关联任务产物）
  * @param taskId 任务 ID（可选，用于关联任务产物）
  */
-async function exportSandboxOutputsToWorkspace(
-  backend: SshSandboxBackend,
+export async function exportSandboxOutputsToWorkspace(
+  backend: SandboxArtifactBackend,
   rootDir: string,
-  initialFiles: WorkspaceFileSnapshot,
+  baselineFiles: WorkspaceFileSnapshot,
   appService?: AppService,
   taskId?: string,
 ) {
   try {
-    const downloaded = await backend.downloadWorkspaceFiles();
-    for (const item of downloaded) {
-      if (item.error || !item.content) continue;
-
-      const vPath = item.path.startsWith('/') ? item.path : `/${item.path}`;
-      // 过滤系统缓存目录
-      if (vPath.startsWith('/.system-skill-cache')) continue;
-      const relativePath = vPath.slice(1);
-      if (!relativePath) continue;
-
-      // 使用后端相同的规则，避免依赖目录和包管理文件被导出。
-      if (!isAllowedArtifactFile(relativePath)) continue;
-
-      const content = typeof item.content === 'string'
-        ? new TextEncoder().encode(item.content)
-        : item.content;
-
-      const initialContent = initialFiles[vPath];
-      // 仅当文件属于新创建，或内容相比初始载入被修改时，才同步输出到物理工作区
-      if (initialContent === undefined || !fileContentEquals(initialContent, content)) {
+    for (const { virtualPath, relativePath, content } of await collectSandboxArtifactFiles(backend)) {
+      const baselineContent = baselineFiles[virtualPath];
+      // 仅当文件属于新创建，或内容相比本轮容器执行前被修改时，才同步输出到物理工作区。
+      if (baselineContent === undefined || !fileContentEquals(baselineContent, content)) {
         const resolvedRootDir = path.resolve(rootDir);
         const destPath = path.resolve(resolvedRootDir, relativePath);
         const destinationRelativePath = path.relative(resolvedRootDir, destPath);
         // 防止沙盒内的异常路径突破工作区边界。
         if (destinationRelativePath.startsWith('..') || path.isAbsolute(destinationRelativePath)) {
-          console.warn('[DeepAgentBackend] 忽略越界的远程沙盒输出路径:', vPath);
+          console.warn('[DeepAgentBackend] 忽略越界的远程沙盒输出路径:', virtualPath);
           continue;
         }
         await mkdir(path.dirname(destPath), { recursive: true });
@@ -394,7 +420,7 @@ async function exportSandboxOutputsToWorkspace(
       }
     }
   } catch (error) {
-    console.warn('[DeepAgentBackend] 导出远程 Docker 沙盒输出物到工作区失败:', error);
+    console.warn('[DeepAgentBackend] 导出本地 Docker 沙箱输出物到工作区失败:', error);
   }
 }
 
@@ -703,7 +729,7 @@ function isApprovalPendingError(error: unknown): boolean {
 /**
  * 基于 DeepAgents 架构的 Agent 执行器实现类
  *
- * 负责组装 ChatOpenAI 模型、远程 Docker 沙盒或 LocalShellBackend、项目工具和技能配置，
+ * 负责组装 ChatOpenAI 模型、全局共享本地 Docker 沙箱、项目工具和技能配置，
  * 协调 Agent 流式推理过程，处理消息流、工具调用事件和实时状态推送。
  */
 export class DeepAgentExecutor implements AgentExecutor {
@@ -739,16 +765,19 @@ export class DeepAgentExecutor implements AgentExecutor {
     const { backend, isSandbox, initialFiles, disposeBackend, releaseSandbox, restoreBackend } = await this.createBackend(
       context,
       backendRootDir,
-      primaryWorkspace?.id,
     );
+    // 共享沙盒会跨轮次保留文件，必须以容器当前状态而非主机上传快照判断本轮产物。
+    const sandboxOutputBaseline = isSandbox && isDockerSandboxBackend(backend)
+      ? await captureSandboxArtifactSnapshot(backend, initialFiles)
+      : initialFiles;
 
     const fileExecutionConstraintPrompt = isSandbox
       ? [
         '---',
         '【文件生成规范（必须严格遵守）】：',
-        '1. 当前运行位于远程 Docker 沙盒。创建、修改、生成或导出文件时，必须通过工具在沙盒内完成，禁止将执行过程视为对物理工作区的直接写入。',
-        '2. 沙盒运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
-        '3. 工具成功后可告知用户沙盒内的输出路径，应用完成同步后该路径会出现在工作区。',
+        '1. 当前运行位于全局共享的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
+        '2. 沙箱运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
+        '3. 工具成功后可告知用户沙箱内的输出路径，应用完成同步后该路径会出现在工作区。',
       ].join('\n')
       : [
         '---',
@@ -781,7 +810,7 @@ export class DeepAgentExecutor implements AgentExecutor {
         context.run.id,
         context.task.skillIds,
         backendRootDir,
-        isSandbox && isSshSandboxBackend(backend) ? backend : undefined,
+        isSandbox && isDockerSandboxBackend(backend) ? backend : undefined,
       );
 
       // 5. 解析专家团子 Agent 成员配置
@@ -1221,15 +1250,15 @@ export class DeepAgentExecutor implements AgentExecutor {
       }
       throw error;
     } finally {
-      // 容器删除前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
-      if (isSandbox && isSshSandboxBackend(backend)) {
-        await exportSandboxOutputsToWorkspace(backend, backendRootDir, initialFiles, this.appService, context.task.id);
+      // 释放全局租约前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
+      if (isSandbox && isDockerSandboxBackend(backend)) {
+        await exportSandboxOutputsToWorkspace(backend, backendRootDir, sandboxOutputBaseline, this.appService, context.task.id);
       }
 
       // 恢复共享后端上本轮临时安装的权限钩子。
       restoreBackend?.();
 
-      // 仅释放本轮创建的临时后端；工作区沙箱由租约和工作区生命周期管理。
+      // 全局共享容器由租约串行复用，仅在应用退出时统一关闭。
       try {
         if (disposeBackend && 'stop' in backend && typeof (backend as any).stop === 'function') {
           await (backend as any).stop();
@@ -1293,7 +1322,7 @@ export class DeepAgentExecutor implements AgentExecutor {
     runId: string,
     skillIds: string[],
     rootDir: string,
-    sandboxBackend?: SshSandboxBackend,
+    sandboxBackend?: DockerSandboxBackendInstance,
   ) {
     let uniqueSkillIds = Array.from(new Set(skillIds.filter(Boolean)));
     const skillsRoot = getGlobalSkillsRoot();
@@ -1400,7 +1429,7 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * 将物理绝对路径转换为 LocalShellBackend 能处理的虚拟路径格式（以 `/` 开头）
+   * 将物理绝对路径转换为沙箱后端使用的虚拟路径格式（以 `/` 开头）
    * 
    * @param rootDir 根目录绝对路径
    * @param absolutePath 目标物理绝对路径
@@ -1428,19 +1457,13 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * 创建并初始化 Backend 实例（默认权限使用远程 Docker 沙盒，完全访问权限使用 LocalShellBackend）
-   * 
-   * @param context 执行上下文
-   * @param rootDir 后端根目录
+   * 创建后端：默认权限使用全局共享的本地 Docker，完全访问权限使用 LocalShellBackend。
    */
   private async createBackend(
     context: ExecuteAgentParams['context'],
     rootDir: string,
-    workspaceId?: string,
   ) {
-    const isFullAccess = context.task.permissionMode === 'full_access';
-
-    if (isFullAccess) {
+    if (context.task.permissionMode === 'full_access') {
       const backend = await LocalShellBackend.create({
         rootDir,
         virtualMode: true,
@@ -1451,14 +1474,14 @@ export class DeepAgentExecutor implements AgentExecutor {
         permissionMode: context.task.permissionMode,
       });
 
-      // 非 craft 模式（如 plan 模式）下，禁止写文件和修改文件
+      // 非 craft 模式下禁止写文件和修改文件。
       if (context.task.mode !== 'craft') {
         backend.write = async (filePath: string) => ({
-          error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
+          error: context.task.mode.toUpperCase() + ' mode must produce a plan and wait for user approval before writing files. Blocked write: ' + filePath,
           filesUpdate: null,
         });
         backend.edit = async (filePath: string) => ({
-          error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before editing files. Blocked edit: ${filePath}`,
+          error: context.task.mode.toUpperCase() + ' mode must produce a plan and wait for user approval before editing files. Blocked edit: ' + filePath,
           filesUpdate: null,
         });
       }
@@ -1473,64 +1496,52 @@ export class DeepAgentExecutor implements AgentExecutor {
       };
     }
 
-    // 默认权限模式：直接通过 SSH 使用远程 Docker 沙盒，并上传工作区快照。
-    // 工作区有稳定 ID 时复用对应沙箱，否则保留无工作区场景的一次性后端行为。
-    const sandboxLease = workspaceId
-      ? await SshDockerSandboxBackend.acquireWorkspaceSandbox(workspaceId)
-      : undefined;
-    // 从 culclaw.ini 或环境变量创建 SSH Docker 沙盒后端。
-    const backend = sandboxLease?.backend ?? (await SshDockerSandboxBackend.fromEnvironment());
+    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox();
+    const { backend } = sandboxLease;
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);
+
     try {
       const uploadResults = await backend.uploadFiles(initialFileUploads);
       const failedUploads = uploadResults.filter(item => item.error);
       if (failedUploads.length > 0) {
-        throw new Error(`远程 Docker 沙盒初始化文件上传失败：${failedUploads.map(item => item.path).join(', ')}`);
+        throw new Error('本地 Docker 沙箱初始化文件上传失败：' + failedUploads.map(item => item.path).join(', '));
       }
     } catch (error) {
-      if (sandboxLease) {
-        await sandboxLease.release();
-      } else {
-        await backend.close();
-      }
+      await sandboxLease.release();
       throw error;
     }
 
-    console.debug('[DeepAgentBackend] 创建默认权限远程 Docker 沙盒后端', {
+    console.debug('[DeepAgentBackend] 使用全局本地 Docker 沙箱', {
       runId: context.run.id,
       taskId: context.task.id,
       permissionMode: context.task.permissionMode,
       initialFileCount: Object.keys(initialFiles).length,
     });
 
-    const originalWrite = sandboxLease ? backend.write : undefined;
-    const originalEdit = sandboxLease ? backend.edit : undefined;
+    const originalWrite = backend.write;
+    const originalEdit = backend.edit;
     if (context.task.mode !== 'craft') {
       backend.write = async (filePath: string) => ({
-        error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before writing files. Blocked write: ${filePath}`,
+        error: context.task.mode.toUpperCase() + ' mode must produce a plan and wait for user approval before writing files. Blocked write: ' + filePath,
         filesUpdate: null,
       });
       backend.edit = async (filePath: string) => ({
-        error: `${context.task.mode.toUpperCase()} mode must produce a plan and wait for user approval before editing files. Blocked edit: ${filePath}`,
+        error: context.task.mode.toUpperCase() + ' mode must produce a plan and wait for user approval before editing files. Blocked edit: ' + filePath,
         filesUpdate: null,
       });
     }
-
-    const restoreBackend = sandboxLease
-      ? () => {
-        if (originalWrite) backend.write = originalWrite;
-        if (originalEdit) backend.edit = originalEdit;
-      }
-      : undefined;
 
     return {
       backend,
       isSandbox: true,
       initialFiles,
-      disposeBackend: !sandboxLease,
-      releaseSandbox: sandboxLease?.release,
-      restoreBackend,
+      disposeBackend: false,
+      releaseSandbox: sandboxLease.release,
+      restoreBackend: () => {
+        backend.write = originalWrite;
+        backend.edit = originalEdit;
+      },
     };
   }
 
@@ -1540,7 +1551,7 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param _context 执行上下文
    */
   private resolvePermissions(_context: ExecuteAgentParams['context']) {
-    // 默认权限通过远程 Docker 容器隔离执行；完全访问权限保持 LocalShellBackend 的原有行为。
+    // 默认权限通过全局共享的本地 Docker 容器隔离执行；完全访问权限使用本地 Shell backend。
     // 不使用 DeepAgents 的逐命令 interruptOn，避免在沙盒运行中请求人工审批。
     return undefined;
   }
