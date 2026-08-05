@@ -116,7 +116,8 @@ export default function TaskComposer({
   onCreate,
   onSend,
   defaultWorkspaceId,
-  defaultMode = 'plan',
+  // 新建任务默认进入 Craft 执行模式。
+  defaultMode = 'craft',
   defaultModelId,
   defaultPermissionMode,
   defaultActiveExpertId,
@@ -827,9 +828,10 @@ export default function TaskComposer({
                       className="experts-popover-container"
                       style={{
                         position: 'absolute',
-                        top: 0,
+                        /* 调整为 bottom: 0 向上展开，防止在底部被视口遮挡裁切 */
+                        bottom: 0,
                         left: 'calc(100% + 8px)',
-                        width: '220px',
+                        width: '230px',
                         padding: '10px 12px',
                         borderRadius: '12px',
                         background: '#ffffff',

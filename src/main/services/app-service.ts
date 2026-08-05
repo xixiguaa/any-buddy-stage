@@ -321,63 +321,47 @@ export class AppService {
     })
   }
 
-  /** 同步系统内置专家团，同时保留用户创建的自定义专家团，并清除已注销的旧内置团队。 */
+  /** 同步系统内置专家团，保证顺序严格按 DEFAULT_EXPERT_TEAMS 排布，同时保留用户创建的自定义专家团，并清除已废弃的旧内置团队。 */
   private async ensureDefaultExpertTeams() {
-    const defaultTeamsById = new Map(DEFAULT_EXPERT_TEAMS.map(team => [team.id, team]))
-    const existingDefaultIds = new Set<string>()
+    const existingTeamsById = new Map((this.snapshot.expertTeams ?? []).map(t => [t.id, t]))
     const syncedAt = nowIso()
-    let changed = false
 
-    const expertTeams: ExpertTeamPreset[] = []
+    // 提取所有自定义专家团
+    const customTeams = (this.snapshot.expertTeams ?? []).filter(t => t.isCustom)
 
-    for (const team of (this.snapshot.expertTeams ?? [])) {
-      if (team.isCustom) {
-        expertTeams.push(team)
-        continue
+    // 按 DEFAULT_EXPERT_TEAMS 预设顺序构建最新内置专家团列表
+    const syncedDefaultTeams: ExpertTeamPreset[] = DEFAULT_EXPERT_TEAMS.map(defaultTeam => {
+      const existing = existingTeamsById.get(defaultTeam.id)
+      if (!existing) {
+        return { ...defaultTeam, isCustom: false }
       }
 
-      const defaultTeam = defaultTeamsById.get(team.id)
-      if (!defaultTeam) {
-        // 旧内置团队已不在预设清单中，予以清理移除
-        changed = true
-        continue
+      const isCurrent = existing.name === defaultTeam.name
+        && existing.description === defaultTeam.description
+        && existing.systemPrompt === defaultTeam.systemPrompt
+        && JSON.stringify(existing.members) === JSON.stringify(defaultTeam.members)
+
+      return {
+        ...defaultTeam,
+        isCustom: false,
+        createdAt: existing.createdAt,
+        updatedAt: isCurrent ? existing.updatedAt : syncedAt,
       }
+    })
 
-      existingDefaultIds.add(team.id)
+    const finalExpertTeams = [...syncedDefaultTeams, ...customTeams]
 
-      const isCurrent = team.name === defaultTeam.name
-        && team.description === defaultTeam.description
-        && team.systemPrompt === defaultTeam.systemPrompt
-        && JSON.stringify(team.members) === JSON.stringify(defaultTeam.members)
-
-      if (isCurrent) {
-        expertTeams.push(team)
-      } else {
-        changed = true
-        expertTeams.push({
-          ...defaultTeam,
-          isCustom: false,
-          createdAt: team.createdAt,
-          updatedAt: syncedAt,
-        })
-      }
-    }
-
-    for (const defaultTeam of DEFAULT_EXPERT_TEAMS) {
-      if (!existingDefaultIds.has(defaultTeam.id)) {
-        expertTeams.push({ ...defaultTeam, isCustom: false })
-        changed = true
-      }
-    }
-
-    if (!changed) {
+    // 检查整体顺序或内容与当前内存 snapshot 是否存在差异
+    const isIdentical = JSON.stringify(this.snapshot.expertTeams) === JSON.stringify(finalExpertTeams)
+    if (isIdentical) {
       return
     }
 
     await this.mutate(state => {
-      state.expertTeams = expertTeams
+      state.expertTeams = finalExpertTeams
     })
   }
+
 
   /** 获取所有专家团列表 */
   listExpertTeams(): ExpertTeamPreset[] {

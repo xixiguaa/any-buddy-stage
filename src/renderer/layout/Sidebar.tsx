@@ -597,7 +597,8 @@ export default function Sidebar() {
                           <span style={{ fontSize: '13px', fontWeight: isTopTaskActive ? 600 : 500, color: isTopTaskActive ? '#6F2BDC' : '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: '8px' }}>
                             {task.title}
                           </span>
-                          <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                          {/* 预留右侧操作区域，避免 hover 挂载菜单时任务标题重新排版。 */}
+                          <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', width: '48px', height: '22px', flexShrink: 0 }}>
                             {/* 顶部任务列表与工作区任务保持运行状态同步，运行中时显示转圈。 */}
                             {task.status === 'running' && (
                               getStatusTag(task.status)

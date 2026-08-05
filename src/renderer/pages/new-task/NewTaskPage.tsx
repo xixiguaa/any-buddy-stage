@@ -50,7 +50,8 @@ export default function NewTaskPage() {
           workspaces={workspaces}
           draft={drafts[NEW_TASK_DRAFT_ID]}
           defaultWorkspaceId={defaultWorkspaceId}
-          defaultMode="plan"
+          // 新建任务默认使用 Craft 执行模式。
+          defaultMode="craft"
           onDraftChange={draft => saveDraft(NEW_TASK_DRAFT_ID, draft)}
           onClearDraft={() => clearDraft(NEW_TASK_DRAFT_ID)}
           onPickWorkspace={() => createWorkspaceFromFolderPicker()}

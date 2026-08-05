@@ -345,7 +345,7 @@ export default function ExpertsPage() {
                                 ({member.role})
                               </span>
                             </div>
-                             {member.specialty && (
+                            {member.specialty && (
                               /* 背景改为灰色 #f8fafc，字体改为紫色 #6F2BDC */
                               <div
                                 style={{
@@ -626,7 +626,6 @@ export default function ExpertsPage() {
                         <span style={{ fontWeight: 700, fontSize: '15px', color: '#0f172a' }}>
                           {member.name}
                         </span>
-                        /* 统一调整角色徽章背景为灰色 #f8fafc，字体为紫色 #6F2BDC */
                         <span style={{ fontSize: '11px', color: '#6F2BDC', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: '4px', fontWeight: 500 }}>
                           {member.role}
                         </span>
