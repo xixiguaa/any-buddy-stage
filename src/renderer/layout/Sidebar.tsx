@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ModelApiMode } from '../../shared/types.js'
+import type { ModelApiMode, TaskSummary } from '../../shared/types.js'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Button, Badge, Modal, Input, Popover, Avatar, Dropdown, Space, Tag, Tooltip, Switch, Divider, Form, Card } from 'antd'
 import {
@@ -17,6 +17,7 @@ import {
   MenuUnfoldOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  LoadingOutlined,
   SlidersOutlined
 } from '@ant-design/icons'
 import { Sparkles, ShieldAlert, Award, MoreHorizontal } from 'lucide-react'
@@ -90,6 +91,7 @@ export default function Sidebar() {
   const [activeWorkspacePopoverId, setActiveWorkspacePopoverId] = useState<string | null>(null)
   const [hoveredTopTaskId, setHoveredTopTaskId] = useState<string | null>(null)
   const [hoveredSpaceTaskId, setHoveredSpaceTaskId] = useState<string | null>(null)
+  const [activeTaskPopoverId, setActiveTaskPopoverId] = useState<string | null>(null)
 
   // 设置弹窗状态
   const [showSettingsModal, setShowSettingsModal] = useState(false)
@@ -193,12 +195,88 @@ export default function Sidebar() {
     })
   }
 
+  /** 打开任务绑定的主工作区文件夹。 */
+  const handleOpenTaskWorkspaceFolder = async (task: TaskSummary) => {
+    if (!task.primaryWorkspaceId) {
+      Modal.warning({
+        title: '无法打开文件夹',
+        content: '该任务尚未绑定主工作区。',
+      })
+      return
+    }
+
+    const clients = createCulclawClients(rendererApi)
+    const result = await clients.workspace.openFolder(task.primaryWorkspaceId)
+    if (!result.ok) {
+      Modal.error({
+        title: '无法打开文件夹',
+        content: result.error.message || '工作区文件夹可能已被删除或移动。',
+      })
+    }
+  }
+
+  /** 渲染任务悬停时的操作菜单，菜单打开后保持可见。 */
+  const renderTaskActions = (task: TaskSummary, isHovered: boolean) => {
+    if (!isHovered && activeTaskPopoverId !== task.id) return null
+
+    return (
+      <CustomPopover
+        content={
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', minWidth: '132px' }}>
+            <Button
+              type="text"
+              size="small"
+              icon={<FolderOpenOutlined />}
+              style={{ textAlign: 'left', fontSize: '12px', justifyContent: 'flex-start' }}
+              onClick={async event => {
+                event.preventDefault()
+                event.stopPropagation()
+                setActiveTaskPopoverId(null)
+                await handleOpenTaskWorkspaceFolder(task)
+              }}
+            >
+              打开文件夹
+            </Button>
+            <Button
+              type="text"
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              style={{ textAlign: 'left', fontSize: '12px', justifyContent: 'flex-start' }}
+              onClick={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                setActiveTaskPopoverId(null)
+                handleDeleteTask(task)
+              }}
+            >
+              删除任务
+            </Button>
+          </div>
+        }
+        trigger="click"
+        placement="bottomRight"
+        open={activeTaskPopoverId === task.id}
+        onOpenChange={(open: boolean) => setActiveTaskPopoverId(open ? task.id : null)}
+      >
+        <Button
+          type="text"
+          size="small"
+          aria-label={`打开任务“${task.title}”的操作菜单`}
+          icon={<MoreHorizontal size={15} />}
+          onClick={event => event.preventDefault()}
+          style={{ width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b' }}
+        />
+      </CustomPopover>
+    )
+  }
+
   // 获取状态 Tag 标签（适配主题紫色透明底背景）
   const getStatusTag = (status: string) => {
     const tagStyle = { margin: 0, fontSize: '10px', height: '20px', lineHeight: '18px', padding: '0 6px', display: 'inline-flex', alignItems: 'center', borderRadius: '4px', fontWeight: 500 }
     switch (status) {
       case 'running':
-        return <Tag style={{ ...tagStyle, background: 'rgba(111, 43, 220, 0.1)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.2)' }}>Running</Tag>
+        return <LoadingOutlined title="运行中" aria-label="运行中" spin style={{ color: '#6F2BDC', fontSize: '15px' }} />
       case 'waiting_approval':
       case 'paused':
         return <Tag style={{ ...tagStyle, background: 'rgba(111, 43, 220, 0.08)', color: '#6F2BDC', border: '1px solid rgba(111, 43, 220, 0.15)' }}>Paused</Tag>
@@ -519,21 +597,12 @@ export default function Sidebar() {
                           <span style={{ fontSize: '13px', fontWeight: isTopTaskActive ? 600 : 500, color: isTopTaskActive ? '#6F2BDC' : '#1e293b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: '8px' }}>
                             {task.title}
                           </span>
-                          <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                            {isHovered && (
-                              <DeleteOutlined
-                                style={{
-                                  color: '#ef4444',
-                                  cursor: 'pointer',
-                                  fontSize: '13px',
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  handleDeleteTask(task)
-                                }}
-                              />
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                            {/* 顶部任务列表与工作区任务保持运行状态同步，运行中时显示转圈。 */}
+                            {task.status === 'running' && (
+                              getStatusTag(task.status)
                             )}
+                            {renderTaskActions(task, isHovered)}
                           </span>
                         </NavLink>
                       )

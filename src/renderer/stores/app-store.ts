@@ -947,7 +947,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     if (!runResult.ok) {
       throw new Error(runResult.error.message)
     }
-    await get().refreshTaskIndex()
+    // 已归档的绑定工作区会在启动运行时恢复，完成后同步刷新左侧任务与空间列表。
+    const [, workspacesResult] = await Promise.all([
+      get().refreshTaskIndex(),
+      clients.workspace.list(),
+    ])
+    if (workspacesResult.ok) {
+      set({ workspaces: workspacesResult.data })
+    }
   },
   async loadDraft(taskId: string) {
     const clients = createCulclawClients(rendererApi)
@@ -1106,10 +1113,12 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     const clients = createCulclawClients(rendererApi)
     const result = await clients.task.delete(taskId)
     if (result.ok) {
+      const workspacesResult = await clients.workspace.list()
       set(state => {
         const nextSelected = state.selectedTaskId === taskId ? undefined : state.selectedTaskId
         return {
           tasks: state.tasks.filter(task => task.id !== taskId),
+          workspaces: workspacesResult.ok ? workspacesResult.data : state.workspaces,
           selectedTaskId: nextSelected,
           taskDetail: state.selectedTaskId === taskId ? null : state.taskDetail,
         }

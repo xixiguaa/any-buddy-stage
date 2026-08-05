@@ -51,8 +51,9 @@ export default function ExpertsPage() {
   const [expertSkills, setExpertSkills] = useState<string[]>([])
   const [editingExpertId, setEditingExpertId] = useState<string | null>(null)
 
-  // Viewing team details
+  // Viewing team & single expert details
   const [viewingTeam, setViewingTeam] = useState<ExpertTeamPreset | null>(null)
+  const [viewingExpert, setViewingExpert] = useState<ExpertPreset | null>(null)
 
   const fetchSkills = () => {
     // 创建 Culclaw 客户端加载技能列表
@@ -229,7 +230,18 @@ export default function ExpertsPage() {
                           />
                         </Space>
                       ) : (
-                        <Tag color="blue">内置</Tag>
+                        <Tooltip title="点击查看详情">
+                          <Tag
+                            color="purple"
+                            style={{ cursor: 'pointer' }}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setViewingExpert(expert)
+                            }}
+                          >
+                            内置
+                          </Tag>
+                        </Tooltip>
                       )}
                     </div>
                     <p style={{ fontSize: '12px', color: '#64748b', lineHeight: '1.6', margin: '0 0 16px 0' }}>
@@ -242,15 +254,24 @@ export default function ExpertsPage() {
                         <Tag key={skill} style={{ margin: 0, fontSize: '10px' }}>{skill}</Tag>
                       ))}
                     </div>
-                    <Button
-                      type="default"
-                      icon={<ThunderboltOutlined />}
-                      block
-                      onClick={() => handleStartTask(expert)}
-                      style={{ borderRadius: 6, fontWeight: 500 }}
-                    >
-                      基于专家发起任务
-                    </Button>
+                    <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                      <Button
+                        type="default"
+                        icon={<InfoCircleOutlined />}
+                        onClick={() => setViewingExpert(expert)}
+                        style={{ borderRadius: 6 }}
+                      >
+                        查看详情
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<ThunderboltOutlined />}
+                        onClick={() => handleStartTask(expert)}
+                        style={{ flex: 1, borderRadius: 6, fontWeight: 500, background: '#6F2BDC', border: 'none' }}
+                      >
+                        基于专家发起任务
+                      </Button>
+                    </div>
                   </div>
                 </Card>
               </Col>
@@ -613,9 +634,10 @@ export default function ExpertsPage() {
                       <span
                         style={{
                           fontSize: '11px',
-                          color: '#0891b2',
-                          background: '#ecfeff',
-                          border: '1px solid #cff4fc',
+                          /* 紫色主题背景与文字 */
+                          color: '#6F2BDC',
+                          background: '#F5EEFF',
+                          border: '1px solid #E9D5FF',
                           padding: '3px 8px',
                           borderRadius: '4px',
                           fontWeight: 500,
@@ -677,6 +699,126 @@ export default function ExpertsPage() {
                 ))}
               </div>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* 单专家详情 Modal 弹窗 */}
+      <Modal
+        open={Boolean(viewingExpert)}
+        onCancel={() => setViewingExpert(null)}
+        centered
+        footer={[
+          <Button key="close" onClick={() => setViewingExpert(null)} style={{ borderRadius: 6 }}>
+            关闭
+          </Button>,
+          viewingExpert?.isCustom ? (
+            <Button
+              key="edit"
+              icon={<EditOutlined />}
+              onClick={() => {
+                if (viewingExpert) {
+                  const exp = viewingExpert
+                  setViewingExpert(null)
+                  openEditExpertModal(exp)
+                }
+              }}
+              style={{ borderRadius: 6 }}
+            >
+              编辑专家
+            </Button>
+          ) : null,
+          <Button
+            key="start"
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            style={{ background: '#6F2BDC', border: 'none', borderRadius: 6 }}
+            onClick={() => {
+              if (viewingExpert) {
+                const exp = viewingExpert
+                setViewingExpert(null)
+                void handleStartTask(exp)
+              }
+            }}
+          >
+            基于专家发起任务
+          </Button>,
+        ]}
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <UserOutlined style={{ color: '#6F2BDC' }} />
+            <span>{viewingExpert?.name} 详情</span>
+            {viewingExpert?.isCustom ? (
+              <Tag color="orange">自定义专家</Tag>
+            ) : (
+              <Tag color="purple">内置专家 (不可编辑)</Tag>
+            )}
+          </div>
+        }
+        width={600}
+      >
+        {viewingExpert && (
+          <div style={{ padding: '12px 0', maxHeight: '70vh', overflowY: 'auto', maxWidth: '100%', boxSizing: 'border-box' }}>
+            {/* 专家定位与描述 */}
+            <div style={{ marginBottom: 20, maxWidth: '100%', boxSizing: 'border-box' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: 6 }}>专家定位与描述</div>
+              <div
+                style={{
+                  fontSize: '14px',
+                  color: '#1e293b',
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  lineHeight: '1.6',
+                  wordBreak: 'break-all',
+                  overflowWrap: 'anywhere',
+                  maxWidth: '100%',
+                  boxSizing: 'border-box',
+                }}
+              >
+                {viewingExpert.description}
+              </div>
+            </div>
+
+            {/* 挂载技能列表 */}
+            <div style={{ marginBottom: 20, maxWidth: '100%', boxSizing: 'border-box' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: 8 }}>
+                挂载技能 ({viewingExpert.skills.length})
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxWidth: '100%', boxSizing: 'border-box' }}>
+                {viewingExpert.skills.map(skill => (
+                  <Tag key={skill} style={{ margin: 0, padding: '4px 10px', fontSize: '12px' }}>
+                    {skill}
+                  </Tag>
+                ))}
+              </div>
+            </div>
+
+            {/* 系统提示词（若存在） */}
+            {viewingExpert.systemPrompt && (
+              <div style={{ maxWidth: '100%', boxSizing: 'border-box' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#475569', marginBottom: 6 }}>系统提示词 (System Prompt)</div>
+                <div
+                  style={{
+                    fontSize: '12px',
+                    color: '#475569',
+                    background: '#f8fafc',
+                    borderLeft: '3px solid #6F2BDC',
+                    padding: '10px 12px',
+                    borderRadius: '0 6px 6px 0',
+                    lineHeight: '1.6',
+                    wordBreak: 'break-all',
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  {viewingExpert.systemPrompt}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>

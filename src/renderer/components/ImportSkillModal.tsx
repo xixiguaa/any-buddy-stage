@@ -75,9 +75,10 @@ export default function ImportSkillModal({ open, onCancel, onSuccess }: ImportSk
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             style={{
-              border: `2px dashed ${isDragging ? '#3b82f6' : '#e2e8f0'}`,
+              /* 紫色主题拖拽高亮色 */
+              border: `2px dashed ${isDragging ? '#6F2BDC' : '#e2e8f0'}`,
               borderRadius: 12,
-              backgroundColor: isDragging ? '#eff6ff' : '#f8fafc',
+              backgroundColor: isDragging ? '#F5EEFF' : '#f8fafc',
               padding: '36px 20px',
               textAlign: 'center',
               cursor: 'pointer',

@@ -50,6 +50,54 @@ test('releaseWorkspaceSandbox cleans remote containers when the local pool is em
   assert.equal(closeCount, 1);
 });
 
+test('prewarmWorkspaceSandbox waits for cleanup before creating a replacement container', async () => {
+  const backendClass = SshDockerSandboxBackend as any;
+  const originalFromEnvironment = backendClass.fromEnvironment;
+  let completeCleanup: (() => void) | undefined;
+  const cleanupCompleted = new Promise<void>(resolve => {
+    completeCleanup = resolve;
+  });
+  let isCleanupBackend = true;
+  let startedContainers = 0;
+
+  backendClass.fromEnvironment = async () => {
+    if (isCleanupBackend) {
+      isCleanupBackend = false;
+      return {
+        async runDocker() {
+          await cleanupCompleted;
+          return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+        },
+        formatCommandFailure: () => 'command failed',
+        async close() {},
+      };
+    }
+
+    return {
+      async start() {
+        startedContainers += 1;
+      },
+      async close() {},
+    };
+  };
+
+  try {
+    const releasePromise = SshDockerSandboxBackend.releaseWorkspaceSandbox('workspace-a');
+    const prewarmPromise = SshDockerSandboxBackend.prewarmWorkspaceSandbox('workspace-a');
+    await Promise.resolve();
+    assert.equal(startedContainers, 0);
+
+    completeCleanup?.();
+    await releasePromise;
+    await prewarmPromise;
+    assert.equal(startedContainers, 1);
+  } finally {
+    backendClass.fromEnvironment = originalFromEnvironment;
+    backendClass.workspaceSandboxPool.clear();
+    backendClass.pendingWorkspaceSandboxReleases.clear();
+  }
+});
+
 test('local docker passes the upload script as one Docker argument', () => {
   const backend = new SshDockerSandboxBackend({ mode: 'local' });
   const backendState = backend as any;

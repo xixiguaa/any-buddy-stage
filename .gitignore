@@ -8,6 +8,7 @@ culclaw.ini
 src/main/state.json
 .tmp-tests/
 .opencode
-.agents/
+.agents/*
 .claude/
 .vscode/
+.pnpm-store/*

@@ -56,9 +56,18 @@ export class AgentRuntimeService {
    * @returns 初始创建的 AgentRun 实体对象
    */
   async start(taskId: string, input: CreateAgentRunInput = { agentName: 'Main Agent', kind: 'main' }): Promise<AgentRun> {
-    const task = this.appService.getTask(taskId);
+    let task = this.appService.getTask(taskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
+    }
+
+    // Docker 模式下，继续已删除工作区的旧任务时恢复原记录并同步预热新容器。
+    if (task.permissionMode !== 'full_access') {
+      await this.appService.restoreArchivedPrimaryWorkspaceForSandbox(taskId);
+      task = this.appService.getTask(taskId);
+      if (!task) {
+        throw new Error(`Task not found: ${taskId}`);
+      }
     }
 
     const settings = this.appService.getSettings();

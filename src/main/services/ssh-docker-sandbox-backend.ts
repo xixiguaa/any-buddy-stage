@@ -147,6 +147,8 @@ export class SshDockerSandboxBackend extends BaseSandbox {
   private static readonly workspaceSandboxPool = new Map<string, WorkspaceSandboxPoolEntry>();
   /** 已从池中移除、但仍在等待运行任务结束的沙箱清理任务。 */
   private static readonly pendingWorkspaceSandboxCloses = new Set<Promise<void>>();
+  /** 正在清理远程容器的工作区；同工作区的新容器必须在清理后创建。 */
+  private static readonly pendingWorkspaceSandboxReleases = new Map<string, Promise<void>>();
 
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
@@ -164,6 +166,12 @@ export class SshDockerSandboxBackend extends BaseSandbox {
    * 独占获取工作区沙箱，避免同一工作区的多个任务同时读写同一个容器目录。
    */
   static async acquireWorkspaceSandbox(workspaceId: string) {
+    const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
+    // 归档清理使用相同的容器标签，等待完成可避免新容器被旧清理误删。
+    await SshDockerSandboxBackend.pendingWorkspaceSandboxReleases
+      .get(normalizedWorkspaceId)
+      ?.catch(() => undefined);
+
     const entry = SshDockerSandboxBackend.getOrCreateWorkspaceSandboxEntry(workspaceId);
     const previousExecution = entry.executionTail;
     let releaseExecution: (() => void) | undefined;
@@ -207,19 +215,42 @@ export class SshDockerSandboxBackend extends BaseSandbox {
    */
   static async releaseWorkspaceSandbox(workspaceId: string): Promise<void> {
     const normalizedWorkspaceId = normalizeWorkspaceId(workspaceId);
-    const entry = SshDockerSandboxBackend.workspaceSandboxPool.get(normalizedWorkspaceId);
-    if (entry) {
-      SshDockerSandboxBackend.workspaceSandboxPool.delete(normalizedWorkspaceId);
-      const closePromise = SshDockerSandboxBackend.closeWorkspaceSandboxEntry(entry);
-      SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.add(closePromise);
-      try {
-        await closePromise;
-      } finally {
-        SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.delete(closePromise);
-      }
+    const existingRelease = SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.get(normalizedWorkspaceId);
+    if (existingRelease) {
+      await existingRelease;
+      return;
     }
 
-    await SshDockerSandboxBackend.removeRemoteWorkspaceContainers(normalizedWorkspaceId);
+    const releasePromise = (async () => {
+      const entry = SshDockerSandboxBackend.workspaceSandboxPool.get(normalizedWorkspaceId);
+      if (entry) {
+        SshDockerSandboxBackend.workspaceSandboxPool.delete(normalizedWorkspaceId);
+        const closePromise = SshDockerSandboxBackend.closeWorkspaceSandboxEntry(entry);
+        SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.add(closePromise);
+        try {
+          await closePromise;
+        } finally {
+          SshDockerSandboxBackend.pendingWorkspaceSandboxCloses.delete(closePromise);
+        }
+      }
+
+      await SshDockerSandboxBackend.removeRemoteWorkspaceContainers(normalizedWorkspaceId);
+    })();
+    SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.set(normalizedWorkspaceId, releasePromise);
+
+    try {
+      await releasePromise;
+    } finally {
+      if (SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.get(normalizedWorkspaceId) === releasePromise) {
+        SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.delete(normalizedWorkspaceId);
+      }
+    }
+  }
+
+  /** 预热工作区沙箱，确保调用方返回时容器已完成创建。 */
+  static async prewarmWorkspaceSandbox(workspaceId: string): Promise<void> {
+    const lease = await SshDockerSandboxBackend.acquireWorkspaceSandbox(workspaceId);
+    await lease.release();
   }
 
   /** 在应用退出时释放当前进程创建的全部工作区沙箱。 */
@@ -227,9 +258,11 @@ export class SshDockerSandboxBackend extends BaseSandbox {
     const entries = Array.from(SshDockerSandboxBackend.workspaceSandboxPool.values());
     SshDockerSandboxBackend.workspaceSandboxPool.clear();
     const pendingCloses = Array.from(SshDockerSandboxBackend.pendingWorkspaceSandboxCloses);
+    const pendingReleases = Array.from(SshDockerSandboxBackend.pendingWorkspaceSandboxReleases.values());
     await Promise.allSettled([
       ...entries.map(entry => SshDockerSandboxBackend.closeWorkspaceSandboxEntry(entry)),
       ...pendingCloses,
+      ...pendingReleases,
     ]);
   }
 

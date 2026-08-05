@@ -701,21 +701,6 @@ const StreamingMessageList = memo(function StreamingMessageList() {
 
   if (streamingEntries.length === 0) return null
 
-
-  useEffect(() => {
-    if (streamingEntries.length === 0) return
-    if (typeof window === 'undefined') return
-    const raf = window.requestAnimationFrame(() => {
-      const container = scrollContainerRef.current
-      if (container && shouldAutoScrollRef.current) {
-        container.scrollTop = container.scrollHeight
-      }
-    })
-    return () => window.cancelAnimationFrame(raf)
-  }, [streamingDataKey, scrollContainerRef, shouldAutoScrollRef, streamingEntries.length])
-
-  if (streamingEntries.length === 0) return null
-
   return (
     <>
       {streamingEntries.map((entry, index) => (
