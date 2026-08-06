@@ -4,7 +4,7 @@
 # image=nikolaik/python-nodejs:python3.12-nodejs22-slim
 # image_type=combined
 
-# 本地 Docker CLI 的命令超时、命令输出和文件传输上限。
-# timeout_ms=120000
+# 本地 Docker CLI 的命令超时、命令输出和文件传输上限；timeout_ms=0 表示不设置超时。
+# timeout_ms=0
 # max_output_bytes=1048576
 # max_transfer_bytes=67108864

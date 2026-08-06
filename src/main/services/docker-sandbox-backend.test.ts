@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { isAllowedArtifactFile, DockerSandboxBackend } from './docker-sandbox-backend.js';
 
 test('artifact export excludes dependencies and package manager files', () => {
@@ -10,6 +11,11 @@ test('artifact export excludes dependencies and package manager files', () => {
   assert.equal(isAllowedArtifactFile('pnpm-lock.yaml'), false);
   assert.equal(isAllowedArtifactFile('deliverables/report.pdf'), true);
   assert.equal(isAllowedArtifactFile('deliverables/data.json'), true);
+  assert.equal(isAllowedArtifactFile('src/main.ts'), true);
+  assert.equal(isAllowedArtifactFile('scripts/setup.js'), true);
+  assert.equal(isAllowedArtifactFile('tools/generate.py'), true);
+  assert.equal(isAllowedArtifactFile('styles/app.css'), true);
+  assert.equal(isAllowedArtifactFile('config/agent.yaml'), true);
 });
 
 test('local docker passes the upload script as one Docker argument', () => {
@@ -30,13 +36,192 @@ test('local docker passes the upload script as one Docker argument', () => {
   ]);
 });
 
+test('global sandbox reuses the fixed stopped container and only stops it on close', async () => {
+  const backend = new DockerSandboxBackend({ sandboxId: 'global' });
+  const backendState = backend as any;
+  const dockerCalls: string[][] = [];
+  const success = (stdout = '') => ({ stdout, stderr: '', exitCode: 0, truncated: false });
+
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      dockerCalls.push(args);
+      if (args[0] === 'ps' && args[1] === '-q') return success();
+      if (args[0] === 'ps' && args[1] === '-aq') return success('existing-container\n');
+      if (args[0] === 'inspect') return success('global\n');
+      if (args[0] === 'start' || args[0] === 'stop') return success('existing-container\n');
+      throw new Error('unexpected Docker command: ' + args.join(' '));
+    },
+    async close() {},
+  };
+
+  await backend.start();
+  await backend.close();
+
+  assert.equal(backendState.containerName, 'culclaw-sandbox-global');
+  assert.deepEqual(dockerCalls, [
+    ['ps', '-q', '--filter', 'name=^/culclaw-sandbox-global$'],
+    ['ps', '-aq', '--filter', 'name=^/culclaw-sandbox-global$'],
+    ['inspect', '--format', '{{ index .Config.Labels "culclaw.sandbox.id" }}', 'existing-container'],
+    ['start', 'existing-container'],
+    ['stop', 'existing-container'],
+  ]);
+});
+
+test('global sandbox refuses a same-named container without the global label', async () => {
+  const backend = new DockerSandboxBackend({ sandboxId: 'global' });
+  const backendState = backend as any;
+  const dockerCalls: string[][] = [];
+  const success = (stdout = '') => ({ stdout, stderr: '', exitCode: 0, truncated: false });
+
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      dockerCalls.push(args);
+      if (args[0] === 'ps' && args[1] === '-q') return success('foreign-container\n');
+      if (args[0] === 'inspect') return success('other-sandbox\n');
+      throw new Error('unexpected Docker command: ' + args.join(' '));
+    },
+    async close() {},
+  };
+
+  await assert.rejects(backend.start(), /culclaw\.sandbox\.id 标签不是 global/);
+  await backend.close();
+
+  assert.deepEqual(dockerCalls, [
+    ['ps', '-q', '--filter', 'name=^/culclaw-sandbox-global$'],
+    ['inspect', '--format', '{{ index .Config.Labels "culclaw.sandbox.id" }}', 'foreign-container'],
+  ]);
+});
+
+test('resetWorkspace clears only the container workspace contents', async () => {
+  const backend = new DockerSandboxBackend({ sandboxId: 'global' });
+  const backendState = backend as any;
+  const dockerCalls: string[][] = [];
+  backendState.containerId = 'sandbox-container';
+  backendState.containerReadyPromise = Promise.resolve();
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      dockerCalls.push(args);
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    },
+    async close() {},
+  };
+
+  await backend.resetWorkspace();
+
+  assert.deepEqual(dockerCalls, [[
+    'exec',
+    '-w',
+    '/workspace',
+    'sandbox-container',
+    'sh',
+    '-lc',
+    'find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+  ]]);
+});
+
+test('downloadWorkspaceFiles continues after an individual transfer failure', async () => {
+  const backend = new DockerSandboxBackend({ sandboxId: 'global' });
+  const backendState = backend as any;
+  const downloadPath = (filePath: string) => Buffer.from(filePath).toString('base64');
+  const downloadContent = (content: string) => Buffer.from(content).toString('base64');
+  let downloadAttempts = 0;
+  backendState.containerId = 'sandbox-container';
+  backendState.containerReadyPromise = Promise.resolve();
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      const command = args.at(-1);
+      if (command === 'find . -type f -print0') {
+        return {
+          stdout: './deliverables/ok.txt\0./deliverables/too-large.bin\0./src/result.ts\0',
+          stderr: '',
+          exitCode: 0,
+          truncated: false,
+        };
+      }
+
+      downloadAttempts += 1;
+      if (downloadAttempts === 2) {
+        return { stdout: '', stderr: 'transfer limit', exitCode: 0, truncated: true };
+      }
+
+      const filePath = downloadAttempts === 1
+        ? '/workspace/deliverables/ok.txt'
+        : '/workspace/src/result.ts';
+      const content = downloadAttempts === 1 ? 'ok' : 'export const result = true';
+      return {
+        stdout: 'OK|' + downloadPath(filePath) + '|' + downloadContent(content) + '\n',
+        stderr: '',
+        exitCode: 0,
+        truncated: false,
+      };
+    },
+    async close() {},
+  };
+
+  const files = await backend.downloadWorkspaceFiles();
+
+  assert.equal(downloadAttempts, 3);
+  assert.deepEqual(files[0], {
+    path: '/deliverables/ok.txt',
+    content: new Uint8Array(Buffer.from('ok')),
+    error: null,
+  });
+  assert.deepEqual(files[1], {
+    path: '/deliverables/too-large.bin',
+    content: null,
+    error: 'invalid_path',
+  });
+  assert.deepEqual(files[2], {
+    path: '/src/result.ts',
+    content: new Uint8Array(Buffer.from('export const result = true')),
+    error: null,
+  });
+});
+
+test('downloadWorkspaceFiles retains the total transfer limit across individual files', async () => {
+  const backend = new DockerSandboxBackend({ sandboxId: 'global', maxTransferBytes: 120 });
+  const backendState = backend as any;
+  const content = 'a'.repeat(50);
+  let downloadAttempts = 0;
+  backendState.containerId = 'sandbox-container';
+  backendState.containerReadyPromise = Promise.resolve();
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      const command = args.at(-1);
+      if (command === 'find . -type f -print0') {
+        return { stdout: './one.txt\0./two.txt\0', stderr: '', exitCode: 0, truncated: false };
+      }
+
+      downloadAttempts += 1;
+      const filePath = '/workspace/' + (downloadAttempts === 1 ? 'one.txt' : 'two.txt');
+      return {
+        stdout: 'OK|' + Buffer.from(filePath).toString('base64') + '|' + Buffer.from(content).toString('base64') + '\n',
+        stderr: '',
+        exitCode: 0,
+        truncated: false,
+      };
+    },
+    async close() {},
+  };
+
+  const files = await backend.downloadWorkspaceFiles();
+
+  assert.equal(downloadAttempts, 2);
+  assert.equal(files[0].error, null);
+  assert.equal(files[1].path, '/two.txt');
+  assert.equal(files[1].content, null);
+  assert.equal(files[1].error, 'invalid_path');
+});
+
 test('fromEnvironment uses local docker configuration only', async () => {
   const backend = await DockerSandboxBackend.fromEnvironment(undefined, {
     SANDBOX_DOCKER_IMAGE_TYPE: 'node',
     SANDBOX_DOCKER_IMAGE: 'custom-mirror/node:22-slim',
+    SANDBOX_DOCKER_TIMEOUT_MS: '0',
   });
 
   assert.equal((backend as any).dockerImage, 'custom-mirror/node:22-slim');
+  assert.equal((backend as any).timeoutMs, 0);
   await backend.close();
 });
 
@@ -78,4 +263,3 @@ test('global sandbox leases share one backend and execute serially', async () =>
     backendClass.pendingGlobalSandboxClose = undefined;
   }
 });
-

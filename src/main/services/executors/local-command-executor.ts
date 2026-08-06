@@ -79,9 +79,18 @@ export class LocalCommandExecutor implements CommandExecutor {
         reject(error instanceof Error ? error : new Error(String(error)));
       };
 
-      const timer = setTimeout(() => {
-        rejectOnce(new Error(`本地 Docker 命令执行超时 (${this.timeoutMs}ms)`));
-      }, this.timeoutMs);
+      // timeoutMs 为 0 时表示不为本地 Docker 命令设置超时。
+      const timer = this.timeoutMs > 0
+        ? setTimeout(() => {
+          rejectOnce(new Error(`本地 Docker 命令执行超时 (${this.timeoutMs}ms)`));
+        }, this.timeoutMs)
+        : undefined;
+
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      };
 
       child.stdout?.on('data', (chunk: Buffer) => {
         capture(stdoutChunks, chunk);
@@ -92,12 +101,12 @@ export class LocalCommandExecutor implements CommandExecutor {
       });
 
       child.on('error', err => {
-        clearTimeout(timer);
+        clearTimer();
         rejectOnce(err);
       });
 
       child.on('close', code => {
-        clearTimeout(timer);
+        clearTimer();
         if (settled) return;
         settled = true;
         resolve({

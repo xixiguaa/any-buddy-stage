@@ -411,10 +411,20 @@ export async function exportSandboxOutputsToWorkspace(
           console.warn('[DeepAgentBackend] 忽略越界的远程沙盒输出路径:', virtualPath);
           continue;
         }
-        await mkdir(path.dirname(destPath), { recursive: true });
-        await writeFile(destPath, content);
-        if (appService && taskId) {
-          await appService.recordTaskArtifact(taskId, destPath);
+        try {
+          await mkdir(path.dirname(destPath), { recursive: true });
+          await writeFile(destPath, content);
+          if (appService && taskId) {
+            await appService.recordTaskArtifact(taskId, destPath);
+          }
+        } catch (error) {
+          // 单个主机文件写入或产物登记失败不能阻断其它 Docker 产物回传。
+          console.warn('[DeepAgentBackend] 导出单个 Docker 沙箱产物失败，继续处理其它文件:', {
+            virtualPath,
+            destPath,
+            error,
+          });
+          continue;
         }
         console.debug('[DeepAgentBackend] 沙盒完成，导出写入新文件到工作区并关联任务:', destPath);
       }
@@ -1502,6 +1512,8 @@ export class DeepAgentExecutor implements AgentExecutor {
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);
 
     try {
+      // 容器跨任务复用，但每轮上传前必须清空工作目录，避免旧文件串入当前任务。
+      await backend.resetWorkspace();
       const uploadResults = await backend.uploadFiles(initialFileUploads);
       const failedUploads = uploadResults.filter(item => item.error);
       if (failedUploads.length > 0) {

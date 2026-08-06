@@ -61,7 +61,7 @@ AnyBuddy 将 Agent 的工作方式与能力边界分开配置，避免将产品�
 
 默认 `read_write` 权限使用本机 Docker CLI。所有默认权限任务共享一个全局容器，并按任务串行复用；应用退出时会关闭该容器。`full_access` 使用本地 `LocalShellBackend`，不经过 Docker。
 
-容器需要提供 POSIX shell、`base64`、`dirname`、`mkdir` 和 `tr` 等基础命令。可通过 `SANDBOX_DOCKER_IMAGE` 指定镜像；可选的 `SANDBOX_DOCKER_TIMEOUT_MS`、`SANDBOX_DOCKER_MAX_OUTPUT_BYTES` 和 `SANDBOX_DOCKER_MAX_TRANSFER_BYTES` 分别控制命令超时、命令输出上限和文件传输上限。
+容器需要提供 POSIX shell、`base64`、`dirname`、`mkdir` 和 `tr` 等基础命令。可通过 `SANDBOX_DOCKER_IMAGE` 指定镜像；可选的 `SANDBOX_DOCKER_TIMEOUT_MS`、`SANDBOX_DOCKER_MAX_OUTPUT_BYTES` 和 `SANDBOX_DOCKER_MAX_TRANSFER_BYTES` 分别控制命令超时、命令输出上限和文件传输上限。`SANDBOX_DOCKER_TIMEOUT_MS=0`（或 `[docker] timeout_ms=0`）表示不设置 Docker CLI 命令超时；未配置时默认 120000ms。
 
 ### culclaw.ini 配置
 

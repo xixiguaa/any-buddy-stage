@@ -1,6 +1,5 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
 import type { Writable } from 'node:stream';
 import {
   BaseSandbox,
@@ -12,14 +11,6 @@ import {
 import { readSandboxIni } from '../config/sandbox-ini-config.js';
 import type { CommandExecutor, CommandResult, InputWriter } from './executors/command-executor.js';
 import { LocalCommandExecutor } from './executors/local-command-executor.js';
-
-const ALLOWED_ARTIFACT_EXTENSIONS = new Set([
-  'docx', 'doc', 'pdf', 'md', 'markdown', 'txt', 'json', 'html',
-  'xlsx', 'xls', 'csv',
-  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp',
-  'wav', 'mp3', 'ogg', 'm4a', 'aac', 'flac',
-  'mp4', 'webm', 'mov', 'avi', 'mkv',
-]);
 
 const IGNORED_ARTIFACT_DIRECTORIES = new Set([
   'node_modules',
@@ -57,8 +48,7 @@ export function isAllowedArtifactFile(filePath: string): boolean {
     return false;
   }
 
-  const extension = path.extname(fileName).replace(/^\./, '');
-  return ALLOWED_ARTIFACT_EXTENSIONS.has(extension);
+  return true;
 }
 
 const FILE_OPERATION_ERRORS = new Set<FileOperationError>([
@@ -78,6 +68,8 @@ const DOCKER_IMAGES_BY_TYPE = {
   combined: DEFAULT_DOCKER_IMAGE,
 } as const;
 const CONTAINER_WORKDIR = '/workspace';
+const GLOBAL_SANDBOX_ID = 'global';
+const GLOBAL_CONTAINER_NAME = 'culclaw-sandbox-global';
 
 type DockerImageType = keyof typeof DOCKER_IMAGES_BY_TYPE;
 
@@ -151,12 +143,15 @@ export class DockerSandboxBackend extends BaseSandbox {
   constructor(options: DockerSandboxBackendOptions = {}) {
     super();
 
-    this.timeoutMs = validatePositiveNumber(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs');
+    // 超时为 0 时不限制本地 Docker CLI 命令执行时间。
+    this.timeoutMs = validateNonNegativeNumber(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs');
     this.maxOutputBytes = validatePositiveNumber(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes');
     this.maxTransferBytes = validatePositiveNumber(options.maxTransferBytes ?? DEFAULT_MAX_TRANSFER_BYTES, 'maxTransferBytes');
     this.dockerImage = resolveDockerImage(options.dockerImageType, options.dockerImage);
     this.id = options.sandboxId ?? 'global-' + randomUUID();
-    this.containerName = 'culclaw-sandbox-' + randomUUID();
+    this.containerName = this.id === GLOBAL_SANDBOX_ID
+      ? GLOBAL_CONTAINER_NAME
+      : 'culclaw-sandbox-' + randomUUID();
     this.executor = new LocalCommandExecutor({
       id: this.id,
       timeoutMs: this.timeoutMs,
@@ -211,7 +206,7 @@ export class DockerSandboxBackend extends BaseSandbox {
     await lease.release();
   }
 
-  /** 应用退出时等待运行中的租约结束，再关闭唯一的本地 Docker 容器。 */
+  /** 应用退出时等待运行中的租约结束，再停止唯一的本地 Docker 容器以供下次启动复用。 */
   static async closeGlobalSandbox(): Promise<void> {
     if (DockerSandboxBackend.pendingGlobalSandboxClose) {
       await DockerSandboxBackend.pendingGlobalSandboxClose;
@@ -242,7 +237,7 @@ export class DockerSandboxBackend extends BaseSandbox {
     const getConf = (key: string): string | undefined => environment[key]?.trim() || iniConfig[key]?.trim();
 
     return new DockerSandboxBackend({
-      timeoutMs: parseEnvironmentNumber(
+      timeoutMs: parseNonNegativeEnvironmentNumber(
         getConf('SANDBOX_DOCKER_TIMEOUT_MS') ?? getConf('SANDBOX_TIMEOUT_MS'),
         DEFAULT_TIMEOUT_MS,
         'SANDBOX_DOCKER_TIMEOUT_MS',
@@ -266,6 +261,17 @@ export class DockerSandboxBackend extends BaseSandbox {
   /** 立即创建容器，用于启动预热。 */
   async start(): Promise<void> {
     await this.ensureContainer();
+  }
+
+  /** 每轮任务上传前清空工作目录，保留容器及其已安装运行环境。 */
+  async resetWorkspace(): Promise<void> {
+    await this.ensureContainer();
+    const result = await this.runDocker(
+      this.buildDockerExecArgs('find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'),
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(this.formatCommandFailure(result, '重置 Docker 工作目录'));
+    }
   }
 
   /** 在本地 Docker 容器内执行命令。 */
@@ -380,14 +386,44 @@ export class DockerSandboxBackend extends BaseSandbox {
       .filter(filePath => isAllowedArtifactFile(filePath))
       .map(filePath => this.containerWorkdir + '/' + filePath);
 
-    const downloaded = await this.downloadFiles(containerPaths);
+    const downloaded: FileDownloadResponse[] = [];
+    let totalDownloadedBytes = 0;
+    for (const containerPath of containerPaths) {
+      try {
+        const [downloadedFile] = await this.downloadFiles([containerPath]);
+        if (!downloadedFile) {
+          downloaded.push({ path: containerPath, content: null, error: 'invalid_path' });
+          continue;
+        }
+
+        if (downloadedFile.content) {
+          const transferBytes = Buffer.byteLength(
+            'OK|' + encodeBase64(containerPath) + '|' + Buffer.from(downloadedFile.content).toString('base64') + '\n',
+          );
+          if (totalDownloadedBytes + transferBytes > this.maxTransferBytes) {
+            downloaded.push({ path: containerPath, content: null, error: 'invalid_path' });
+            continue;
+          }
+          totalDownloadedBytes += transferBytes;
+        }
+
+        downloaded.push(downloadedFile);
+      } catch {
+        downloaded.push({
+          path: containerPath,
+          content: null,
+          error: 'invalid_path',
+        });
+      }
+    }
+
     return downloaded.map(item => ({
       ...item,
       path: this.toWorkspaceVirtualPath(item.path),
     }));
   }
 
-  /** 关闭并清理本次进程创建的本地 Docker 容器。 */
+  /** 关闭本地 Docker 容器；全局容器只停止，以便下次应用启动复用。 */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -395,14 +431,15 @@ export class DockerSandboxBackend extends BaseSandbox {
     try {
       await this.containerReadyPromise?.catch(() => undefined);
       if (this.containerId) {
+        const shouldReuseContainer = this.id === GLOBAL_SANDBOX_ID;
         const result = await this.runDocker(
-          ['rm', '-f', this.containerId],
+          shouldReuseContainer ? ['stop', this.containerId] : ['rm', '-f', this.containerId],
           undefined,
           this.maxOutputBytes,
           true,
         );
         if (result.exitCode !== 0) {
-          throw new Error(this.formatCommandFailure(result, '清理 Docker 容器'));
+          throw new Error(this.formatCommandFailure(result, shouldReuseContainer ? '停止 Docker 容器' : '清理 Docker 容器'));
         }
       }
     } catch (error) {
@@ -433,7 +470,7 @@ export class DockerSandboxBackend extends BaseSandbox {
 
   private static async createGlobalSandbox(): Promise<DockerSandboxBackend> {
     const backend = await DockerSandboxBackend.fromEnvironment(undefined, process.env, {
-      sandboxId: 'global',
+      sandboxId: GLOBAL_SANDBOX_ID,
     });
 
     try {
@@ -469,6 +506,24 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   private async createContainer(): Promise<void> {
+    const runningContainerId = await this.findContainerId(false);
+    if (runningContainerId) {
+      await this.assertReusableGlobalContainer(runningContainerId);
+      this.containerId = runningContainerId;
+      return;
+    }
+
+    const stoppedContainerId = await this.findContainerId(true);
+    if (stoppedContainerId) {
+      await this.assertReusableGlobalContainer(stoppedContainerId);
+      const startResult = await this.runDocker(['start', stoppedContainerId]);
+      if (startResult.exitCode !== 0) {
+        throw new Error(this.formatCommandFailure(startResult, '启动 Docker 容器'));
+      }
+      this.containerId = stoppedContainerId;
+      return;
+    }
+
     const command = [
       'run',
       '-d',
@@ -492,6 +547,44 @@ export class DockerSandboxBackend extends BaseSandbox {
       throw new Error('创建 Docker 容器成功但未返回容器 ID。');
     }
     this.containerId = containerId;
+  }
+
+  /** 固定容器名仅允许复用由全局 Docker 沙箱创建的容器，避免接管同名外部容器。 */
+  private async assertReusableGlobalContainer(containerId: string): Promise<void> {
+    if (this.id !== GLOBAL_SANDBOX_ID) return;
+
+    const result = await this.runDocker([
+      'inspect',
+      '--format',
+      '{{ index .Config.Labels "culclaw.sandbox.id" }}',
+      containerId,
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(this.formatCommandFailure(result, '校验固定 Docker 容器标签'));
+    }
+
+    if (result.stdout.trim() !== GLOBAL_SANDBOX_ID) {
+      throw new Error(
+        '固定 Docker 容器 ' + this.containerName
+        + ' 的 culclaw.sandbox.id 标签不是 global，拒绝复用、启动或停止该容器。',
+      );
+    }
+  }
+
+  /** 按固定容器名查询容器，避免仅凭历史容器 ID 产生重复容器。 */
+  private async findContainerId(includeStopped: boolean): Promise<string | undefined> {
+    const result = await this.runDocker([
+      'ps',
+      includeStopped ? '-aq' : '-q',
+      '--filter',
+      'name=^/' + this.containerName + '$',
+    ]);
+    if (result.exitCode !== 0) {
+      throw new Error(this.formatCommandFailure(result, '查询 Docker 容器'));
+    }
+
+    const containerId = result.stdout.trim().split(/\s+/)[0];
+    return containerId || undefined;
   }
 
   private runDocker(
@@ -725,6 +818,14 @@ function validatePositiveNumber(value: number, name: string): number {
   return value;
 }
 
+/** 本地 Docker 命令超时允许为 0，表示不设置超时。 */
+function validateNonNegativeNumber(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(name + ' 必须是大于或等于 0 的数字。');
+  }
+  return value;
+}
+
 function parseEnvironmentNumber(
   value: string | undefined,
   fallback: number,
@@ -734,6 +835,20 @@ function parseEnvironmentNumber(
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(name + ' 必须是大于 0 的数字。');
+  }
+  return parsed;
+}
+
+/** 解析允许使用 0 关闭超时的 Docker 超时配置。 */
+function parseNonNegativeEnvironmentNumber(
+  value: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (!value?.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(name + ' 必须是大于或等于 0 的数字。');
   }
   return parsed;
 }

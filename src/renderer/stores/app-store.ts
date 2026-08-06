@@ -743,6 +743,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
     bootstrapSubscription = clients.agentRun.subscribeActive(runs => {
       set({ agentRuns: runs })
+      // 非当前详情页任务不会订阅任务补丁；运行状态变化时刷新左侧任务摘要。
+      void get().refreshTaskIndex()
     })
 
     await Promise.all([
