@@ -154,11 +154,16 @@ export class AppService {
    */
   async init() {
     this.state = await this.repository.load(createDefaultState())
+    const workspaceNamesChanged = this.normalizeWorkspaceNames()
     await this.ensureDefaultSkills()
     await this.ensureDefaultExperts()
     await this.ensureDefaultExpertTeams()
     await this.hydrateConfigStateFromFiles()
     await this.syncCulClawWorkspaces()
+
+    if (workspaceNamesChanged) {
+      await this.persist()
+    }
 
     // 应用启动时清理异常卡在活跃状态（running/queued等）的任务与运行
     let changed = false
@@ -260,6 +265,21 @@ export class AppService {
     } catch (error) {
       console.warn('[AppService] 扫描 AnyBuddy 工作区目录失败:', error)
     }
+  }
+
+  /** 将历史工作区名称纠正为物理目录名，保证 Docker 映射目录与宿主机一致。 */
+  private normalizeWorkspaceNames(): boolean {
+    if (!this.state) return false
+    let changed = false
+    for (const workspace of this.state.workspaces) {
+      const name = path.basename(path.resolve(workspace.path))
+      if (name && workspace.name !== name) {
+        workspace.name = name
+        workspace.updatedAt = nowIso()
+        changed = true
+      }
+    }
+    return changed
   }
 
   /** 同步系统内置专家，同时保留用户创建的自定义专家，并清除已注销的旧内置专家。 */
@@ -1077,10 +1097,24 @@ ${initialPrompt.slice(0, 1000)}
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
     const workspace = await this.mutate(state => {
       const now = nowIso()
+      const workspacePath = path.resolve(input.path)
+      const workspaceName = path.basename(workspacePath)
+      if (!workspaceName || workspaceName === '.' || workspaceName === '..') {
+        throw new Error('工作区路径必须包含有效的文件夹名称。')
+      }
+      const normalizedPath = process.platform === 'win32' ? workspacePath.toLowerCase() : workspacePath
+      const duplicate = state.workspaces.find(item => {
+        const itemPath = path.resolve(item.path)
+        const normalizedItemPath = process.platform === 'win32' ? itemPath.toLowerCase() : itemPath
+        return normalizedItemPath === normalizedPath || item.name.toLowerCase() === workspaceName.toLowerCase()
+      })
+      if (duplicate) {
+        throw new Error('工作区目录或名称已存在：' + workspaceName)
+      }
       const workspace: Workspace = {
         id: createId('workspace'),
-        name: input.name,
-        path: input.path,
+        name: workspaceName,
+        path: workspacePath,
         icon: input.icon,
         defaultPermissionMode: input.defaultPermissionMode ?? 'read_write',
         isArchived: false,

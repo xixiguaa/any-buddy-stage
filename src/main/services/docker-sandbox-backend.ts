@@ -59,7 +59,8 @@ const FILE_OPERATION_ERRORS = new Set<FileOperationError>([
   'invalid_path',
 ]);
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+// 默认不限制 Docker 命令执行时长；需要限制时可通过配置显式设置正数毫秒值。
+const DEFAULT_TIMEOUT_MS = 0;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
 const DEFAULT_DOCKER_IMAGE = 'nikolaik/python-nodejs:python3.12-nodejs22-slim';
@@ -82,6 +83,7 @@ export type DockerSandboxBackendOptions = {
   dockerImage?: string;
   dockerImageType?: DockerImageType;
   sandboxId?: string;
+  workspaceName?: string;
 };
 
 type UploadCandidate = {
@@ -117,6 +119,15 @@ function resolveDockerImage(imageType: DockerImageType | undefined, image: strin
   return DEFAULT_DOCKER_IMAGE;
 }
 
+/** 将工作区名称转换为容器内唯一且可预测的文件夹路径。 */
+export function resolveContainerWorkspacePath(workspaceName: string): string {
+  const folderName = workspaceName.trim();
+  if (!folderName || folderName === '.' || folderName === '..' || /[\\/\0]/.test(folderName)) {
+    throw new Error('工作区名称不能用于 Docker 文件夹：' + workspaceName);
+  }
+  return path.posix.join(DOCKER_SANDBOX_WORKDIR, folderName);
+}
+
 /**
  * 仅使用本地 Docker CLI 的全局共享沙箱。
  *
@@ -135,7 +146,8 @@ export class DockerSandboxBackend extends BaseSandbox {
   private readonly maxTransferBytes: number;
   private readonly dockerImage: string;
   private readonly containerName: string;
-  private readonly containerWorkdir = DOCKER_SANDBOX_WORKDIR;
+  private containerWorkdir = DOCKER_SANDBOX_WORKDIR;
+  private workspaceName?: string;
   private readonly executor: CommandExecutor;
 
   private containerId?: string;
@@ -154,6 +166,9 @@ export class DockerSandboxBackend extends BaseSandbox {
     this.containerName = this.id === GLOBAL_SANDBOX_ID
       ? GLOBAL_CONTAINER_NAME
       : 'culclaw-sandbox-' + randomUUID();
+    if (options.workspaceName) {
+      this.setWorkspaceName(options.workspaceName);
+    }
     this.executor = new LocalCommandExecutor({
       id: this.id,
       timeoutMs: this.timeoutMs,
@@ -162,7 +177,7 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   /** 获取全局沙箱的独占租约，所有任务按开始顺序串行进入容器。 */
-  static async acquireGlobalSandbox() {
+  static async acquireGlobalSandbox(workspaceName?: string) {
     await DockerSandboxBackend.pendingGlobalSandboxClose?.catch(() => undefined);
 
     const entry = DockerSandboxBackend.getOrCreateGlobalSandboxEntry();
@@ -185,6 +200,9 @@ export class DockerSandboxBackend extends BaseSandbox {
     try {
       await previousExecution.catch(() => undefined);
       const backend = await entry.backendPromise;
+      if (workspaceName) {
+        await backend.useWorkspace(workspaceName);
+      }
       let released = false;
 
       return {
@@ -263,11 +281,29 @@ export class DockerSandboxBackend extends BaseSandbox {
   /** 立即创建容器，用于启动预热。 */
   async start(): Promise<void> {
     await this.ensureContainer();
+    if (this.workspaceName) {
+      await this.ensureWorkspaceDirectory();
+    }
+  }
+
+  /** 在已串行获取的全局租约内切换到指定工作区目录。 */
+  async useWorkspace(workspaceName: string): Promise<void> {
+    this.setWorkspaceName(workspaceName);
+    await this.ensureContainer();
+    await this.ensureWorkspaceDirectory();
+  }
+
+  /** 返回当前租约对应的容器真实工作区根目录。 */
+  getContainerWorkspaceRoot(): string {
+    return this.containerWorkdir;
   }
 
   /** 每轮任务上传前清空工作目录，保留容器及其已安装运行环境。 */
   async resetWorkspace(): Promise<void> {
     await this.ensureContainer();
+    if (this.workspaceName) {
+      await this.ensureWorkspaceDirectory();
+    }
     const result = await this.runDocker(
       this.buildDockerExecArgs('find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'),
     );
@@ -541,6 +577,21 @@ export class DockerSandboxBackend extends BaseSandbox {
     return containerPath;
   }
 
+  /** 确保当前工作区目录已创建，避免首次租约执行时工作目录不存在。 */
+  private async ensureWorkspaceDirectory(): Promise<void> {
+    const result = await this.runDocker(
+      this.buildDockerExecArgsAt(DOCKER_SANDBOX_WORKDIR, 'mkdir -p ' + shellQuote(this.containerWorkdir)),
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(this.formatCommandFailure(result, '创建 Docker 工作区目录'));
+    }
+  }
+
+  private setWorkspaceName(workspaceName: string): void {
+    this.workspaceName = workspaceName.trim();
+    this.containerWorkdir = resolveContainerWorkspacePath(this.workspaceName);
+  }
+
   private async createContainer(): Promise<void> {
     const runningContainerId = await this.findContainerId(false);
     if (runningContainerId) {
@@ -633,6 +684,10 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   private buildDockerExecArgs(command: string, interactive = false): string[] {
+    return this.buildDockerExecArgsAt(this.containerWorkdir, command, interactive);
+  }
+
+  private buildDockerExecArgsAt(workdir: string, command: string, interactive = false): string[] {
     if (!this.containerId) {
       throw new Error('Docker 容器尚未创建。');
     }
@@ -641,7 +696,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       'exec',
       ...(interactive ? ['-i'] : []),
       '-w',
-      this.containerWorkdir,
+      workdir,
       this.containerId,
       'sh',
       '-lc',
@@ -882,6 +937,10 @@ function parseNonNegativeEnvironmentNumber(
   name: string,
 ): number {
   if (!value?.trim()) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'none' || normalized === 'unlimited' || normalized === 'infinite') {
+    return 0;
+  }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(name + ' 必须是大于或等于 0 的数字。');

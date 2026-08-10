@@ -247,7 +247,9 @@ import { CONFIG_DIR_NAME } from '../../shared/constants.js';
  * @param maxFileSize 单文件读取最大体积限制（默认 2MB）
  */
 type WorkspaceFileSnapshot = Record<string, Uint8Array>;
-type SandboxArtifactBackend = Pick<DockerSandboxBackendInstance, 'downloadWorkspaceFiles'>;
+type SandboxArtifactBackend = Pick<DockerSandboxBackendInstance, 'downloadWorkspaceFiles'> & {
+  getContainerWorkspaceRoot?: () => string;
+};
 
 /** 比较文件原始字节，避免文本解码破坏二进制产物。 */
 function fileContentEquals(left: Uint8Array, right: Uint8Array) {
@@ -303,7 +305,8 @@ async function collectSandboxArtifactFiles(backend: SandboxArtifactBackend) {
 
     // downloadWorkspaceFiles 返回 Docker 真实路径；仅接受工作目录内的文件，避免越界写回宿主机。
     const containerPath = path.posix.normalize(item.path.replace(/\\/g, '/'));
-    const relativePath = path.posix.relative(DOCKER_SANDBOX_WORKDIR, containerPath);
+    const workspaceRoot = backend.getContainerWorkspaceRoot?.() ?? DOCKER_SANDBOX_WORKDIR;
+    const relativePath = path.posix.relative(workspaceRoot, containerPath);
     if (!relativePath || relativePath.startsWith('../') || path.posix.isAbsolute(relativePath)) return [];
 
     const virtualPath = `/${relativePath}`;
@@ -775,9 +778,11 @@ export class DeepAgentExecutor implements AgentExecutor {
     const primaryWorkspace = taskWorkspaces.find(workspace => workspace.role === 'primary')?.workspace;
 
     const backendRootDir = primaryWorkspace?.path ?? process.cwd();
+    const workspaceName = primaryWorkspace?.name ?? path.basename(path.resolve(backendRootDir));
     const { backend, isSandbox, initialFiles, disposeBackend, releaseSandbox, restoreBackend } = await this.createBackend(
       context,
       backendRootDir,
+      workspaceName,
     );
     // 共享沙盒会跨轮次保留文件，必须以容器当前状态而非主机上传快照判断本轮产物。
     const sandboxOutputBaseline = isSandbox && isDockerSandboxBackend(backend)
@@ -790,8 +795,8 @@ export class DeepAgentExecutor implements AgentExecutor {
         '【文件生成规范（必须严格遵守）】：',
         '1. 当前运行位于全局共享的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
         '2. 沙箱运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
-        '3. Shell 当前工作目录为 /workspace。创建产物时必须使用相对路径（如 deliverables/report.md）或 /workspace/...；禁止使用 /文件名 作为 Shell 绝对路径。',
-        '4. 工具成功后可告知用户 Docker 中的真实输出路径 /workspace/...；应用完成同步后，该文件会出现在物理工作区的对应相对路径。',
+        '3. Shell 当前工作目录为当前工作区的 Docker 独立目录。创建产物时必须使用相对路径（如 deliverables/report.md），禁止使用 /文件名 作为 Shell 绝对路径。',
+        '4. 工具成功后可告知用户 Docker 中当前工作区目录下的输出路径；应用完成同步后，该文件会出现在物理工作区的对应相对路径。',
       ].join('\n')
       : [
         '---',
@@ -1476,6 +1481,7 @@ export class DeepAgentExecutor implements AgentExecutor {
   private async createBackend(
     context: ExecuteAgentParams['context'],
     rootDir: string,
+    workspaceName: string,
   ) {
     if (context.task.permissionMode === 'full_access') {
       const backend = await LocalShellBackend.create({
@@ -1510,7 +1516,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       };
     }
 
-    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox();
+    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox(workspaceName);
     const { backend } = sandboxLease;
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);

@@ -22,7 +22,7 @@ export function createDefaultState(): AppState {
   const taskId = createId('task');
   const workspace = {
     id: workspaceId,
-    name: '默认工作区',
+    name: `${APP_NAME} Workspace`,
     path: join(os.homedir(), 'Documents', `${APP_NAME} Workspace`),
     icon: 'folder',
     defaultPermissionMode: 'read_write' as const,

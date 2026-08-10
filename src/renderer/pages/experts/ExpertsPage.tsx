@@ -30,8 +30,6 @@ const SKILL_DESCRIPTIONS: Record<string, string> = {
 type SingleExpertSourceTask = {
   type: 'single_expert'
   taskId: string
-  activeExpertId: string
-  expertIds: string[]
 }
 
 function getSingleExpertSourceTask(state: unknown): SingleExpertSourceTask | undefined {
@@ -43,10 +41,7 @@ function getSingleExpertSourceTask(state: unknown): SingleExpertSourceTask | und
   const candidate = sourceTask as Partial<SingleExpertSourceTask>
   if (
     candidate.type !== 'single_expert' ||
-    typeof candidate.taskId !== 'string' ||
-    typeof candidate.activeExpertId !== 'string' ||
-    !Array.isArray(candidate.expertIds) ||
-    !candidate.expertIds.every(expertId => typeof expertId === 'string')
+    typeof candidate.taskId !== 'string'
   ) {
     return undefined
   }
@@ -54,8 +49,6 @@ function getSingleExpertSourceTask(state: unknown): SingleExpertSourceTask | und
   return {
     type: candidate.type,
     taskId: candidate.taskId,
-    activeExpertId: candidate.activeExpertId,
-    expertIds: candidate.expertIds,
   }
 }
 
@@ -119,34 +112,30 @@ export default function ExpertsPage() {
   const handleStartTask = async (expert: ExpertPreset) => {
     if (singleExpertSourceTask) {
       try {
-        if (expert.id !== singleExpertSourceTask.activeExpertId) {
-          const clients = createCulclawClients(rendererApi)
-          const expertIds = singleExpertSourceTask.expertIds.includes(expert.id)
-            ? singleExpertSourceTask.expertIds
-            : [...singleExpertSourceTask.expertIds, expert.id]
-          const updateResult = await clients.task.update(singleExpertSourceTask.taskId, {
-            activeExpertId: expert.id,
-            activeExpertTeamId: undefined,
-            expertIds,
-            skillIds: expert.skills,
-          })
-          if (!updateResult.ok) {
-            throw new Error(updateResult.error.message)
-          }
+        const clients = createCulclawClients(rendererApi)
+        // 回到原任务后仍保持单专家语义，不能保留此前选择过的专家 ID。
+        const updateResult = await clients.task.update(singleExpertSourceTask.taskId, {
+          activeExpertId: expert.id,
+          activeExpertTeamId: undefined,
+          expertIds: [expert.id],
+          skillIds: expert.skills,
+        })
+        if (!updateResult.ok) {
+          throw new Error(updateResult.error.message)
+        }
 
-          // 保留未发送的输入内容，同时把草稿选择同步到刚切换的专家。
-          const sourceDraft = useAppStore.getState().drafts[singleExpertSourceTask.taskId]
-          if (sourceDraft) {
-            await saveDraft(singleExpertSourceTask.taskId, {
-              content: sourceDraft.content,
-              selectedMode: sourceDraft.selectedMode,
-              selectedSkillIds: expert.skills,
-              selectedConnectorIds: sourceDraft.selectedConnectorIds,
-              selectedExpertIds: [expert.id],
-              selectedExpertId: expert.id,
-              selectedExpertTeamId: undefined,
-            })
-          }
+        // 保留未发送的输入内容，同时把草稿选择同步到当前专家。
+        const sourceDraft = useAppStore.getState().drafts[singleExpertSourceTask.taskId]
+        if (sourceDraft) {
+          await saveDraft(singleExpertSourceTask.taskId, {
+            content: sourceDraft.content,
+            selectedMode: sourceDraft.selectedMode,
+            selectedSkillIds: expert.skills,
+            selectedConnectorIds: sourceDraft.selectedConnectorIds,
+            selectedExpertIds: [expert.id],
+            selectedExpertId: expert.id,
+            selectedExpertTeamId: undefined,
+          })
         }
 
         setSummonedExpert(expert, { addToRecent: true })

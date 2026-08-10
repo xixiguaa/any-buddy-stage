@@ -98,7 +98,8 @@ export async function readSandboxIni(filePath?: string): Promise<Record<string, 
       // 优先匹配 SANDBOX_* 全名，其次匹配 [section] 下配置项，最后回退至无 section 别名
       const mappedKey = directKey.startsWith('SANDBOX_')
         ? directKey
-        : INI_ENVIRONMENT_KEYS[`${section}.${key.toLowerCase()}`] || INI_ENVIRONMENT_KEYS[key.toLowerCase()]
+        : INI_ENVIRONMENT_KEYS[`${section}.${key.toLowerCase()}`]
+          || (section ? undefined : INI_ENVIRONMENT_KEYS[key.toLowerCase()])
 
       // 先读到的文件配置项优先，后读到的文件不覆盖已有配置
       if (mappedKey && !result[mappedKey]) {

@@ -17,8 +17,6 @@ export default function TaskDetailComposerSection() {
   const manageExpertsSourceTask = task.activeExpertId && !task.activeExpertTeamId
     ? {
         taskId,
-        activeExpertId: task.activeExpertId,
-        expertIds: task.expertIds,
       }
     : undefined
 

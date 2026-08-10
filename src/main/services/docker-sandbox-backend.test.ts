@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { isAllowedArtifactFile, DockerSandboxBackend } from './docker-sandbox-backend.js';
+import { isAllowedArtifactFile, DockerSandboxBackend, resolveContainerWorkspacePath } from './docker-sandbox-backend.js';
 
 test('artifact export excludes dependencies and package manager files', () => {
   assert.equal(isAllowedArtifactFile('node_modules/example/package.json'), false);
@@ -52,9 +52,32 @@ test('virtual workspace paths resolve inside the Docker workspace', () => {
   assert.equal(backendState.toContainerWorkspacePath('//escape.md'), null);
 });
 
+test('每个工作区使用与名称一致的 Docker 文件夹', () => {
+  const backend = new DockerSandboxBackend({ workspaceName: '武松打虎剧本' });
+  const backendState = backend as any;
+  backendState.containerId = 'sandbox-container';
+
+  assert.equal(resolveContainerWorkspacePath('武松打虎剧本'), '/workspace/武松打虎剧本');
+  assert.equal(
+    backendState.toContainerWorkspacePath('/剧本.md'),
+    '/workspace/武松打虎剧本/剧本.md',
+  );
+  assert.deepEqual(backendState.buildDockerExecArgs('pwd'), [
+    'exec',
+    '-w',
+    '/workspace/武松打虎剧本',
+    'sandbox-container',
+    'sh',
+    '-lc',
+    'pwd',
+  ]);
+  assert.throws(() => resolveContainerWorkspacePath('../other'));
+});
+
 test('uploadFiles maps virtual paths to the Docker workspace before transfer', async () => {
   const backend = new DockerSandboxBackend();
   const backendState = backend as any;
+  backendState.containerId = 'sandbox-container';
   const inputChunks: string[] = [];
   backendState.ensureContainer = async () => {};
   backendState.runDocker = async (_args: string[], writeInput?: (stream: any) => Promise<void>) => {
@@ -275,6 +298,7 @@ test('global sandbox leases share one backend and execute serially', async () =>
 
   let starts = 0;
   let closes = 0;
+  const selectedWorkspaces: string[] = [];
   const backend = {
     async start() {
       starts += 1;
@@ -282,19 +306,24 @@ test('global sandbox leases share one backend and execute serially', async () =>
     async close() {
       closes += 1;
     },
+    async useWorkspace(workspaceName: string) {
+      selectedWorkspaces.push(workspaceName);
+    },
   };
 
   backendClass.fromEnvironment = async () => backend;
   try {
-    const firstLease = await DockerSandboxBackend.acquireGlobalSandbox();
-    const secondLeasePromise = DockerSandboxBackend.acquireGlobalSandbox();
+    const firstLease = await DockerSandboxBackend.acquireGlobalSandbox('武松打虎剧本');
+    const secondLeasePromise = DockerSandboxBackend.acquireGlobalSandbox('鲁智深倒拔垂杨柳');
     await Promise.resolve();
 
     assert.equal(starts, 1);
+    assert.deepEqual(selectedWorkspaces, ['武松打虎剧本']);
     await firstLease.release();
 
     const secondLease = await secondLeasePromise;
     assert.equal(secondLease.backend, backend);
+    assert.deepEqual(selectedWorkspaces, ['武松打虎剧本', '鲁智深倒拔垂杨柳']);
     await secondLease.release();
 
     await DockerSandboxBackend.closeGlobalSandbox();

@@ -20,7 +20,7 @@ test('createDefaultState returns one default workspace and one default task', ()
   const task = state.tasks[0];
   const taskWorkspace = state.taskWorkspaces[0];
 
-  assert.equal(workspace.name, '默认工作区');
+  assert.equal(workspace.name, `${APP_NAME} Workspace`);
   assert.equal(task.title, `开始使用 ${APP_NAME}`);
   assert.equal(task.modelId, '');
   assert.equal(task.primaryWorkspaceId, workspace.id);

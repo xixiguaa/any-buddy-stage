@@ -166,8 +166,6 @@ export default function TaskComposer({
   onStop?: () => Promise<void> | void
   manageExpertsSourceTask?: {
     taskId: string
-    activeExpertId: string
-    expertIds: string[]
   }
 }) {
   const navigate = useNavigate()
