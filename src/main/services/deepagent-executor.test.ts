@@ -21,10 +21,10 @@ test('single artifact host write failure does not block later exports', async (t
   const backend = {
     async downloadWorkspaceFiles() {
       return [
-        { path: '/blocked-parent/child.txt', content: encode('mkdir failure'), error: null },
-        { path: '/write-fail', content: encode('write failure'), error: null },
-        { path: '/record-fail.txt', content: encode('record failure'), error: null },
-        { path: '/deliverables/after.txt', content: encode('exported'), error: null },
+        { path: '/workspace/blocked-parent/child.txt', content: encode('mkdir failure'), error: null },
+        { path: '/workspace/write-fail', content: encode('write failure'), error: null },
+        { path: '/workspace/record-fail.txt', content: encode('record failure'), error: null },
+        { path: '/workspace/deliverables/after.txt', content: encode('exported'), error: null },
       ];
     },
   };
@@ -79,7 +79,7 @@ test('第二次改写同路径产物时，按容器执行前快照同步到主�
 
   const encode = (value: string) => new TextEncoder().encode(value);
   const sandboxFiles = new Map<string, Uint8Array>([
-    ['/deliverables/report.md', encode('第一版')],
+    ['/workspace/孙悟空大闹天宫剧本.md', encode('第一版')],
   ]);
   const backend = {
     async downloadWorkspaceFiles() {
@@ -93,12 +93,12 @@ test('第二次改写同路径产物时，按容器执行前快照同步到主�
 
   // 首轮产物已存在于复用容器；第二轮改写后仍应回传到物理工作区。
   const beforeSecondRun = await captureSandboxArtifactSnapshot(backend, {});
-  sandboxFiles.set('/deliverables/report.md', encode('第二版'));
+  sandboxFiles.set('/workspace/孙悟空大闹天宫剧本.md', encode('第二版'));
 
   await exportSandboxOutputsToWorkspace(backend, workspacePath, beforeSecondRun);
 
   assert.equal(
-    await readFile(path.join(workspacePath, 'deliverables', 'report.md'), 'utf8'),
+    await readFile(path.join(workspacePath, '孙悟空大闹天宫剧本.md'), 'utf8'),
     '第二版',
   );
 });

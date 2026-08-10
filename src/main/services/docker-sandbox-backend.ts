@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { Writable } from 'node:stream';
 import {
   BaseSandbox,
@@ -67,7 +68,8 @@ const DOCKER_IMAGES_BY_TYPE = {
   python: 'python:3.12-slim',
   combined: DEFAULT_DOCKER_IMAGE,
 } as const;
-const CONTAINER_WORKDIR = '/workspace';
+/** Docker 沙箱中唯一允许读写用户工作区文件的真实目录。 */
+export const DOCKER_SANDBOX_WORKDIR = '/workspace';
 const GLOBAL_SANDBOX_ID = 'global';
 const GLOBAL_CONTAINER_NAME = 'culclaw-sandbox-global';
 
@@ -133,7 +135,7 @@ export class DockerSandboxBackend extends BaseSandbox {
   private readonly maxTransferBytes: number;
   private readonly dockerImage: string;
   private readonly containerName: string;
-  private readonly containerWorkdir = CONTAINER_WORKDIR;
+  private readonly containerWorkdir = DOCKER_SANDBOX_WORKDIR;
   private readonly executor: CommandExecutor;
 
   private containerId?: string;
@@ -289,7 +291,12 @@ export class DockerSandboxBackend extends BaseSandbox {
     };
   }
 
-  /** 批量上传文件到容器。 */
+  /**
+   * 批量上传文件到容器工作区。
+   *
+   * 调用方使用虚拟工作区路径（如 /report.md）；本方法统一映射为
+   * Docker 真实路径（如 /workspace/report.md），避免误写到容器根目录。
+   */
   async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
     if (files.length === 0) return [];
 
@@ -297,7 +304,8 @@ export class DockerSandboxBackend extends BaseSandbox {
     const candidates: UploadCandidate[] = [];
 
     files.forEach(([filePath, content], index) => {
-      if (!isSandboxPath(filePath)) {
+      const containerPath = this.toContainerWorkspacePath(filePath);
+      if (!containerPath) {
         responses[index] = { path: filePath, error: 'invalid_path' };
         return;
       }
@@ -305,7 +313,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       candidates.push({
         index,
         path: filePath,
-        encodedPath: encodeBase64(filePath),
+        encodedPath: encodeBase64(containerPath),
         content,
       });
     });
@@ -329,7 +337,7 @@ export class DockerSandboxBackend extends BaseSandbox {
     return responses;
   }
 
-  /** 批量下载容器文件，单个文件失败不会中断其他文件。 */
+  /** 批量下载容器工作区文件，单个文件失败不会中断其他文件。 */
   async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
     if (paths.length === 0) return [];
 
@@ -337,7 +345,8 @@ export class DockerSandboxBackend extends BaseSandbox {
     const candidates: DownloadCandidate[] = [];
 
     paths.forEach((filePath, index) => {
-      if (!isSandboxPath(filePath)) {
+      const containerPath = this.toContainerWorkspacePath(filePath);
+      if (!containerPath) {
         responses[index] = { path: filePath, content: null, error: 'invalid_path' };
         return;
       }
@@ -345,7 +354,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       candidates.push({
         index,
         path: filePath,
-        encodedPath: encodeBase64(filePath),
+        encodedPath: encodeBase64(containerPath),
       });
     });
 
@@ -367,7 +376,12 @@ export class DockerSandboxBackend extends BaseSandbox {
     return responses;
   }
 
-  /** 下载容器工作目录中的全部可导出产物。 */
+  /**
+   * 下载容器工作目录中的全部可导出产物。
+   *
+   * 返回值保留 /workspace/... 真实路径，便于调用方展示 Docker 中的文件位置；
+   * 写回宿主机时由上层再转换为相对工作区路径。
+   */
   async downloadWorkspaceFiles(): Promise<FileDownloadResponse[]> {
     await this.ensureContainer();
 
@@ -417,10 +431,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       }
     }
 
-    return downloaded.map(item => ({
-      ...item,
-      path: this.toWorkspaceVirtualPath(item.path),
-    }));
+    return downloaded;
   }
 
   /** 关闭本地 Docker 容器；全局容器只停止，以便下次应用启动复用。 */
@@ -500,9 +511,34 @@ export class DockerSandboxBackend extends BaseSandbox {
     await this.containerReadyPromise;
   }
 
-  private toWorkspaceVirtualPath(containerPath: string): string {
-    const relativePath = containerPath.slice(this.containerWorkdir.length).replace(/^\/+/, '');
-    return '/' + relativePath;
+  /**
+   * 将虚拟工作区路径映射为容器真实路径。
+   * 同时允许已规范的 /workspace/... 路径，方便下载结果被后续调用复用。
+   */
+  private toContainerWorkspacePath(filePath: string): string | null {
+    if (!isSandboxPath(filePath) || filePath.startsWith('//') || filePath.includes('\\')) {
+      return null;
+    }
+
+    const segments = filePath.split('/');
+    if (segments.some(segment => segment === '..')) {
+      return null;
+    }
+
+    const normalizedPath = path.posix.normalize(filePath);
+    if (normalizedPath === '/' || normalizedPath === '.') {
+      return null;
+    }
+
+    const containerPath = normalizedPath === this.containerWorkdir || normalizedPath.startsWith(`${this.containerWorkdir}/`)
+      ? normalizedPath
+      : path.posix.join(this.containerWorkdir, normalizedPath.slice(1));
+    const relativePath = path.posix.relative(this.containerWorkdir, containerPath);
+    if (!relativePath || relativePath.startsWith('../') || path.posix.isAbsolute(relativePath)) {
+      return null;
+    }
+
+    return containerPath;
   }
 
   private async createContainer(): Promise<void> {

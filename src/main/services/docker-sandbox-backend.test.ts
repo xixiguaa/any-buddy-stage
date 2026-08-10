@@ -36,6 +36,48 @@ test('local docker passes the upload script as one Docker argument', () => {
   ]);
 });
 
+test('virtual workspace paths resolve inside the Docker workspace', () => {
+  const backend = new DockerSandboxBackend();
+  const backendState = backend as any;
+
+  assert.equal(
+    backendState.toContainerWorkspacePath('/孙悟空大闹天宫剧本.md'),
+    '/workspace/孙悟空大闹天宫剧本.md',
+  );
+  assert.equal(
+    backendState.toContainerWorkspacePath('/workspace/孙悟空大闹天宫剧本.md'),
+    '/workspace/孙悟空大闹天宫剧本.md',
+  );
+  assert.equal(backendState.toContainerWorkspacePath('/../escape.md'), null);
+  assert.equal(backendState.toContainerWorkspacePath('//escape.md'), null);
+});
+
+test('uploadFiles maps virtual paths to the Docker workspace before transfer', async () => {
+  const backend = new DockerSandboxBackend();
+  const backendState = backend as any;
+  const inputChunks: string[] = [];
+  backendState.ensureContainer = async () => {};
+  backendState.runDocker = async (_args: string[], writeInput?: (stream: any) => Promise<void>) => {
+    await writeInput?.({
+      destroyed: false,
+      write(chunk: string) {
+        inputChunks.push(chunk);
+        return true;
+      },
+    });
+    const encodedPath = inputChunks[0].split('|')[0];
+    return { stdout: 'OK|' + encodedPath + '\n', stderr: '', exitCode: 0, truncated: false };
+  };
+
+  const response = await backend.uploadFiles([
+    ['/孙悟空大闹天宫剧本.md', new Uint8Array(Buffer.from('剧本内容'))],
+  ]);
+
+  const [encodedPath] = inputChunks[0].split('|');
+  assert.equal(Buffer.from(encodedPath, 'base64').toString(), '/workspace/孙悟空大闹天宫剧本.md');
+  assert.deepEqual(response, [{ path: '/孙悟空大闹天宫剧本.md', error: null }]);
+});
+
 test('global sandbox reuses the fixed stopped container and only stops it on close', async () => {
   const backend = new DockerSandboxBackend({ sandboxId: 'global' });
   const backendState = backend as any;
@@ -119,7 +161,7 @@ test('resetWorkspace clears only the container workspace contents', async () => 
   ]]);
 });
 
-test('downloadWorkspaceFiles continues after an individual transfer failure', async () => {
+test('downloadWorkspaceFiles returns Docker workspace paths and continues after an individual transfer failure', async () => {
   const backend = new DockerSandboxBackend({ sandboxId: 'global' });
   const backendState = backend as any;
   const downloadPath = (filePath: string) => Buffer.from(filePath).toString('base64');
@@ -162,17 +204,17 @@ test('downloadWorkspaceFiles continues after an individual transfer failure', as
 
   assert.equal(downloadAttempts, 3);
   assert.deepEqual(files[0], {
-    path: '/deliverables/ok.txt',
+    path: '/workspace/deliverables/ok.txt',
     content: new Uint8Array(Buffer.from('ok')),
     error: null,
   });
   assert.deepEqual(files[1], {
-    path: '/deliverables/too-large.bin',
+    path: '/workspace/deliverables/too-large.bin',
     content: null,
     error: 'invalid_path',
   });
   assert.deepEqual(files[2], {
-    path: '/src/result.ts',
+    path: '/workspace/src/result.ts',
     content: new Uint8Array(Buffer.from('export const result = true')),
     error: null,
   });
@@ -208,7 +250,7 @@ test('downloadWorkspaceFiles retains the total transfer limit across individual 
 
   assert.equal(downloadAttempts, 2);
   assert.equal(files[0].error, null);
-  assert.equal(files[1].path, '/two.txt');
+  assert.equal(files[1].path, '/workspace/two.txt');
   assert.equal(files[1].content, null);
   assert.equal(files[1].error, 'invalid_path');
 });

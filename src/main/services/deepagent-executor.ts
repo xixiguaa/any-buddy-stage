@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AppService } from './app-service.js';
 import type { AgentExecutor, ExecuteAgentParams } from './agent-executor.js';
 import { OpenAIModelService } from './openai-model-service.js';
-import { isAllowedArtifactFile, DockerSandboxBackend } from './docker-sandbox-backend.js';
+import { DOCKER_SANDBOX_WORKDIR, isAllowedArtifactFile, DockerSandboxBackend } from './docker-sandbox-backend.js';
 import type { ModelMessage, ResolvedModelConfig, ToolDefinition, ToolExecutionResult } from './agent-runtime-types.js';
 import { AgentApprovalPendingError, ModelApiModeMismatchError } from './agent-runtime-types.js';
 
@@ -301,16 +301,19 @@ async function collectSandboxArtifactFiles(backend: SandboxArtifactBackend) {
   return downloaded.flatMap(item => {
     if (item.error || item.content === null || item.content === undefined) return [];
 
-    const virtualPath = item.path.startsWith('/') ? item.path : `/${item.path}`;
-    if (virtualPath.startsWith('/.system-skill-cache')) return [];
+    // downloadWorkspaceFiles 返回 Docker 真实路径；仅接受工作目录内的文件，避免越界写回宿主机。
+    const containerPath = path.posix.normalize(item.path.replace(/\\/g, '/'));
+    const relativePath = path.posix.relative(DOCKER_SANDBOX_WORKDIR, containerPath);
+    if (!relativePath || relativePath.startsWith('../') || path.posix.isAbsolute(relativePath)) return [];
 
-    const relativePath = virtualPath.slice(1);
+    const virtualPath = `/${relativePath}`;
+    if (virtualPath.startsWith('/.system-skill-cache')) return [];
     if (!relativePath || !isAllowedArtifactFile(relativePath)) return [];
 
     const content = typeof item.content === 'string'
       ? new TextEncoder().encode(item.content)
       : item.content;
-    return [{ virtualPath, relativePath, content }];
+    return [{ containerPath, virtualPath, relativePath, content }];
   });
 }
 
@@ -787,7 +790,8 @@ export class DeepAgentExecutor implements AgentExecutor {
         '【文件生成规范（必须严格遵守）】：',
         '1. 当前运行位于全局共享的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
         '2. 沙箱运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
-        '3. 工具成功后可告知用户沙箱内的输出路径，应用完成同步后该路径会出现在工作区。',
+        '3. Shell 当前工作目录为 /workspace。创建产物时必须使用相对路径（如 deliverables/report.md）或 /workspace/...；禁止使用 /文件名 作为 Shell 绝对路径。',
+        '4. 工具成功后可告知用户 Docker 中的真实输出路径 /workspace/...；应用完成同步后，该文件会出现在物理工作区的对应相对路径。',
       ].join('\n')
       : [
         '---',
