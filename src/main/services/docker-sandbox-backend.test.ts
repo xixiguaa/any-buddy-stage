@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { isAllowedArtifactFile, DockerSandboxBackend, resolveContainerWorkspacePath } from './docker-sandbox-backend.js';
+import {
+  isAllowedArtifactFile,
+  DockerSandboxBackend,
+  resolveContainerWorkspacePath,
+  resolveDockerWorkspaceDirectoryName,
+} from './docker-sandbox-backend.js';
 
 test('artifact export excludes dependencies and package manager files', () => {
   assert.equal(isAllowedArtifactFile('node_modules/example/package.json'), false);
@@ -72,6 +77,64 @@ test('每个工作区使用与名称一致的 Docker 文件夹', () => {
     'pwd',
   ]);
   assert.throws(() => resolveContainerWorkspacePath('../other'));
+});
+
+test('同名物理工作区使用 workspace id 哈希生成不同 Docker 文件夹', () => {
+  const firstDirectory = resolveDockerWorkspaceDirectoryName('同名剧本', 'workspace-first-id');
+  const secondDirectory = resolveDockerWorkspaceDirectoryName('同名剧本', 'workspace-second-id');
+
+  assert.match(firstDirectory, /^同名剧本--[a-f0-9]{10}$/);
+  assert.match(secondDirectory, /^同名剧本--[a-f0-9]{10}$/);
+  assert.notEqual(firstDirectory, secondDirectory);
+  assert.equal(
+    resolveContainerWorkspacePath('同名剧本', 'workspace-first-id'),
+    `/workspace/${firstDirectory}`,
+  );
+});
+
+test('工作区兼容旧 /workspace 路径并统一为虚拟路径', () => {
+  const backend = new DockerSandboxBackend({
+    workspaceName: '武松打虎剧本',
+    workspaceId: 'workspace-path-normalization',
+  });
+  const backendState = backend as any;
+  const workspaceRoot = backend.getContainerWorkspaceRoot();
+
+  assert.equal(backend.normalizeWorkspaceVirtualPath('/workspace/剧本.md'), '/剧本.md');
+  assert.equal(backend.normalizeWorkspaceVirtualPath('/剧本.md'), '/剧本.md');
+  assert.equal(
+    backendState.toContainerWorkspacePath('/workspace/剧本.md'),
+    `${workspaceRoot}/剧本.md`,
+  );
+});
+
+test('Shell 命令兼容旧工作区路径且允许工具使用临时绝对路径', () => {
+  const backend = new DockerSandboxBackend({
+    workspaceName: '武松打虎剧本',
+    workspaceId: 'workspace-shell-boundary',
+  });
+  const backendState = backend as any;
+  const workspaceRoot = backend.getContainerWorkspaceRoot();
+
+  assert.doesNotThrow(() => backendState.normalizeShellCommand('printf ok > deliverables/result.md'));
+  assert.doesNotThrow(() => backendState.normalizeShellCommand(`cat '${workspaceRoot}/input.md'`));
+  assert.equal(
+    backendState.normalizeShellCommand('cat /workspace/shared.md'),
+    `cat ${workspaceRoot}/shared.md`,
+  );
+  assert.equal(
+    backendState.normalizeShellCommand('printf temp > /tmp/shared.md'),
+    'printf temp > /tmp/shared.md',
+  );
+
+  const spacedBackend = new DockerSandboxBackend({
+    workspaceName: '带 空格的剧本',
+    workspaceId: 'workspace-with-spaces',
+  });
+  const spacedBackendState = spacedBackend as any;
+  assert.doesNotThrow(() => spacedBackendState.normalizeShellCommand(
+    `cat '${spacedBackend.getContainerWorkspaceRoot()}/input file.md'`,
+  ));
 });
 
 test('uploadFiles maps virtual paths to the Docker workspace before transfer', async () => {
@@ -181,6 +244,33 @@ test('resetWorkspace clears only the container workspace contents', async () => 
     'sh',
     '-lc',
     'find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +',
+  ]]);
+});
+
+test('removeWorkspaceDirectory removes only the selected Docker workspace directory', async () => {
+  const backend = new DockerSandboxBackend({ workspaceName: 'retained-local-workspace' });
+  const backendState = backend as any;
+  const dockerCalls: string[][] = [];
+  backendState.containerId = 'sandbox-container';
+  backendState.containerReadyPromise = Promise.resolve();
+  backendState.executor = {
+    async runDocker(args: string[]) {
+      dockerCalls.push(args);
+      return { stdout: '', stderr: '', exitCode: 0, truncated: false };
+    },
+    async close() {},
+  };
+
+  await backend.removeWorkspaceDirectory();
+
+  assert.deepEqual(dockerCalls, [[
+    'exec',
+    '-w',
+    '/workspace',
+    'sandbox-container',
+    'sh',
+    '-lc',
+    "rm -rf -- '/workspace/retained-local-workspace'",
   ]]);
 });
 

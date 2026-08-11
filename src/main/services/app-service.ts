@@ -9,6 +9,7 @@ import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
 import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js'
 import { OpenAIModelService } from './openai-model-service.js'
+import { DockerSandboxBackend } from './docker-sandbox-backend.js'
 import { ChatOpenAI } from '@langchain/openai'
 import type {
   AgentEvent,
@@ -60,7 +61,7 @@ const defaultMcpConfigRaw = JSON.stringify({ mcpServers: {} }, null, 2)
 const STREAM_EVENT_FLUSH_MS = 50
 
 /** 运行结束时需要保留的非最终流式消息段。 */
-type RuntimeIntermediateMessage = Pick<Message, 'content' | 'metadata'>
+type RuntimeIntermediateMessage = Pick<Message, 'content' | 'metadata' | 'createdAt'>
 
 /**
  * 判断事件是否为流式生成中的 Agent 助手消息事件。
@@ -1129,19 +1130,25 @@ ${initialPrompt.slice(0, 1000)}
     return workspace
   }
 
-  /** 归档工作区；全局 Docker 沙箱不随单个工作区释放。 */
+  /**
+   * 归档工作区并删除 Docker 中同名的临时目录。
+   * 宿主机工作区和任务关联均保留，以便后续从历史任务继续对话时恢复。
+   */
   async removeWorkspace(workspaceId: string): Promise<void> {
+    const workspace = this.snapshot.workspaces.find(item => item.id === workspaceId)
+    if (!workspace || workspace.isArchived) return
+
+    await DockerSandboxBackend.removeGlobalWorkspaceDirectory(workspace.name, workspace.id)
     await this.mutate(state => {
-      const workspace = state.workspaces.find(item => item.id === workspaceId)
-      if (workspace) {
-        workspace.isArchived = true
-        workspace.updatedAt = nowIso()
+      const target = state.workspaces.find(item => item.id === workspaceId)
+      if (target) {
+        target.isArchived = true
+        target.updatedAt = nowIso()
       }
-      state.taskWorkspaces = state.taskWorkspaces.filter(rel => rel.workspaceId !== workspaceId || rel.role === 'primary')
     })
   }
 
-  /** 恢复任务绑定的归档主工作区记录，不影响全局 Docker 沙箱。 */
+  /** 恢复任务绑定的归档主工作区记录；Docker 目录会在下一轮沙箱运行时按名称自动创建。 */
   async restoreArchivedPrimaryWorkspace(taskId: string): Promise<Workspace | null> {
     const primaryRelation = this.snapshot.taskWorkspaces.find(item => item.taskId === taskId && item.role === 'primary')
     if (!primaryRelation) return null
@@ -1528,7 +1535,7 @@ ${initialPrompt.slice(0, 1000)}
           role: 'assistant' as const,
           content: message.content,
           metadata: message.metadata ? { ...message.metadata } : undefined,
-          createdAt: nowIso(),
+          createdAt: message.createdAt,
         }))
       state.messages.push(...persistedIntermediateMessages)
       assistantMessage = {
@@ -1636,7 +1643,7 @@ ${initialPrompt.slice(0, 1000)}
           role: 'assistant' as const,
           content: message.content,
           metadata: message.metadata ? { ...message.metadata } : undefined,
-          createdAt: nowIso(),
+          createdAt: message.createdAt,
         }))
       state.messages.push(...persistedIntermediateMessages)
 
@@ -2071,6 +2078,7 @@ ${initialPrompt.slice(0, 1000)}
     let updatedTask: Task | null = null
     let statusEvent: AgentEvent | null = null
     let terminalEvent: AgentEvent | null = null
+    let persistedStreamMessages: Message[] = []
 
     await this.mutate(state => {
       const run = state.agentRuns.find(item => item.id === runId)
@@ -2112,6 +2120,43 @@ ${initialPrompt.slice(0, 1000)}
         state.agentEvents.push(terminalEvent)
       }
 
+      if (status === 'cancelled') {
+        const persistedStreamEventIds = new Set(
+          state.messages
+            .map(message => message.metadata?.streamEventId)
+            .filter((streamEventId): streamEventId is string => typeof streamEventId === 'string'),
+        )
+        for (const event of state.agentEvents) {
+          if (
+            event.runId !== runId ||
+            !isStreamingAgentMessageEvent(event) ||
+            persistedStreamEventIds.has(event.id)
+          ) {
+            continue
+          }
+          const content = event.payload.content
+          if (typeof content !== 'string' || content.trim().length === 0) {
+            continue
+          }
+          persistedStreamMessages.push({
+            id: createId('message'),
+            taskId: run.taskId,
+            runId,
+            role: 'assistant',
+            content,
+            metadata: {
+              ...event.payload,
+              source: 'runtime_stream',
+              streamEventId: event.id,
+              streaming: false,
+              final: false,
+            },
+            createdAt: event.createdAt,
+          })
+        }
+        state.messages.push(...persistedStreamMessages)
+      }
+
       updatedRun = { ...run }
       return updatedRun
     })
@@ -2121,6 +2166,10 @@ ${initialPrompt.slice(0, 1000)}
     }
 
     if (taskId) {
+      this.discardPendingStreamEventPatches(runId)
+      for (const streamMessage of persistedStreamMessages) {
+        this.emitTaskRuntimePatch(taskId, { message: streamMessage })
+      }
       if (updatedTask) {
         this.emitTaskRuntimePatch(taskId, { task: updatedTask })
       }

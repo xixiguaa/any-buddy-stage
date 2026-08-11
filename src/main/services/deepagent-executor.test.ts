@@ -5,9 +5,93 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   captureSandboxArtifactSnapshot,
+  DeepAgentExecutor,
+  describeSkillConfigurationIssue,
   exportSandboxOutputsToWorkspace,
+  isSuccessfulVideoGenerationResult,
+  normalizeSandboxOutputPaths,
+  requiresVideoGeneration,
   stripThinkingContent,
 } from './deepagent-executor.js';
+
+test('video generation requires a selected video skill and an execution intent', () => {
+  assert.equal(requiresVideoGeneration('帮我生成一个视频', ['jimeng-video']), true);
+  assert.equal(requiresVideoGeneration('帮我分析这个视频', ['jimeng-video']), false);
+  assert.equal(requiresVideoGeneration('帮我生成一个视频', []), false);
+});
+
+test('video generation evidence ignores preparation tools and accepts platform task ids', () => {
+  assert.equal(isSuccessfulVideoGenerationResult('read_file', 'jimeng skill instructions'), false);
+  assert.equal(isSuccessfulVideoGenerationResult('execute', 'HTTP 200\n{"id":"cgt-20260811143206-2xwjz"}'), true);
+  assert.equal(isSuccessfulVideoGenerationResult('execute', 'HTTP 401\nUnauthorized'), false);
+  assert.equal(isSuccessfulVideoGenerationResult('jimeng_video_generate', '{"status":"running"}'), true);
+});
+
+test('技能配置缺失或格式无效时返回可操作提示', () => {
+  assert.equal(
+    describeSkillConfigurationIssue('MINIMAX_API_KEY=NOT_SET'),
+    '检测到技能缺少必要配置：MINIMAX_API_KEY。请按该技能 SKILL.md 的说明补充环境变量或凭证后，再重新发起任务。',
+  );
+  assert.match(
+    describeSkillConfigurationIssue("Skill 'MiniMax Image Generation' in /SKILL.md does not follow Agent Skills specification: name must be lowercase") ?? '',
+    /SKILL\.md 配置无效/,
+  );
+  assert.equal(describeSkillConfigurationIssue('任务已完成，生成 2 个文件。'), null);
+});
+
+test('技能缺少配置时正常结束运行，避免对话持续卡在执行中', async () => {
+  const completedMessages: string[] = [];
+  const appService = {
+    listModelConfigs: () => [],
+    getTaskContext: () => ({ messages: [] }),
+    listTaskWorkspaces: () => [],
+    completeRuntimeRun: async (_runId: string, content: string) => {
+      completedMessages.push(content);
+    },
+  };
+  const executor = new DeepAgentExecutor(appService as never, {
+    modelService: {
+      resolveModelConfig: () => ({
+        apiKey: 'test-key',
+        modelName: 'test-model',
+        baseUrl: 'https://example.test',
+      }),
+    },
+  } as never);
+  (executor as any).createBackend = async () => ({
+    backend: {},
+    isSandbox: false,
+    initialFiles: {},
+    disposeBackend: false,
+  });
+  (executor as any).resolveSkillSources = async () => {
+    throw new Error('MINIMAX_API_KEY=NOT_SET');
+  };
+
+  const handled = await executor.execute({
+    context: {
+      task: {
+        id: 'task-1',
+        modelId: 'model-1',
+        skillIds: ['minimax-image-generation'],
+        mode: 'ask',
+      },
+      run: { id: 'run-1' },
+    } as never,
+    signal: new AbortController().signal,
+    systemPrompt: '',
+    activeExpert: null,
+    activeExpertTeam: null,
+    tools: [],
+    toolExecutionContext: {} as never,
+    assistantMetadata: {},
+  });
+
+  assert.equal(handled, true);
+  assert.deepEqual(completedMessages, [
+    '检测到技能缺少必要配置：MINIMAX_API_KEY。请按该技能 SKILL.md 的说明补充环境变量或凭证后，再重新发起任务。',
+  ]);
+});
 
 test('single artifact host write failure does not block later exports', async (t) => {
   const workspacePath = await mkdtemp(path.join(os.tmpdir(), 'culclaw-artifact-export-'));
@@ -68,6 +152,24 @@ test('stripThinkingContent handles multiline and attributed think blocks', () =>
   assert.equal(
     stripThinkingContent('<think>docx 包安装成功。现在我写一个 Node.js 脚本来生成 docx 文件。\n\n让我准备 GPT5.5 产品调研文档</think>\n\ndocx 包安装成功,现在编写生成脚本。'),
     'docx 包安装成功,现在编写生成脚本。',
+  );
+});
+
+test('Docker 产物路径会映射为真实本地工作区路径', () => {
+  const workspacePath = path.join(os.tmpdir(), 'culclaw-workspace', '2026-08-11 16-56-15');
+  const localPath = path.join(path.resolve(workspacePath), 'deliverables', 'xxxx.md');
+
+  assert.equal(
+    normalizeSandboxOutputPaths(
+      '产物已保存到 /workspace/2026-08-11-16-56-15--abc123/deliverables/xxxx.md',
+      workspacePath,
+      '/workspace/2026-08-11-16-56-15--abc123',
+    ),
+    `产物已保存到 ${localPath}`,
+  );
+  assert.equal(
+    normalizeSandboxOutputPaths('旧路径：/workspace/deliverables/xxxx.md', workspacePath),
+    `旧路径：${localPath}`,
   );
 });
 

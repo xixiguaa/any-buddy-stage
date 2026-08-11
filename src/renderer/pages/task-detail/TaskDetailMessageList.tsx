@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import type { Message } from '../../../shared/types.js'
 import { useAppStore } from '../../stores/app-store.js'
-import { getStreamingEntriesForTask } from '../../stores/task-runtime-view.js'
+import { getStreamingEntriesForTask, sortTimelineMessages } from '../../stores/task-runtime-view.js'
 import { useTaskDetail } from './TaskDetailContext.js'
 import { renderMarkdown } from '../../utils/markdown.js'
 
@@ -663,9 +663,15 @@ const MessageItem = memo(function MessageItem({
 })
 
 /**
- * 流式消息独立渲染通道组件
+ * 将持久化消息与流式消息按原始时间合并，保持工具事件和反馈的真实顺序。
  */
-const StreamingMessageList = memo(function StreamingMessageList() {
+const UnifiedMessageTimeline = memo(function UnifiedMessageTimeline({
+  messages,
+  lastAssistantMessageIds,
+}: {
+  messages: Message[]
+  lastAssistantMessageIds: Set<string>
+}) {
   const { taskId, activeExpert, activeExpertTeam, scrollContainerRef, shouldAutoScrollRef } = useTaskDetail()
 
   const streamingDataKey = useAppStore((state) => {
@@ -674,6 +680,7 @@ const StreamingMessageList = memo(function StreamingMessageList() {
       state.streamingMessageIdsByRun,
       state.agentRuns,
       taskId,
+      state.streamingCreatedAtByMessageId,
     ).map(entry => `${entry.id}:${entry.content.length}`).join(';')
   })
 
@@ -684,8 +691,26 @@ const StreamingMessageList = memo(function StreamingMessageList() {
       state.streamingMessageIdsByRun,
       state.agentRuns,
       taskId,
+      state.streamingCreatedAtByMessageId,
     )
   }, [streamingDataKey, taskId])
+
+  const timelineMessages = useMemo(() => {
+    const streamingMessages: Message[] = streamingEntries.map(entry => ({
+      id: entry.id,
+      taskId: entry.taskId,
+      runId: entry.runId,
+      role: 'assistant',
+      content: entry.content,
+      metadata: {
+        streaming: true,
+        expertName: activeExpert?.name,
+        expertTeamName: activeExpertTeam?.name,
+      },
+      createdAt: entry.createdAt,
+    }))
+    return sortTimelineMessages([...messages, ...streamingMessages])
+  }, [activeExpert?.name, activeExpertTeam?.name, messages, streamingEntries])
 
   useEffect(() => {
     if (streamingEntries.length === 0) return
@@ -699,28 +724,16 @@ const StreamingMessageList = memo(function StreamingMessageList() {
     return () => window.cancelAnimationFrame(raf)
   }, [streamingDataKey, scrollContainerRef, shouldAutoScrollRef, streamingEntries.length])
 
-  if (streamingEntries.length === 0) return null
-
   return (
     <>
-      {streamingEntries.map((entry, index) => (
+      {timelineMessages.map((message, index) => (
         <MessageItem
-          key={entry.id}
-          message={{
-            id: entry.id,
-            taskId: entry.taskId,
-            runId: entry.runId,
-            role: 'assistant',
-            content: entry.content,
-            metadata: {
-              streaming: true,
-              expertName: activeExpert?.name,
-              expertTeamName: activeExpertTeam?.name,
-            },
-            createdAt: new Date().toISOString(),
-          }}
-          streamingContent={entry.content}
-          isLastInRun={index === streamingEntries.length - 1}
+          key={message.id}
+          message={message}
+          streamingContent={message.metadata?.streaming ? message.content : undefined}
+          isLastInRun={lastAssistantMessageIds.has(message.id) || (
+            message.metadata?.streaming === true && index === timelineMessages.length - 1
+          )}
         />
       ))}
     </>
@@ -765,16 +778,6 @@ export default function TaskDetailMessageList() {
     return ids
   }, [messages])
 
-  const renderedMessages = useMemo(() => {
-    return messages.map((message) => (
-      <MessageItem
-        key={message.id}
-        message={message}
-        isLastInRun={lastAssistantMessageIds.has(message.id)}
-      />
-    ))
-  }, [messages, lastAssistantMessageIds])
-
   return (
     <div
       ref={scrollContainerRef}
@@ -790,8 +793,10 @@ export default function TaskDetailMessageList() {
         gap: '16px',
       }}
     >
-      {renderedMessages}
-      <StreamingMessageList />
+      <UnifiedMessageTimeline
+        messages={messages}
+        lastAssistantMessageIds={lastAssistantMessageIds}
+      />
 
       {isAgentWorking && (
         <div

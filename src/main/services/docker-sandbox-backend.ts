@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { Writable } from 'node:stream';
 import {
@@ -84,6 +84,7 @@ export type DockerSandboxBackendOptions = {
   dockerImageType?: DockerImageType;
   sandboxId?: string;
   workspaceName?: string;
+  workspaceId?: string;
 };
 
 type UploadCandidate = {
@@ -119,10 +120,20 @@ function resolveDockerImage(imageType: DockerImageType | undefined, image: strin
   return DEFAULT_DOCKER_IMAGE;
 }
 
-/** 将工作区名称转换为容器内唯一且可预测的文件夹路径。 */
-export function resolveContainerWorkspacePath(workspaceName: string): string {
-  const folderName = workspaceName.trim();
-  if (!folderName || folderName === '.' || folderName === '..' || /[\\/\0]/.test(folderName)) {
+/** 使用稳定短哈希区分宿主机上名称相同的不同工作区。 */
+export function resolveDockerWorkspaceDirectoryName(workspaceName: string, workspaceId?: string): string {
+  const normalizedName = workspaceName.trim();
+  const normalizedId = workspaceId?.trim();
+  return normalizedId
+    ? `${normalizedName}--${createHash('sha256').update(normalizedId).digest('hex').slice(0, 10)}`
+    : normalizedName;
+}
+
+/** 将工作区身份转换为容器内唯一且可预测的文件夹路径。 */
+export function resolveContainerWorkspacePath(workspaceName: string, workspaceId?: string): string {
+  const normalizedName = workspaceName.trim();
+  const folderName = resolveDockerWorkspaceDirectoryName(workspaceName, workspaceId);
+  if (!normalizedName || normalizedName === '.' || normalizedName === '..' || /[\\/\0]/.test(normalizedName)) {
     throw new Error('工作区名称不能用于 Docker 文件夹：' + workspaceName);
   }
   return path.posix.join(DOCKER_SANDBOX_WORKDIR, folderName);
@@ -167,7 +178,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       ? GLOBAL_CONTAINER_NAME
       : 'culclaw-sandbox-' + randomUUID();
     if (options.workspaceName) {
-      this.setWorkspaceName(options.workspaceName);
+      this.setWorkspaceName(options.workspaceName, options.workspaceId);
     }
     this.executor = new LocalCommandExecutor({
       id: this.id,
@@ -177,7 +188,7 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   /** 获取全局沙箱的独占租约，所有任务按开始顺序串行进入容器。 */
-  static async acquireGlobalSandbox(workspaceName?: string) {
+  static async acquireGlobalSandbox(workspaceName?: string, workspaceId?: string) {
     await DockerSandboxBackend.pendingGlobalSandboxClose?.catch(() => undefined);
 
     const entry = DockerSandboxBackend.getOrCreateGlobalSandboxEntry();
@@ -201,7 +212,7 @@ export class DockerSandboxBackend extends BaseSandbox {
       await previousExecution.catch(() => undefined);
       const backend = await entry.backendPromise;
       if (workspaceName) {
-        await backend.useWorkspace(workspaceName);
+        await backend.useWorkspace(workspaceName, workspaceId);
       }
       let released = false;
 
@@ -224,6 +235,19 @@ export class DockerSandboxBackend extends BaseSandbox {
   static async prewarmGlobalSandbox(): Promise<void> {
     const lease = await DockerSandboxBackend.acquireGlobalSandbox();
     await lease.release();
+  }
+
+  /**
+   * 删除全局 Docker 沙箱中指定工作区的临时目录。
+   * 通过全局租约串行执行，避免与正在运行的任务读写同一容器目录发生竞争。
+   */
+  static async removeGlobalWorkspaceDirectory(workspaceName: string, workspaceId?: string): Promise<void> {
+    const lease = await DockerSandboxBackend.acquireGlobalSandbox(workspaceName, workspaceId);
+    try {
+      await lease.backend.removeWorkspaceDirectory();
+    } finally {
+      await lease.release();
+    }
   }
 
   /** 应用退出时等待运行中的租约结束，再停止唯一的本地 Docker 容器以供下次启动复用。 */
@@ -287,8 +311,8 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   /** 在已串行获取的全局租约内切换到指定工作区目录。 */
-  async useWorkspace(workspaceName: string): Promise<void> {
-    this.setWorkspaceName(workspaceName);
+  async useWorkspace(workspaceName: string, workspaceId?: string): Promise<void> {
+    this.setWorkspaceName(workspaceName, workspaceId);
     await this.ensureContainer();
     await this.ensureWorkspaceDirectory();
   }
@@ -312,10 +336,26 @@ export class DockerSandboxBackend extends BaseSandbox {
     }
   }
 
+  /** 删除当前 Docker 工作区目录，不影响宿主机上的物理工作区。 */
+  async removeWorkspaceDirectory(): Promise<void> {
+    if (!this.workspaceName) {
+      throw new Error('未指定需要删除的 Docker 工作区。');
+    }
+
+    await this.ensureContainer();
+    const result = await this.runDocker(
+      this.buildDockerExecArgsAt(DOCKER_SANDBOX_WORKDIR, 'rm -rf -- ' + shellQuote(this.containerWorkdir)),
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(this.formatCommandFailure(result, '删除 Docker 工作区目录'));
+    }
+  }
+
   /** 在本地 Docker 容器内执行命令。 */
   async execute(command: string): Promise<ExecuteResponse> {
     await this.ensureContainer();
-    const result = await this.runDocker(this.buildDockerExecArgs(command));
+    const normalizedCommand = this.normalizeShellCommand(command);
+    const result = await this.runDocker(this.buildDockerExecArgs(normalizedCommand));
     const output = result.stdout && result.stderr
       ? result.stdout + '\n' + result.stderr
       : result.stdout || result.stderr;
@@ -547,11 +587,8 @@ export class DockerSandboxBackend extends BaseSandbox {
     await this.containerReadyPromise;
   }
 
-  /**
-   * 将虚拟工作区路径映射为容器真实路径。
-   * 同时允许已规范的 /workspace/... 路径，方便下载结果被后续调用复用。
-   */
-  private toContainerWorkspacePath(filePath: string): string | null {
+  /** 将文件工具路径统一为 `/相对路径`，并兼容旧的 `/workspace/相对路径`。 */
+  normalizeWorkspaceVirtualPath(filePath: string): string | null {
     if (!isSandboxPath(filePath) || filePath.startsWith('//') || filePath.includes('\\')) {
       return null;
     }
@@ -566,15 +603,50 @@ export class DockerSandboxBackend extends BaseSandbox {
       return null;
     }
 
-    const containerPath = normalizedPath === this.containerWorkdir || normalizedPath.startsWith(`${this.containerWorkdir}/`)
-      ? normalizedPath
-      : path.posix.join(this.containerWorkdir, normalizedPath.slice(1));
-    const relativePath = path.posix.relative(this.containerWorkdir, containerPath);
+    let relativePath: string;
+    if (normalizedPath.startsWith(`${this.containerWorkdir}/`)) {
+      relativePath = path.posix.relative(this.containerWorkdir, normalizedPath);
+    } else if (normalizedPath.startsWith(`${DOCKER_SANDBOX_WORKDIR}/`)) {
+      // 兼容旧提示词生成的 `/workspace/文件名`，避免落到当前目录下的 workspace 子目录。
+      relativePath = normalizedPath.slice(DOCKER_SANDBOX_WORKDIR.length + 1);
+    } else {
+      relativePath = normalizedPath.slice(1);
+    }
+
+    relativePath = path.posix.normalize(relativePath);
     if (!relativePath || relativePath.startsWith('../') || path.posix.isAbsolute(relativePath)) {
       return null;
     }
 
-    return containerPath;
+    return `/${relativePath}`;
+  }
+
+  /** 将虚拟工作区路径映射为当前工作区的 Docker 真实路径。 */
+  private toContainerWorkspacePath(filePath: string): string | null {
+    const virtualPath = this.normalizeWorkspaceVirtualPath(filePath);
+    return virtualPath ? path.posix.join(this.containerWorkdir, virtualPath.slice(1)) : null;
+  }
+
+  /** 兼容旧的 `/workspace/...` Shell 路径；Shell 命令不再限制绝对路径访问。 */
+  private normalizeShellCommand(command: string): string {
+    if (!this.workspaceName) return command;
+
+    // 旧模型可能把共享根目录当作当前目录；将其映射到当前工作区，而不是直接报错。
+    let normalizedCommand = command;
+    const legacyRoot = `${DOCKER_SANDBOX_WORKDIR}/`;
+    let searchFrom = 0;
+    while (true) {
+      const index = normalizedCommand.indexOf(legacyRoot, searchFrom);
+      if (index < 0) break;
+      if (normalizedCommand.startsWith(`${this.containerWorkdir}/`, index)) {
+        searchFrom = index + this.containerWorkdir.length + 1;
+        continue;
+      }
+      normalizedCommand = normalizedCommand.slice(0, index) + `${this.containerWorkdir}/` + normalizedCommand.slice(index + legacyRoot.length);
+      searchFrom = index + this.containerWorkdir.length + 1;
+    }
+
+    return normalizedCommand;
   }
 
   /** 确保当前工作区目录已创建，避免首次租约执行时工作目录不存在。 */
@@ -587,9 +659,9 @@ export class DockerSandboxBackend extends BaseSandbox {
     }
   }
 
-  private setWorkspaceName(workspaceName: string): void {
+  private setWorkspaceName(workspaceName: string, workspaceId?: string): void {
     this.workspaceName = workspaceName.trim();
-    this.containerWorkdir = resolveContainerWorkspacePath(this.workspaceName);
+    this.containerWorkdir = resolveContainerWorkspacePath(this.workspaceName, workspaceId);
   }
 
   private async createContainer(): Promise<void> {

@@ -64,6 +64,7 @@ type AppStoreState = {
   taskWorkspaces: TaskWorkspaceContext[]
   messages: Message[]
   streamingContentByMessageId: Record<string, string>
+  streamingCreatedAtByMessageId: Record<string, string>
   streamingMessageIdsByRun: Record<string, string[]>
   drafts: Record<string, TaskDraft>
   workspaces: WorkspaceSummary[]
@@ -212,6 +213,7 @@ function hasPersistedStreamReplacementsForRun(
 
 function removeStreamingMessage(
   streamingContent: Record<string, string>,
+  streamingCreatedAt: Record<string, string>,
   streamingIdsByRun: Record<string, string[]>,
   runId: string,
   streamEventId: string,
@@ -221,11 +223,13 @@ function removeStreamingMessage(
   if (!hasContent && !runStreamIds.includes(streamEventId)) {
     return {
       nextStreamingContent: streamingContent,
+      nextStreamingCreatedAt: streamingCreatedAt,
       nextStreamingIdsByRun: streamingIdsByRun,
     }
   }
 
   const { [streamEventId]: _omit, ...nextStreamingContent } = streamingContent
+  const { [streamEventId]: _omitCreatedAt, ...nextStreamingCreatedAt } = streamingCreatedAt
   const nextRunStreamIds = runStreamIds.filter(id => id !== streamEventId)
   const nextStreamingIdsByRun = nextRunStreamIds.length > 0
     ? { ...streamingIdsByRun, [runId]: nextRunStreamIds }
@@ -234,25 +238,29 @@ function removeStreamingMessage(
         return rest
       })()
 
-  return { nextStreamingContent, nextStreamingIdsByRun }
+  return { nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun }
 }
 
 function removeStreamingRun(
   streamingContent: Record<string, string>,
+  streamingCreatedAt: Record<string, string>,
   streamingIdsByRun: Record<string, string[]>,
   runId: string,
 ) {
   const ids = streamingIdsByRun[runId] ?? []
   let nextStreamingContent = streamingContent
+  let nextStreamingCreatedAt = streamingCreatedAt
   if (ids.length > 0) {
     nextStreamingContent = { ...streamingContent }
+    nextStreamingCreatedAt = { ...streamingCreatedAt }
     for (const id of ids) {
       delete nextStreamingContent[id]
+      delete nextStreamingCreatedAt[id]
     }
   }
 
   const { [runId]: _omit, ...nextStreamingIdsByRun } = streamingIdsByRun
-  return { nextStreamingContent, nextStreamingIdsByRun }
+  return { nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun }
 }
 
 /**
@@ -260,6 +268,7 @@ function removeStreamingRun(
  */
 function buildStreamingState(messages: Message[], events: AgentEvent[]) {
   const streamingContentByMessageId: Record<string, string> = {}
+  const streamingCreatedAtByMessageId: Record<string, string> = {}
   const streamingMessageIdsByRun: Record<string, string[]> = {}
 
   for (const event of events) {
@@ -271,6 +280,7 @@ function buildStreamingState(messages: Message[], events: AgentEvent[]) {
       continue
     }
     streamingContentByMessageId[event.id] = content
+    streamingCreatedAtByMessageId[event.id] = event.createdAt
     const existingIds = streamingMessageIdsByRun[event.runId] ?? []
     if (!existingIds.includes(event.id)) {
       streamingMessageIdsByRun[event.runId] = [...existingIds, event.id]
@@ -282,13 +292,14 @@ function buildStreamingState(messages: Message[], events: AgentEvent[]) {
       continue
     }
     streamingContentByMessageId[message.id] = message.content
+    streamingCreatedAtByMessageId[message.id] = message.createdAt
     const existingIds = streamingMessageIdsByRun[message.runId] ?? []
     if (!existingIds.includes(message.id)) {
       streamingMessageIdsByRun[message.runId] = [...existingIds, message.id]
     }
   }
 
-  return { streamingContentByMessageId, streamingMessageIdsByRun }
+  return { streamingContentByMessageId, streamingCreatedAtByMessageId, streamingMessageIdsByRun }
 }
 
 function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: TaskRuntimePayload) {
@@ -300,7 +311,7 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     const messages = buildVisibleMessages(payload.messages, payload.events)
     const activeRun = payload.runs.find(run => run.id === state.taskDetail?.lastRunId) ?? payload.runs[0]
     // snapshot 通常是初始全量，同时从流式事件恢复仍未被持久化消息替换的临时态。
-    const { streamingContentByMessageId, streamingMessageIdsByRun } = buildStreamingState(
+    const { streamingContentByMessageId, streamingCreatedAtByMessageId, streamingMessageIdsByRun } = buildStreamingState(
       payload.messages,
       payload.events,
     )
@@ -325,6 +336,7 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
           })
         : state.tasks,
       streamingContentByMessageId,
+      streamingCreatedAtByMessageId,
       streamingMessageIdsByRun,
       taskDetail: state.taskDetail && state.taskDetail.id === taskId
         ? {
@@ -354,6 +366,7 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
 
   let persistedMessages = state.messages.filter(message => !message.metadata?.synthetic)
   let nextStreamingContent = state.streamingContentByMessageId
+  let nextStreamingCreatedAt = state.streamingCreatedAtByMessageId
   let nextStreamingIdsByRun = state.streamingMessageIdsByRun
 
   if (payload.event && isStreamingAgentMessageEvent(payload.event)) {
@@ -364,18 +377,23 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
       hasPersistedFinalAssistantForRun(persistedMessages, runId) &&
       hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, runId)
     ) {
-      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
+      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, runId)
       nextStreamingContent = cleared.nextStreamingContent
+      nextStreamingCreatedAt = cleared.nextStreamingCreatedAt
       nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
     } else if (runId && hasPersistedStreamReplacement(persistedMessages, eventId)) {
-      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, runId, eventId)
+      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, runId, eventId)
       nextStreamingContent = removed.nextStreamingContent
+      nextStreamingCreatedAt = removed.nextStreamingCreatedAt
       nextStreamingIdsByRun = removed.nextStreamingIdsByRun
     } else {
       const streamingContent = payload.event.payload?.content
       if (typeof streamingContent === 'string' && streamingContent.length > 0) {
         if (nextStreamingContent[eventId] !== streamingContent) {
           nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+        }
+        if (!nextStreamingCreatedAt[eventId]) {
+          nextStreamingCreatedAt = { ...nextStreamingCreatedAt, [eventId]: payload.event.createdAt }
         }
         if (runId) {
           const existingIds = nextStreamingIdsByRun[runId] ?? []
@@ -395,8 +413,9 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     const completedRunId = payload.message.runId
     const streamEventId = readStreamEventId(payload.message)
     if (completedRunId && streamEventId) {
-      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, completedRunId, streamEventId)
+      const removed = removeStreamingMessage(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, completedRunId, streamEventId)
       nextStreamingContent = removed.nextStreamingContent
+      nextStreamingCreatedAt = removed.nextStreamingCreatedAt
       nextStreamingIdsByRun = removed.nextStreamingIdsByRun
     }
     if (
@@ -404,8 +423,9 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
       isPersistedFinalAssistantMessage(payload.message, completedRunId) &&
       hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, completedRunId)
     ) {
-      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
+      const cleared = removeStreamingRun(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, completedRunId)
       nextStreamingContent = cleared.nextStreamingContent
+      nextStreamingCreatedAt = cleared.nextStreamingCreatedAt
       nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
     }
   }
@@ -446,6 +466,7 @@ function mergeTaskRuntimePayload(state: AppStoreState, taskId: string, payload: 
     messages: nextMessages,
     tasks: nextTasks,
     streamingContentByMessageId: nextStreamingContent,
+    streamingCreatedAtByMessageId: nextStreamingCreatedAt,
     streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail: nextTaskDetail,
   }
@@ -462,6 +483,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
   let nextApprovals = state.taskApprovals
   let persistedMessages = state.messages.filter(message => !message.metadata?.synthetic)
   let nextStreamingContent = state.streamingContentByMessageId
+  let nextStreamingCreatedAt = state.streamingCreatedAtByMessageId
   let nextStreamingIdsByRun = state.streamingMessageIdsByRun
   let taskDetail = state.taskDetail
   let nextTasks = state.tasks
@@ -493,18 +515,23 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
           hasPersistedFinalAssistantForRun(persistedMessages, runId) &&
           hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, runId)
         ) {
-          const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, runId)
+          const cleared = removeStreamingRun(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, runId)
           nextStreamingContent = cleared.nextStreamingContent
+          nextStreamingCreatedAt = cleared.nextStreamingCreatedAt
           nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
         } else if (runId && hasPersistedStreamReplacement(persistedMessages, eventId)) {
-          const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, runId, eventId)
+          const removed = removeStreamingMessage(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, runId, eventId)
           nextStreamingContent = removed.nextStreamingContent
+          nextStreamingCreatedAt = removed.nextStreamingCreatedAt
           nextStreamingIdsByRun = removed.nextStreamingIdsByRun
         } else {
           const streamingContent = payload.event.payload?.content
           if (typeof streamingContent === 'string' && streamingContent.length > 0) {
             if (nextStreamingContent[eventId] !== streamingContent) {
               nextStreamingContent = { ...nextStreamingContent, [eventId]: streamingContent }
+            }
+            if (!nextStreamingCreatedAt[eventId]) {
+              nextStreamingCreatedAt = { ...nextStreamingCreatedAt, [eventId]: payload.event.createdAt }
             }
             if (runId) {
               const existingIds = nextStreamingIdsByRun[runId] ?? []
@@ -530,8 +557,9 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
       const completedRunId = payload.message.runId
       const streamEventId = readStreamEventId(payload.message)
       if (completedRunId && streamEventId) {
-        const removed = removeStreamingMessage(nextStreamingContent, nextStreamingIdsByRun, completedRunId, streamEventId)
+        const removed = removeStreamingMessage(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, completedRunId, streamEventId)
         nextStreamingContent = removed.nextStreamingContent
+        nextStreamingCreatedAt = removed.nextStreamingCreatedAt
         nextStreamingIdsByRun = removed.nextStreamingIdsByRun
       }
       if (
@@ -539,8 +567,9 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
         isPersistedFinalAssistantMessage(payload.message, completedRunId) &&
         hasPersistedStreamReplacementsForRun(persistedMessages, nextStreamingIdsByRun, completedRunId)
       ) {
-        const cleared = removeStreamingRun(nextStreamingContent, nextStreamingIdsByRun, completedRunId)
+        const cleared = removeStreamingRun(nextStreamingContent, nextStreamingCreatedAt, nextStreamingIdsByRun, completedRunId)
         nextStreamingContent = cleared.nextStreamingContent
+        nextStreamingCreatedAt = cleared.nextStreamingCreatedAt
         nextStreamingIdsByRun = cleared.nextStreamingIdsByRun
       }
     }
@@ -580,6 +609,7 @@ function mergeTaskRuntimePayloads(state: AppStoreState, taskId: string, payloads
     messages: nextMessages,
     tasks: nextTasks,
     streamingContentByMessageId: nextStreamingContent,
+    streamingCreatedAtByMessageId: nextStreamingCreatedAt,
     streamingMessageIdsByRun: nextStreamingIdsByRun,
     taskDetail,
   }
@@ -661,6 +691,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   taskWorkspaces: [],
   messages: [],
   streamingContentByMessageId: {},
+  streamingCreatedAtByMessageId: {},
   streamingMessageIdsByRun: {},
   drafts: {},
   workspaces: [],
@@ -775,6 +806,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         taskEvents: [],
         taskApprovals: [],
         streamingContentByMessageId: {},
+        streamingCreatedAtByMessageId: {},
         streamingMessageIdsByRun: {},
       })
     }
@@ -852,6 +884,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       taskEvents: eventsResult.ok ? eventsResult.data : state.taskEvents,
       taskApprovals: approvalsResult.ok ? approvalsResult.data : state.taskApprovals,
       streamingContentByMessageId: restoredStreamingState?.streamingContentByMessageId ?? state.streamingContentByMessageId,
+      streamingCreatedAtByMessageId: restoredStreamingState?.streamingCreatedAtByMessageId ?? state.streamingCreatedAtByMessageId,
       streamingMessageIdsByRun: restoredStreamingState?.streamingMessageIdsByRun ?? state.streamingMessageIdsByRun,
     }))
     if (taskResult.ok && taskResult.data) {

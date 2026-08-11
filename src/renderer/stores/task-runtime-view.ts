@@ -1,4 +1,11 @@
-import type { AgentRun, Task, TaskSummary } from '../../shared/types.js'
+import type { AgentRun, Message, Task, TaskSummary } from '../../shared/types.js'
+
+/** 按原始事件时间构建稳定消息时间线，同一毫秒使用 ID 保证顺序确定。 */
+export function sortTimelineMessages(messages: Message[]): Message[] {
+  return [...messages].sort((left, right) => (
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+  ))
+}
 
 /**
  * 从主进程返回的 Task 更新任务摘要，避免任意历史 Run 覆盖当前任务状态。
@@ -28,6 +35,7 @@ export type StreamingEntry = {
   runId: string
   taskId: string
   content: string
+  createdAt: string
 }
 
 /**
@@ -38,22 +46,29 @@ export function getStreamingEntriesForTask(
   streamingMessageIdsByRun: Record<string, string[]>,
   agentRuns: AgentRun[],
   taskId?: string,
+  streamingCreatedAtByMessageId: Record<string, string> = {},
 ): StreamingEntry[] {
   if (!taskId) {
     return []
   }
 
-  const runIds = new Set(
+  const runsById = new Map(
     agentRuns
       .filter(run => run.taskId === taskId)
-      .map(run => run.id),
+      .map(run => [run.id, run]),
   )
   const entries: StreamingEntry[] = []
-  for (const runId of runIds) {
+  for (const [runId, run] of runsById) {
     for (const id of streamingMessageIdsByRun[runId] ?? []) {
       const content = streamingContentByMessageId[id]
       if (content !== undefined) {
-        entries.push({ id, runId, taskId, content })
+        entries.push({
+          id,
+          runId,
+          taskId,
+          content,
+          createdAt: streamingCreatedAtByMessageId[id] ?? run?.createdAt ?? '',
+        })
       }
     }
   }

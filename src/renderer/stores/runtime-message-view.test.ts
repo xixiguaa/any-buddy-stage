@@ -57,7 +57,7 @@ test('buildVisibleMessages appends a synthetic streaming assistant message from 
 
   assert.equal(visibleMessages.length, 2);
   assert.deepEqual(visibleMessages[1], {
-    id: 'live-event-1',
+    id: 'event-event-1',
     taskId: 'task-1',
     runId: 'run-1',
     role: 'assistant',
@@ -65,6 +65,9 @@ test('buildVisibleMessages appends a synthetic streaming assistant message from 
     metadata: {
       synthetic: true,
       sourceEventId: 'event-1',
+      eventType: 'agent_message',
+      role: 'assistant',
+      content: 'streaming answer',
       streaming: true,
     },
     createdAt: '2026-01-01T00:00:01.000Z',

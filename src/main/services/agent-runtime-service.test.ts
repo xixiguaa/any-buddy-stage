@@ -75,3 +75,40 @@ test('buildDeepAgentTools only mounts web_search when web-search connector is se
   assert.equal(withConnector.length, 1);
   assert.equal(withConnector[0]?.name, 'web_search');
 });
+
+test('start snapshots the active expert into the created run', async () => {
+  const context = createContext([]);
+  context.task.activeExpertId = 'expert-video-producer';
+  let capturedInput: { expertId?: string } | undefined;
+  let receivedActivityCallback = false;
+  const appService = {
+    getTask: () => context.task,
+    restoreArchivedPrimaryWorkspace: async () => null,
+    getSettings: () => context.settings,
+    createRuntimeRun: async (_taskId: string, input: { expertId?: string }) => {
+      capturedInput = input;
+      return context.run;
+    },
+    listModelConfigs: () => [],
+    resumeRuntimeRun: async () => context.run,
+    listExperts: () => [],
+    listExpertTeams: () => [],
+    failRuntimeRun: async () => undefined,
+  };
+  const service = new AgentRuntimeService(appService as never, {
+    modelService: { resolveModelConfig: () => null } as never,
+    toolRegistry: { listTools: () => [] } as never,
+    deepAgentExecutor: {
+      execute: async params => {
+        receivedActivityCallback = typeof params.onActivity === 'function';
+        params.onActivity?.();
+        return true;
+      },
+    },
+  });
+
+  await service.start(context.task.id);
+
+  assert.equal(capturedInput?.expertId, 'expert-video-producer');
+  assert.equal(receivedActivityCallback, true);
+});

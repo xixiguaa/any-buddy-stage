@@ -184,9 +184,31 @@ export function stripThinkingContent(content: string): string {
   return withoutThinkBlocks.replace(/<(?:t(?:h(?:i(?:n(?:k)?)?)?)?)?$/i, '').trim();
 }
 
+/** 将用户可见文本中的 Docker 路径映射为真实本地工作区路径。 */
+export function normalizeSandboxOutputPaths(
+  content: string,
+  workspaceRoot: string,
+  containerWorkspaceRoot = DOCKER_SANDBOX_WORKDIR,
+): string {
+  const localWorkspaceRoot = path.resolve(workspaceRoot);
+  const mapDockerPath = (value: string, dockerRoot: string) => {
+    const escapedDockerRoot = dockerRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dockerPathPattern = new RegExp(`${escapedDockerRoot}(?:/[^\\s\`"'<>()[\\]{}，。；：！？]*)?`, 'g');
+    return value.replace(dockerPathPattern, dockerPath => {
+      const relativePath = dockerPath.slice(dockerRoot.length).replace(/^\//, '');
+      return relativePath
+        ? localWorkspaceRoot + path.sep + relativePath.replace(/\//g, path.sep)
+        : localWorkspaceRoot;
+    });
+  };
+
+  // 兼容当前容器工作区与旧的共享 Docker 根目录，确保用户不会看到容器内部路径。
+  return mapDockerPath(mapDockerPath(content, containerWorkspaceRoot), DOCKER_SANDBOX_WORKDIR);
+}
+
 /**
- * 规范化角色标识为标准的 ModelMessage 角色类型
- * 
+ * 规范化角色标识为标准的 ModelMessage 角色类型。
+ *
  * @param role 原始角色字符串
  * @returns 标准角色类型标识或 null
  */
@@ -404,6 +426,7 @@ export async function exportSandboxOutputsToWorkspace(
   appService?: AppService,
   taskId?: string,
 ) {
+  const exportedPaths: string[] = [];
   try {
     for (const { virtualPath, relativePath, content } of await collectSandboxArtifactFiles(backend)) {
       const baselineContent = baselineFiles[virtualPath];
@@ -420,6 +443,7 @@ export async function exportSandboxOutputsToWorkspace(
         try {
           await mkdir(path.dirname(destPath), { recursive: true });
           await writeFile(destPath, content);
+          exportedPaths.push(destPath);
           if (appService && taskId) {
             await appService.recordTaskArtifact(taskId, destPath);
           }
@@ -438,6 +462,7 @@ export async function exportSandboxOutputsToWorkspace(
   } catch (error) {
     console.warn('[DeepAgentBackend] 导出本地 Docker 沙箱输出物到工作区失败:', error);
   }
+  return exportedPaths;
 }
 
 /** 应用全局配置/数据目录名称 */
@@ -469,6 +494,34 @@ const PROJECT_TOOLS = new Set<string>(['web_search']);
  */
 function classifyToolScope(toolName: string): 'project' | 'internal' {
   return PROJECT_TOOLS.has(toolName) ? 'project' : 'internal';
+}
+
+const SANDBOX_PATH_ARGUMENT_KEYS = new Set([
+  'TargetFile',
+  'path',
+  'filePath',
+  'file_path',
+  'filename',
+  'DirectoryPath',
+  'SearchPath',
+]);
+
+/** 运行时事件只展示统一的虚拟工作区路径，避免泄露旧 `/workspace/...` 表达。 */
+function normalizeSandboxToolArguments(
+  args: Record<string, unknown>,
+  backend: DockerSandboxBackendInstance,
+): Record<string, unknown> {
+  let changed = false;
+  const normalizedArgs = { ...args };
+  for (const [key, value] of Object.entries(args)) {
+    if (!SANDBOX_PATH_ARGUMENT_KEYS.has(key) || typeof value !== 'string') continue;
+    const normalizedPath = backend.normalizeWorkspaceVirtualPath(value);
+    if (normalizedPath && normalizedPath !== value) {
+      normalizedArgs[key] = normalizedPath;
+      changed = true;
+    }
+  }
+  return changed ? normalizedArgs : args;
 }
 
 /**
@@ -721,6 +774,74 @@ function readMessageId(message: unknown): string | undefined {
   return typeof id === 'string' && id ? id : undefined;
 }
 
+/** 判断用户是否明确要求把本轮结果写入文件。 */
+function requiresFileWrite(content: string | undefined): boolean {
+  if (!content) return false;
+  return /(?:保存|输出|生成|创建|写入|导出|落盘).{0,24}(?:文件|文档|md|markdown|\.md)|(?:md|markdown|\.md).{0,24}(?:文件|文档)/i.test(content);
+}
+
+/** 判断当前请求是否要求通过已选择的视频技能真正发起生成任务。 */
+export function requiresVideoGeneration(content: string | undefined, skillIds: string[]): boolean {
+  if (!content || !skillIds.some(skillId => /(?:video|jimeng|kling|seedance)/i.test(skillId))) {
+    return false;
+  }
+  return /(?:生成|制作|创建|produce|generate|create).{0,24}(?:视频|video)|(?:视频|video).{0,24}(?:生成|制作|创建|produce|generate|create)/i.test(content);
+}
+
+/** 识别视频平台返回的任务 ID、成品 URL 或专用视频工具成功结果。 */
+export function isSuccessfulVideoGenerationResult(toolName: string, content: string): boolean {
+  const normalizedToolName = toolName.toLowerCase();
+  const normalizedContent = content.trim();
+  if (
+    !normalizedContent ||
+    /^error:/i.test(normalizedContent) ||
+    /(?:command failed with exit code|http\s+[45]\d\d)/i.test(normalizedContent)
+  ) {
+    return false;
+  }
+  if (/(?:video|jimeng|kling|seedance).*(?:generate|create)|(?:generate|create).*(?:video|jimeng|kling|seedance)/i.test(normalizedToolName)) {
+    return true;
+  }
+  if (!/(?:execute|command|shell|bash|powershell|cmd)/i.test(normalizedToolName)) {
+    return false;
+  }
+  return /(?:\bcgt-[a-z0-9-]+\b|https?:\/\/\S+\.mp4(?:\?\S*)?|["']video_url["']\s*:)/i.test(normalizedContent);
+}
+
+/**
+ * 将技能返回的配置问题转换为面向用户的提示。
+ * 不能依赖某个具体技能，避免配置缺失后 Agent 继续无意义地等待或重试。
+ */
+export function describeSkillConfigurationIssue(content: string): string | null {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) return null;
+
+  if (/(?:skill|SKILL\.md).{0,160}(?:does not follow|invalid|specification|格式(?:不正确|无效)|不符合规范)/is.test(normalizedContent)) {
+    return '检测到所选技能的 SKILL.md 配置无效，无法继续执行。请修复该技能的 frontmatter 与 Agent Skills 规范后重新发起任务。';
+  }
+
+  const configurationMissing = /(?:\b[A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CONFIG)\s*=\s*(?:NOT_SET|UNSET|MISSING|EMPTY)\b|(?:api[ _-]?key|access[ _-]?token|credential|credentials|environment variable|环境变量|配置项).{0,80}(?:not set|not configured|missing|unset|未设置|未配置|缺失|为空))/is.test(normalizedContent);
+  if (!configurationMissing) return null;
+
+  const configurationNames = Array.from(new Set(
+    Array.from(normalizedContent.matchAll(/\b([A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CONFIG))\b/g), match => match[1]),
+  )).slice(0, 3);
+  const configurationLabel = configurationNames.length > 0
+    ? `：${configurationNames.join('、')}`
+    : '';
+  return `检测到技能缺少必要配置${configurationLabel}。请按该技能 SKILL.md 的说明补充环境变量或凭证后，再重新发起任务。`;
+}
+
+/** 仅将实际文件写入工具视为完成文件输出请求的有效操作。 */
+function isFileWriteTool(toolName: string): boolean {
+  return toolName === 'write_file' || toolName === 'edit_file';
+}
+
+/** DeepAgents 文件工具成功返回的稳定文本格式。 */
+function isSuccessfulFileWriteResult(content: string): boolean {
+  return /^Successfully (?:wrote|replaced)\b/i.test(content.trim());
+}
+
 /**
  * 判断抛出的错误是否属于等待人工确认挂起（AgentApprovalPendingError）
  * 
@@ -760,8 +881,9 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param params 执行所需的完整上下文、系统提示词、专家配置、工具列表等参数
    * @returns 执行成功或因挂起审批暂停返回 true；缺少必要配置返回 false
    */
-  async execute({ context, signal, systemPrompt, activeExpert, activeExpertTeam, tools, toolExecutionContext, assistantMetadata }: ExecuteAgentParams): Promise<boolean> {
+  async execute({ context, signal, onActivity, systemPrompt, activeExpert, activeExpertTeam, tools, toolExecutionContext, assistantMetadata }: ExecuteAgentParams): Promise<boolean> {
     throwIfAborted(signal);
+    onActivity?.();
     // 1. 解析当前任务指定的模型配置
     const resolvedModel = this.dependencies.modelService.resolveModelConfig(
       this.appService.listModelConfigs(),
@@ -776,18 +898,27 @@ export class DeepAgentExecutor implements AgentExecutor {
     const taskContext = this.appService.getTaskContext(context.task.id);
     const taskWorkspaces = this.appService.listTaskWorkspaces(context.task.id);
     const primaryWorkspace = taskWorkspaces.find(workspace => workspace.role === 'primary')?.workspace;
+    const latestUserMessage = [...(taskContext?.messages ?? [])]
+      .reverse()
+      .find(message => message.role === 'user');
+    const fileWriteRequired = requiresFileWrite(latestUserMessage?.content);
+    const videoGenerationRequired = requiresVideoGeneration(latestUserMessage?.content, context.task.skillIds);
 
     const backendRootDir = primaryWorkspace?.path ?? process.cwd();
     const workspaceName = primaryWorkspace?.name ?? path.basename(path.resolve(backendRootDir));
+    const workspaceId = primaryWorkspace?.id;
     const { backend, isSandbox, initialFiles, disposeBackend, releaseSandbox, restoreBackend } = await this.createBackend(
       context,
       backendRootDir,
       workspaceName,
+      workspaceId,
     );
     // 共享沙盒会跨轮次保留文件，必须以容器当前状态而非主机上传快照判断本轮产物。
     const sandboxOutputBaseline = isSandbox && isDockerSandboxBackend(backend)
       ? await captureSandboxArtifactSnapshot(backend, initialFiles)
       : initialFiles;
+    // 正常完成时必须先将沙箱产物落盘，再向用户提交“已完成”消息，避免回复先于文件出现。
+    let sandboxOutputsExported = false;
 
     const fileExecutionConstraintPrompt = isSandbox
       ? [
@@ -795,8 +926,8 @@ export class DeepAgentExecutor implements AgentExecutor {
         '【文件生成规范（必须严格遵守）】：',
         '1. 当前运行位于全局共享的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
         '2. 沙箱运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
-        '3. Shell 当前工作目录为当前工作区的 Docker 独立目录。创建产物时必须使用相对路径（如 deliverables/report.md），禁止使用 /文件名 作为 Shell 绝对路径。',
-        '4. 工具成功后可告知用户 Docker 中当前工作区目录下的输出路径；应用完成同步后，该文件会出现在物理工作区的对应相对路径。',
+        '3. 文件工具统一使用虚拟路径（如 /deliverables/report.md），禁止传入 /workspace/...；Shell 当前目录已是独立工作区，只能使用相对路径（如 deliverables/report.md）。',
+        `4. 工具调用仍只使用 Docker 虚拟路径或相对路径；应用同步完成后，最终回复必须报告真实本地绝对路径，工作区根目录为：${backendRootDir}。禁止向用户展示 /workspace/... 等 Docker 路径。`,
       ].join('\n')
       : [
         '---',
@@ -805,6 +936,21 @@ export class DeepAgentExecutor implements AgentExecutor {
         '2. 严禁在未真正发起工具调用生成物理文件的情况下，口头虚构或声称“文件已成功生成”。',
         '3. 只有在工具成功写入并确认物理文件存在后，方可在最终回复中告知用户文件路径。',
       ].join('\n');
+    const fileWriteCompletionConstraint = fileWriteRequired
+      ? [
+          '【本轮文件交付硬性要求】用户已明确要求生成或保存文件。',
+          '你必须在本轮实际调用 write_file 或 edit_file，并确认工具返回成功后，才能给出最终答复。',
+          '“我先查看目录”“我将保存文件”等过程说明不是最终答复；说明后必须继续调用工具完成写入。',
+          '若工具失败，必须如实说明失败原因，不能声称文件已保存。',
+        ].join('\n')
+      : '';
+    const videoGenerationCompletionConstraint = videoGenerationRequired
+      ? [
+          '【本轮视频生成硬性要求】用户要求实际生成视频，不能只描述准备步骤。',
+          '你必须读取已选择的视频技能并真正发起生成任务，取得平台任务 ID、视频 URL 或视频工具成功结果后才能最终答复。',
+          '读取技能说明、浏览目录或声称“接下来生成”都不代表任务已经执行。',
+        ].join('\n')
+      : '';
 
     console.debug('[DeepAgentSkills] createDeepAgent context', {
       taskSkillIds: context.task.skillIds,
@@ -849,7 +995,7 @@ export class DeepAgentExecutor implements AgentExecutor {
         ? ''
         : '当前没有可用子 Agent。禁止调用 task 工具；涉及新建或修改文件时，请直接使用当前后端提供的文件工具。';
 
-      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${delegationConstraintPrompt}`;
+      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${fileWriteCompletionConstraint}\n\n${videoGenerationCompletionConstraint}\n\n${delegationConstraintPrompt}`;
       if (hasSubagents && activeExpertTeam) {
         finalSystemPrompt = [
           `你当前以专家团队 ${activeExpertTeam.name} Leader 的身份调度工作。`,
@@ -867,6 +1013,8 @@ export class DeepAgentExecutor implements AgentExecutor {
           '---',
           systemPrompt,
           fileExecutionConstraintPrompt,
+          fileWriteCompletionConstraint,
+          videoGenerationCompletionConstraint,
         ].filter(Boolean).join('\n');
       } else if (activeExpert) {
         finalSystemPrompt = [
@@ -878,6 +1026,8 @@ export class DeepAgentExecutor implements AgentExecutor {
           '---',
           systemPrompt,
           fileExecutionConstraintPrompt,
+          fileWriteCompletionConstraint,
+          videoGenerationCompletionConstraint,
           delegationConstraintPrompt,
         ].filter(Boolean).join('\n');
       }
@@ -897,17 +1047,11 @@ export class DeepAgentExecutor implements AgentExecutor {
         systemPrompt: finalSystemPrompt,
       });
 
-      // 6. 启动 Agent 消息流处理
-      const run = await agent.stream({
-        messages: (taskContext?.messages ?? []).map(message => ({
+      // 6. 准备 Agent 消息流输入；纠偏重试只扩展内存消息，不写入用户历史。
+      const baseMessages = (taskContext?.messages ?? []).map(message => ({
           role: message.role === 'tool' ? 'user' : message.role,
           content: message.role === 'tool' ? `Tool result:\n${message.content}` : message.content,
-        })),
-      }, {
-        streamMode: ['messages', 'updates'],
-        subgraphs: true,
-        signal,
-      });
+        }));
 
       // 临时映射与状态存储变量
       const rawAccumulatedMessagesMap = new Map<string, string>();
@@ -916,6 +1060,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       const streamedMessageMetadataById = new Map<string, {
         namespace: string;
         subagentName?: string;
+        createdAt: string;
       }>();
       const toolCallArgsMap = new Map<string, string>();
       const toolCallNameMap = new Map<string, string>();
@@ -925,6 +1070,8 @@ export class DeepAgentExecutor implements AgentExecutor {
       const activeToolCallIdByStream = new Map<string, string>();
       const streamSegmentBySource = new Map<string, number>();
       const failedToolSummaries: string[] = [];
+      let hasSuccessfulRequiredFileWrite = false;
+      let hasSuccessfulVideoGeneration = false;
       const updateNodeSeen = new Set<string>();
       const startedSubagents = new Map<string, string>();
       const toolCallSubagentMap = new Map<string, { subagentType: string; description?: string }>();
@@ -964,9 +1111,18 @@ export class DeepAgentExecutor implements AgentExecutor {
         runtimeEngine: 'deepagents',
       });
 
-      // 7. 循环处理流式迭代器返回的事件分块
-      for await (const item of run as AsyncIterable<[string[], string, unknown]>) {
+      const consumeAgentStream = async (messages: typeof baseMessages) => {
+        onActivity?.();
+        const run = await agent.stream({ messages }, {
+          streamMode: ['messages', 'updates'],
+          subgraphs: true,
+          signal,
+        });
+
+        // 7. 循环处理流式迭代器返回的事件分块
+        for await (const item of run as AsyncIterable<[string[], string, unknown]>) {
         throwIfAborted(signal);
+        onActivity?.();
         const [namespace, mode, data] = item;
         // 单专家任务不启用子 Agent 展示；专家团按官方 tools:<toolCallId> namespace 路由。
         const source = hasSubagents ? readNamespaceSource(namespace, toolCallSubagentMap) : 'main';
@@ -1070,7 +1226,9 @@ export class DeepAgentExecutor implements AgentExecutor {
                   // 触发工具调用运行时事件
                   await this.appService.appendRuntimeEvent(context.run.id, 'tool_called', {
                     toolName,
-                    arguments: parsedArgs,
+                    arguments: isSandbox && isDockerSandboxBackend(backend)
+                      ? normalizeSandboxToolArguments(parsedArgs, backend)
+                      : parsedArgs,
                     runtimeEngine: 'deepagents',
                     namespace: source,
                     subagentName: currentSubagentName,
@@ -1104,8 +1262,18 @@ export class DeepAgentExecutor implements AgentExecutor {
                 toolCallId: message.tool_call_id,
                 executionEnvironment: isSandbox ? 'sandbox' : 'local',
               });
+              const configurationIssue = describeSkillConfigurationIssue(content);
+              if (configurationIssue) {
+                throw new Error(configurationIssue);
+              }
               if (/^Error:/i.test(content.trim())) {
                 failedToolSummaries.push(`${toolName}: ${content.trim()}`);
+              }
+              if (fileWriteRequired && isFileWriteTool(toolName) && isSuccessfulFileWriteResult(content)) {
+                hasSuccessfulRequiredFileWrite = true;
+              }
+              if (videoGenerationRequired && isSuccessfulVideoGenerationResult(toolName, content)) {
+                hasSuccessfulVideoGeneration = true;
               }
               streamSegmentBySource.set(source, (streamSegmentBySource.get(source) ?? 0) + 1);
             }
@@ -1120,11 +1288,19 @@ export class DeepAgentExecutor implements AgentExecutor {
                 : `stream-${source}-${streamSegment}`;
               const nextRawText = `${rawAccumulatedMessagesMap.get(msgId) ?? ''}${tokenText}`;
               rawAccumulatedMessagesMap.set(msgId, nextRawText);
-              const nextText = stripThinkingContent(nextRawText);
+              const nextText = isSandbox && isDockerSandboxBackend(backend)
+                ? normalizeSandboxOutputPaths(
+                  stripThinkingContent(nextRawText),
+                  backendRootDir,
+                  backend.getContainerWorkspaceRoot(),
+                )
+                : stripThinkingContent(nextRawText);
               accumulatedMessagesMap.set(msgId, nextText);
+              const previousStreamMetadata = streamedMessageMetadataById.get(msgId);
               streamedMessageMetadataById.set(msgId, {
                 namespace: source,
                 subagentName: currentSubagentName,
+                createdAt: previousStreamMetadata?.createdAt ?? new Date().toISOString(),
               });
               if (nextText.trim().length > 0) {
                 latestAssistantMessage = nextText;
@@ -1182,6 +1358,30 @@ export class DeepAgentExecutor implements AgentExecutor {
           }
         }
       }
+      };
+
+      await consumeAgentStream(baseMessages);
+
+      if (videoGenerationRequired && !hasSuccessfulVideoGeneration && (mainAssistantMessage || latestAssistantMessage)) {
+        const incompleteResponse = mainAssistantMessage || latestAssistantMessage;
+        mainAssistantMessage = '';
+        latestAssistantMessage = '';
+        mainAssistantMessageId = undefined;
+        latestAssistantMessageId = undefined;
+        await this.appService.appendRuntimeEvent(context.run.id, 'run_status', {
+          status: 'running',
+          currentNode: 'execution_retry',
+          reason: 'video_generation_missing_execution_evidence',
+        });
+        await consumeAgentStream([
+          ...baseMessages,
+          { role: 'assistant' as const, content: incompleteResponse },
+          {
+            role: 'user' as const,
+            content: '上一条回复只描述了准备动作，但没有实际生成视频。请立即使用已加载的视频技能发起生成任务，取得任务 ID、视频 URL 或视频工具成功结果后再答复。不要再次只说明下一步。',
+          },
+        ]);
+      }
 
       // 7.4 针对所有运行过的子 Agent 发送 subagent_completed 结束事件
       for (const [subagentKey, displayName] of startedSubagents) {
@@ -1204,8 +1404,14 @@ export class DeepAgentExecutor implements AgentExecutor {
       if (!finalMessage) {
         return false;
       }
+      if (fileWriteRequired && !hasSuccessfulRequiredFileWrite) {
+        throw new Error('用户明确要求生成文件，但本轮未检测到 write_file 或 edit_file 的成功结果。');
+      }
+      if (videoGenerationRequired && !hasSuccessfulVideoGeneration) {
+        throw new Error('用户要求生成视频，但模型在一次自动纠偏后仍未返回有效的视频生成任务 ID、视频 URL 或视频工具成功结果。');
+      }
 
-      const completedMessage = failedToolSummaries.length > 0
+      let completedMessage = failedToolSummaries.length > 0
         ? [
           `工具执行失败原因：\n${failedToolSummaries.map(item => `- ${item}`).join('\n')}`,
           finalMessage,
@@ -1224,6 +1430,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           const streamMetadata = streamedMessageMetadataById.get(messageId);
           return {
             content: messageContent,
+            createdAt: streamMetadata?.createdAt ?? new Date().toISOString(),
             metadata: {
               ...assistantMetadata,
               runtimeEngine: 'deepagents',
@@ -1243,6 +1450,23 @@ export class DeepAgentExecutor implements AgentExecutor {
         final: true,
         ...(finalStreamMessageId ? { streamEventId: `msg-${finalStreamMessageId}` } : {}),
       };
+
+      if (isSandbox && isDockerSandboxBackend(backend)) {
+        const exportedPaths = await exportSandboxOutputsToWorkspace(
+          backend,
+          backendRootDir,
+          sandboxOutputBaseline,
+          this.appService,
+          context.task.id,
+        );
+        sandboxOutputsExported = true;
+        if (exportedPaths.length > 0) {
+          completedMessage = [
+            completedMessage,
+            `已同步到本地工作区：\n${exportedPaths.map(filePath => `- \`${filePath}\``).join('\n')}`,
+          ].join('\n\n');
+        }
+      }
 
       // 9. 结合任务模式完成当前 Run 记录
       if (context.task.mode === 'plan') {
@@ -1267,10 +1491,23 @@ export class DeepAgentExecutor implements AgentExecutor {
       if (isApprovalPendingError(error)) {
         return true;
       }
+      const configurationIssue = describeSkillConfigurationIssue(
+        error instanceof Error ? error.message : String(error),
+      );
+      if (configurationIssue) {
+        // 技能自身缺少凭证属于可恢复的用户配置问题，作为正常对话回复结束本轮，避免外层将其标记为运行失败。
+        await this.appService.completeRuntimeRun(context.run.id, configurationIssue, {
+          ...assistantMetadata,
+          runtimeEngine: 'deepagents',
+          final: true,
+          configurationIssue: true,
+        });
+        return true;
+      }
       throw error;
     } finally {
       // 释放全局租约前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
-      if (isSandbox && isDockerSandboxBackend(backend)) {
+      if (isSandbox && isDockerSandboxBackend(backend) && !sandboxOutputsExported) {
         await exportSandboxOutputsToWorkspace(backend, backendRootDir, sandboxOutputBaseline, this.appService, context.task.id);
       }
 
@@ -1482,6 +1719,7 @@ export class DeepAgentExecutor implements AgentExecutor {
     context: ExecuteAgentParams['context'],
     rootDir: string,
     workspaceName: string,
+    workspaceId?: string,
   ) {
     if (context.task.permissionMode === 'full_access') {
       const backend = await LocalShellBackend.create({
@@ -1516,7 +1754,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       };
     }
 
-    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox(workspaceName);
+    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox(workspaceName, workspaceId);
     const { backend } = sandboxLease;
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);

@@ -1,7 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentRun, Task, TaskSummary } from '../../shared/types.js'
-import { getStreamingEntriesForTask, mergeTaskSummary } from './task-runtime-view.js'
+import { getStreamingEntriesForTask, mergeTaskSummary, sortTimelineMessages } from './task-runtime-view.js'
+
+test('sortTimelineMessages interleaves feedback and tool events by original time', () => {
+  const timeline = sortTimelineMessages([
+    { id: 'tool-result', taskId: 'task-b', runId: 'run-b', role: 'tool', content: 'result', createdAt: '2026-07-29T00:00:03.000Z' },
+    { id: 'feedback-1', taskId: 'task-b', runId: 'run-b', role: 'assistant', content: 'working', createdAt: '2026-07-29T00:00:01.000Z' },
+    { id: 'tool-call', taskId: 'task-b', runId: 'run-b', role: 'tool', content: 'call', createdAt: '2026-07-29T00:00:02.000Z' },
+  ])
+
+  assert.deepEqual(timeline.map(message => message.id), ['feedback-1', 'tool-call', 'tool-result'])
+})
 
 function createRun(id: string, taskId: string): AgentRun {
   return {
@@ -48,6 +58,7 @@ test('getStreamingEntriesForTask only returns streams owned by the requested tas
     },
     [createRun('run-a', 'task-a'), createRun('run-b', 'task-b')],
     'task-b',
+    { 'stream-b': '2026-07-29T00:00:02.000Z' },
   )
 
   assert.deepEqual(entries, [{
@@ -55,6 +66,7 @@ test('getStreamingEntriesForTask only returns streams owned by the requested tas
     runId: 'run-b',
     taskId: 'task-b',
     content: '任务 B 的流式内容',
+    createdAt: '2026-07-29T00:00:02.000Z',
   }])
 })
 

@@ -21,6 +21,9 @@ type RuntimeDependencies = {
   deepAgentExecutor?: AgentExecutor;
 };
 
+/** 连续无模型或工具事件时自动结束，避免异常技能或上游请求让任务永久停留在执行中。 */
+const AGENT_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Agent 运行时服务 (AgentRuntimeService)
  * 
@@ -61,13 +64,11 @@ export class AgentRuntimeService {
       throw new Error(`Task not found: ${taskId}`);
     }
 
-    // 默认 Docker 沙箱需要恢复被归档的主工作区记录；完全访问模式直接使用本地 Shell。
-    if (task.permissionMode !== 'full_access') {
-      await this.appService.restoreArchivedPrimaryWorkspace(taskId);
-      task = this.appService.getTask(taskId);
-      if (!task) {
-        throw new Error(`Task not found: ${taskId}`);
-      }
+    // 从历史任务继续对话时恢复被归档的主工作区记录；默认 Docker 模式随后会按工作区名称创建临时目录。
+    await this.appService.restoreArchivedPrimaryWorkspace(taskId);
+    task = this.appService.getTask(taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
     }
 
     const settings = this.appService.getSettings();
@@ -77,7 +78,11 @@ export class AgentRuntimeService {
     });
 
     // 在 AppService / 持久层记录新的 AgentRun
-    const run = await this.appService.createRuntimeRun(taskId, input);
+    const run = await this.appService.createRuntimeRun(taskId, {
+      ...input,
+      // 固化本轮启动时的专家，避免后续任务配置变化影响运行审计。
+      expertId: input.expertId ?? task.activeExpertId,
+    });
     // 解析当前任务选中的大模型配置
     const resolvedModel = this.modelService.resolveModelConfig(this.appService.listModelConfigs(), task.modelId);
 
@@ -130,14 +135,30 @@ export class AgentRuntimeService {
   /** 在后台执行 Run，并在运行结束后释放取消控制器。 */
   private executeInBackground(context: RuntimeContext) {
     const controller = this.createAbortController(context.run.id);
-    void this.executeRuntime(context, controller.signal)
+    const inactivityError = new Error('Agent 连续 10 分钟未返回模型或工具进度，已自动结束。请检查技能配置、网络连接或模型服务后重试。');
+    let timedOut = false;
+    let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshInactivityTimer = () => {
+      if (controller.signal.aborted) return;
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        if (controller.signal.aborted) return;
+        timedOut = true;
+        controller.abort(inactivityError);
+        void this.appService.failRuntimeRun(context.run.id, inactivityError);
+      }, AGENT_INACTIVITY_TIMEOUT_MS);
+    };
+
+    refreshInactivityTimer();
+    void this.executeRuntime(context, controller.signal, refreshInactivityTimer)
       .catch(error => {
         // 用户主动停止后的异常不应覆盖已写入的 cancelled 状态。
-        if (!controller.signal.aborted) {
-          void this.appService.failRuntimeRun(context.run.id, error);
+        if (!controller.signal.aborted || timedOut) {
+          void this.appService.failRuntimeRun(context.run.id, timedOut ? inactivityError : error);
         }
       })
       .finally(() => {
+        if (inactivityTimer) clearTimeout(inactivityTimer);
         this.clearAbortController(context.run.id, controller);
       });
   }
@@ -162,10 +183,12 @@ export class AgentRuntimeService {
   private async executeRuntime(
     context: RuntimeContext,
     signal: AbortSignal,
+    onActivity: () => void,
   ) {
     if (signal.aborted) {
       return;
     }
+    onActivity();
     await this.appService.resumeRuntimeRun(context.run.id);
     if (signal.aborted) {
       return;
@@ -183,6 +206,7 @@ export class AgentRuntimeService {
     const handledByDeepAgent = await this.deepAgentExecutor.execute({
       context,
       signal,
+      onActivity,
       systemPrompt,
       activeExpert,
       activeExpertTeam,

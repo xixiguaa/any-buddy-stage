@@ -120,23 +120,20 @@ export function buildVisibleMessages(baseMessages: Message[], events: AgentEvent
 
   return visibleMessages
       .filter(message => {
-        // 如果是 synthetic assistant message，且该 run 已经有持久化的助手消息
         if (message.metadata?.synthetic && message.role === 'assistant') {
-          const pm = persistedFinalAssistantMessages.find(m => m.runId === message.runId);
-          if (pm) {
-            // 如果内容跟最终持久化消息一致，说明是最终输出，去除重复
-            if (pm.content.trim() === message.content.trim()) {
+          const runId = message.runId ?? '';
+          // 最终消息落库后，所有对应流式镜像都由持久化消息接管。
+          if (persistedRunsWithFinalAssistant.has(runId)) {
             return false;
           }
-          // 或者如果它是该 run 中的最后一个 agent_message，且已经被持久化消息替代，我们也去除重复
-          const latestEventId = latestAgentMessageEventIdByRun.get(message.runId ?? '');
-          if (latestEventId && message.id === `event-${latestEventId}`) {
+          // 活动运行只保留最新流式段，旧段已经被同一消息的后续快照替代。
+          const latestEventId = latestAgentMessageEventIdByRun.get(runId);
+          if (latestEventId && message.id !== `event-${latestEventId}`) {
             return false;
           }
         }
-      }
-      return true;
-    })
+        return true;
+      })
     .map(message => {
       // 动态更新流式输出状态：只有当该 run 没有持久化消息，且此消息是该 run 下的最新的一个 agent_message 时，才标记为 streaming
       if (message.metadata?.synthetic && message.role === 'assistant') {

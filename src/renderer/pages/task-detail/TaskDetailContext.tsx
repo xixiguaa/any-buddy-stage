@@ -408,6 +408,15 @@ export function TaskDetailProvider({ children }: { children: ReactNode }) {
     setIsArtifactsPanelOpen(true)
   }
 
+  // 切换任务时清理上一任务的预览标签，防止旧文件继续显示在新任务中。
+  useEffect(() => {
+    artifactScanRequestIdRef.current += 1
+    setArtifacts([])
+    setSelectedArtifact(null)
+    setOpenedArtifacts([])
+    setIsScanningArtifacts(false)
+  }, [taskId])
+
   // 任务产物落盘会更新任务时间；据此在 Docker 回传完成后立即重新扫描。
   useEffect(() => {
     if (taskId) {
