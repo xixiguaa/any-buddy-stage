@@ -17,18 +17,6 @@ installGlobalErrorHandlers()
 
 function openMainWindow() {
   mainWindow = createMainWindow()
-  if (process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    // 开发环境通过快捷键手动切换调试控制台，避免启动时自动打开。
-    mainWindow.webContents.on('before-input-event', (event, input) => {
-      const isDevToolsShortcut =
-        input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key.toLowerCase() === 'i')
-
-      if (input.type === 'keyDown' && isDevToolsShortcut) {
-        event.preventDefault()
-        mainWindow?.webContents.toggleDevTools()
-      }
-    })
-  }
   mainWindow.on('closed', () => {
     if (mainWindow?.isDestroyed()) {
       mainWindow = null

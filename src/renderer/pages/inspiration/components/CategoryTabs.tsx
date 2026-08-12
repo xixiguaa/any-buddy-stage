@@ -19,6 +19,7 @@ export default function CategoryTabs({ activeCategory, onSelectCategory, categor
       style={{
         display: 'flex',
         alignItems: 'center',
+        justifyContent: 'center',
         gap: '12px',
         overflowX: 'auto',
         padding: '4px 2px 14px 2px',

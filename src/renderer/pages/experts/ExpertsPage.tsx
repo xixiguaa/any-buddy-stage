@@ -372,62 +372,6 @@ export default function ExpertsPage() {
                     <p style={{ fontSize: '13px', color: '#475569', lineHeight: '1.6', margin: '0 0 16px 0' }}>
                       {team.description}
                     </p>
-
-                    {/* 团队成员组成信息块 */}
-                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12, marginBottom: 16, maxWidth: '100%', boxSizing: 'border-box' }}>
-                      <div style={{ fontSize: '12px', fontWeight: 600, color: '#64748b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <TeamOutlined /> 团队成员组成 ({team.members.length}人):
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: '100%', boxSizing: 'border-box' }}>
-                        {team.members.map(member => (
-                          <div
-                            key={member.id}
-                            style={{
-                              fontSize: '12px',
-                              color: '#334155',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 6,
-                              padding: '8px 10px',
-                              background: '#ffffff',
-                              borderRadius: 6,
-                              border: '1px solid #f1f5f9',
-                              maxWidth: '100%',
-                              boxSizing: 'border-box',
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%' }}>
-                              <span style={{ fontWeight: 600, color: '#0f172a' }}>
-                                {member.name}
-                              </span>
-                              <span style={{ color: '#64748b', fontSize: '11px' }}>
-                                ({member.role})
-                              </span>
-                            </div>
-                            {member.specialty && (
-                              /* 背景改为灰色 #f8fafc，字体改为紫色 #6F2BDC */
-                              <div
-                                style={{
-                                  fontSize: '11px',
-                                  color: '#6F2BDC',
-                                  background: '#f8fafc',
-                                  border: '1px solid #e2e8f0',
-                                  borderRadius: '4px',
-                                  padding: '4px 8px',
-                                  lineHeight: '1.5',
-                                  wordBreak: 'break-all',
-                                  overflowWrap: 'anywhere',
-                                  maxWidth: '100%',
-                                  boxSizing: 'border-box',
-                                }}
-                              >
-                                {member.specialty}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
                   </div>
 
                   <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
