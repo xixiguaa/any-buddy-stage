@@ -930,9 +930,6 @@ export class DeepAgentExecutor implements AgentExecutor {
         `4. 工具调用仍只使用 Docker 虚拟路径或相对路径；应用同步完成后，最终回复必须报告真实本地绝对路径，工作区根目录为：${backendRootDir}。禁止向用户展示 /workspace/... 等 Docker 路径。`,
       ].join('\n')
       : [
-        '---',
-        '【文件生成与物理执行规范（必须严格遵守）】：',
-        '1. 当前运行具有完全访问权限。创建、修改、生成或导出文件时，必须真实调用工具在物理工作区中完成。',
         '2. 严禁在未真正发起工具调用生成物理文件的情况下，口头虚构或声称“文件已成功生成”。',
         '3. 只有在工具成功写入并确认物理文件存在后，方可在最终回复中告知用户文件路径。',
       ].join('\n');
@@ -995,7 +992,15 @@ export class DeepAgentExecutor implements AgentExecutor {
         ? ''
         : '当前没有可用子 Agent。禁止调用 task 工具；涉及新建或修改文件时，请直接使用当前后端提供的文件工具。';
 
-      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${fileWriteCompletionConstraint}\n\n${videoGenerationCompletionConstraint}\n\n${delegationConstraintPrompt}`;
+      const skillConfigurationConstraintPrompt = [
+        '【技能凭证与配置问题响应规范（必须严格遵守）】：',
+        '当工具执行结果提示技能缺少必要 API Key、凭证或环境变量（例如包含 API_KEY=NOT_SET 或 Key 未设置）时：',
+        '1. 严禁继续调用 grep、glob、read_file、execute、web_search 或任何其他工具尝试在系统中盲目搜索密钥、寻找替代脚本或循环重试。',
+        '2. 必须立即终止所有后续工具调用，直接在 Markdown 回复中清楚告知用户具体缺少什么凭证/配置（如 MINIMAX_API_KEY），并指导用户如何补充。',
+        '3. 提醒用户补充完成后直接在当前对话框中回复，你将为其继续执行任务。',
+      ].join('\n');
+
+      let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${fileWriteCompletionConstraint}\n\n${videoGenerationCompletionConstraint}\n\n${skillConfigurationConstraintPrompt}\n\n${delegationConstraintPrompt}`;
       if (hasSubagents && activeExpertTeam) {
         finalSystemPrompt = [
           `你当前以专家团队 ${activeExpertTeam.name} Leader 的身份调度工作。`,
@@ -1015,6 +1020,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           fileExecutionConstraintPrompt,
           fileWriteCompletionConstraint,
           videoGenerationCompletionConstraint,
+          skillConfigurationConstraintPrompt,
         ].filter(Boolean).join('\n');
       } else if (activeExpert) {
         finalSystemPrompt = [
@@ -1028,6 +1034,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           fileExecutionConstraintPrompt,
           fileWriteCompletionConstraint,
           videoGenerationCompletionConstraint,
+          skillConfigurationConstraintPrompt,
           delegationConstraintPrompt,
         ].filter(Boolean).join('\n');
       }
@@ -1264,9 +1271,10 @@ export class DeepAgentExecutor implements AgentExecutor {
               });
               const configurationIssue = describeSkillConfigurationIssue(content);
               if (configurationIssue) {
-                throw new Error(configurationIssue);
-              }
-              if (/^Error:/i.test(content.trim())) {
+                // 方案一：记录技能配置缺失问题，但不抛出 Error 中断 Agent 循环，
+                // 允许工具结果交由 LLM 接收，由 LLM 在对话中自然引导用户补充凭证。
+                failedToolSummaries.push(`${toolName}: ${configurationIssue}`);
+              } else if (/^Error:/i.test(content.trim())) {
                 failedToolSummaries.push(`${toolName}: ${content.trim()}`);
               }
               if (fileWriteRequired && isFileWriteTool(toolName) && isSuccessfulFileWriteResult(content)) {

@@ -126,6 +126,10 @@ test('Shell 命令兼容旧工作区路径且允许工具使用临时绝对路�
     backendState.normalizeShellCommand('printf temp > /tmp/shared.md'),
     'printf temp > /tmp/shared.md',
   );
+  assert.equal(
+    backendState.normalizeShellCommand('cat /.system-skill-cache/my-skill/SKILL.md'),
+    `cat ${workspaceRoot}/.system-skill-cache/my-skill/SKILL.md`,
+  );
 
   const spacedBackend = new DockerSandboxBackend({
     workspaceName: '带 空格的剧本',

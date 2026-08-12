@@ -646,6 +646,21 @@ export class DockerSandboxBackend extends BaseSandbox {
       searchFrom = index + this.containerWorkdir.length + 1;
     }
 
+    // 将 /.system-skill-cache/ 虚拟技能路径映射为当前工作区容器物理路径
+    const skillCacheRoot = '/.system-skill-cache/';
+    const targetSkillCacheRoot = `${this.containerWorkdir}/.system-skill-cache/`;
+    let skillSearchFrom = 0;
+    while (true) {
+      const index = normalizedCommand.indexOf(skillCacheRoot, skillSearchFrom);
+      if (index < 0) break;
+      if (normalizedCommand.startsWith(targetSkillCacheRoot, index)) {
+        skillSearchFrom = index + targetSkillCacheRoot.length;
+        continue;
+      }
+      normalizedCommand = normalizedCommand.slice(0, index) + targetSkillCacheRoot + normalizedCommand.slice(index + skillCacheRoot.length);
+      skillSearchFrom = index + targetSkillCacheRoot.length;
+    }
+
     return normalizedCommand;
   }
 
