@@ -18,6 +18,7 @@ export interface CommandExecutor {
     input?: InputWriter,
     maxOutputBytes?: number,
     allowClosed?: boolean,
+    signal?: AbortSignal,
   ): Promise<CommandResult>;
 
   /**

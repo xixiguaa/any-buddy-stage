@@ -365,7 +365,7 @@ export async function captureSandboxArtifactSnapshot(
 /**
  * 将全局 Skill 直接镜像到远程沙盒，避免默认权限模式在物理工作区创建技能缓存。
  *
- * @param backend 全局共享的本地 Docker 沙箱后端
+ * @param backend 当前运行独立的本地 Docker 沙箱后端
  * @param sourceSkillDir 全局 Skill 源目录
  * @param skillId Skill 标识
  * @returns 沙盒内 Skill 目录路径；同步失败时返回 null
@@ -418,6 +418,7 @@ async function mirrorSkillIntoRemoteSandboxBackend(
  * @param baselineFiles 本轮容器执行前的产物内容字典
  * @param appService 应用服务实例（可选，用于关联任务产物）
  * @param taskId 任务 ID（可选，用于关联任务产物）
+ * @param workspaceId 工作区 ID（可选，用于避免向已删除工作区回写）
  */
 export async function exportSandboxOutputsToWorkspace(
   backend: SandboxArtifactBackend,
@@ -425,8 +426,13 @@ export async function exportSandboxOutputsToWorkspace(
   baselineFiles: WorkspaceFileSnapshot,
   appService?: AppService,
   taskId?: string,
+  workspaceId?: string,
 ) {
   const exportedPaths: string[] = [];
+  // 工作区已开始删除时，不允许运行结束后的产物重新写回。
+  if (workspaceId && appService && !appService.isWorkspaceActive(workspaceId)) {
+    return exportedPaths;
+  }
   try {
     for (const { virtualPath, relativePath, content } of await collectSandboxArtifactFiles(backend)) {
       const baselineContent = baselineFiles[virtualPath];
@@ -440,11 +446,14 @@ export async function exportSandboxOutputsToWorkspace(
           console.warn('[DeepAgentBackend] 忽略越界的远程沙盒输出路径:', virtualPath);
           continue;
         }
+        if (workspaceId && appService && !appService.isWorkspaceActive(workspaceId)) {
+          return exportedPaths;
+        }
         try {
           await mkdir(path.dirname(destPath), { recursive: true });
           await writeFile(destPath, content);
           exportedPaths.push(destPath);
-          if (appService && taskId) {
+          if (appService && taskId && (!workspaceId || appService.isWorkspaceActive(workspaceId))) {
             await appService.recordTaskArtifact(taskId, destPath);
           }
         } catch (error) {
@@ -866,7 +875,7 @@ function isApprovalPendingError(error: unknown): boolean {
 /**
  * 基于 DeepAgents 架构的 Agent 执行器实现类
  *
- * 负责组装 ChatOpenAI 模型、全局共享本地 Docker 沙箱、项目工具和技能配置，
+ * 负责组装 ChatOpenAI 模型、运行级本地 Docker 沙箱、项目工具和技能配置，
  * 协调 Agent 流式推理过程，处理消息流、工具调用事件和实时状态推送。
  */
 export class DeepAgentExecutor implements AgentExecutor {
@@ -912,8 +921,9 @@ export class DeepAgentExecutor implements AgentExecutor {
       backendRootDir,
       workspaceName,
       workspaceId,
+      signal,
     );
-    // 共享沙盒会跨轮次保留文件，必须以容器当前状态而非主机上传快照判断本轮产物。
+    // 以容器当前状态而非主机上传快照判断本轮产物，避免漏掉运行中产生的文件。
     const sandboxOutputBaseline = isSandbox && isDockerSandboxBackend(backend)
       ? await captureSandboxArtifactSnapshot(backend, initialFiles)
       : initialFiles;
@@ -924,7 +934,7 @@ export class DeepAgentExecutor implements AgentExecutor {
       ? [
         '---',
         '【文件生成规范（必须严格遵守）】：',
-        '1. 当前运行位于全局共享的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
+        '1. 当前运行位于独立的本地 Docker 沙箱。创建、修改、生成或导出文件时，必须通过工具在沙箱内完成，禁止将执行过程视为对物理工作区的直接写入。',
         '2. 沙箱运行成功结束后，应用会自动将新增或修改的普通文件同步到工作区；不得在未成功调用工具的情况下虚构文件产物。',
         '3. 文件工具统一使用虚拟路径（如 /deliverables/report.md），禁止传入 /workspace/...；Shell 当前目录已是独立工作区，只能使用相对路径（如 deliverables/report.md）。',
         `4. 工具调用仍只使用 Docker 虚拟路径或相对路径；应用同步完成后，最终回复必须报告真实本地绝对路径，工作区根目录为：${backendRootDir}。禁止向用户展示 /workspace/... 等 Docker 路径。`,
@@ -998,6 +1008,8 @@ export class DeepAgentExecutor implements AgentExecutor {
         '1. 严禁继续调用 grep、glob、read_file、execute、web_search 或任何其他工具尝试在系统中盲目搜索密钥、寻找替代脚本或循环重试。',
         '2. 必须立即终止所有后续工具调用，直接在 Markdown 回复中清楚告知用户具体缺少什么凭证/配置（如 MINIMAX_API_KEY），并指导用户如何补充。',
         '3. 提醒用户补充完成后直接在当前对话框中回复，你将为其继续执行任务。',
+        '4. 用户在后续对话中明确提供凭证值时，先单独执行 `culclaw-set-env 变量名 凭证值` 保存；该命令无输出，禁止读取、回显或写入凭证文件。保存后再执行技能命令。',
+        '5. 已保存的凭证会在后续 Docker 技能命令中自动加载；不得在工作区、生成文件、回复内容或日志中写入凭证。',
       ].join('\n');
 
       let finalSystemPrompt = `${systemPrompt}\n\n${fileExecutionConstraintPrompt}\n\n${fileWriteCompletionConstraint}\n\n${videoGenerationCompletionConstraint}\n\n${skillConfigurationConstraintPrompt}\n\n${delegationConstraintPrompt}`;
@@ -1466,6 +1478,7 @@ export class DeepAgentExecutor implements AgentExecutor {
           sandboxOutputBaseline,
           this.appService,
           context.task.id,
+          workspaceId,
         );
         sandboxOutputsExported = true;
         if (exportedPaths.length > 0) {
@@ -1475,6 +1488,9 @@ export class DeepAgentExecutor implements AgentExecutor {
           ].join('\n\n');
         }
       }
+
+      // 取消期间不允许将已取消的运行重新写成 completed。
+      throwIfAborted(signal);
 
       // 9. 结合任务模式完成当前 Run 记录
       if (context.task.mode === 'plan') {
@@ -1514,15 +1530,15 @@ export class DeepAgentExecutor implements AgentExecutor {
       }
       throw error;
     } finally {
-      // 释放全局租约前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
+      // 释放运行级沙箱前回收产物；异常、中止和审批挂起时已生成的文件也不会丢失。
       if (isSandbox && isDockerSandboxBackend(backend) && !sandboxOutputsExported) {
-        await exportSandboxOutputsToWorkspace(backend, backendRootDir, sandboxOutputBaseline, this.appService, context.task.id);
+        await exportSandboxOutputsToWorkspace(backend, backendRootDir, sandboxOutputBaseline, this.appService, context.task.id, workspaceId);
       }
 
       // 恢复共享后端上本轮临时安装的权限钩子。
       restoreBackend?.();
 
-      // 全局共享容器由租约串行复用，仅在应用退出时统一关闭。
+      // 运行级容器在本轮结束时立即释放，避免占用其他任务的执行资源。
       try {
         if (disposeBackend && 'stop' in backend && typeof (backend as any).stop === 'function') {
           await (backend as any).stop();
@@ -1721,13 +1737,14 @@ export class DeepAgentExecutor implements AgentExecutor {
   }
 
   /**
-   * 创建后端：默认权限使用全局共享的本地 Docker，完全访问权限使用 LocalShellBackend。
+   * 创建后端：默认权限使用运行级本地 Docker，完全访问权限使用 LocalShellBackend。
    */
   private async createBackend(
     context: ExecuteAgentParams['context'],
     rootDir: string,
     workspaceName: string,
     workspaceId?: string,
+    signal?: AbortSignal,
   ) {
     if (context.task.permissionMode === 'full_access') {
       const backend = await LocalShellBackend.create({
@@ -1762,13 +1779,18 @@ export class DeepAgentExecutor implements AgentExecutor {
       };
     }
 
-    const sandboxLease = await DockerSandboxBackend.acquireGlobalSandbox(workspaceName, workspaceId);
+    const sandboxLease = await DockerSandboxBackend.createRunSandbox(
+      context.run.id,
+      workspaceName,
+      workspaceId,
+      signal,
+    );
     const { backend } = sandboxLease;
     const initialFiles = await loadInitialWorkspaceFiles(rootDir);
     const initialFileUploads: Array<[string, Uint8Array]> = Object.entries(initialFiles);
 
     try {
-      // 容器跨任务复用，但每轮上传前必须清空工作目录，避免旧文件串入当前任务。
+      // 每个运行仍在上传前清空工作目录，确保容器内只有本轮文件。
       await backend.resetWorkspace();
       const uploadResults = await backend.uploadFiles(initialFileUploads);
       const failedUploads = uploadResults.filter(item => item.error);
@@ -1819,7 +1841,7 @@ export class DeepAgentExecutor implements AgentExecutor {
    * @param _context 执行上下文
    */
   private resolvePermissions(_context: ExecuteAgentParams['context']) {
-    // 默认权限通过全局共享的本地 Docker 容器隔离执行；完全访问权限使用本地 Shell backend。
+    // 默认权限通过运行级本地 Docker 容器隔离执行；完全访问权限使用本地 Shell backend。
     // 不使用 DeepAgents 的逐命令 interruptOn，避免在沙盒运行中请求人工审批。
     return undefined;
   }

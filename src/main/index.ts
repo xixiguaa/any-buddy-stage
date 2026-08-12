@@ -49,13 +49,6 @@ async function bootstrap() {
       })
   })
 
-  // 启动时预热固定 Docker 容器；Docker 不可用时仍允许 full_access 模式启动。
-  try {
-    await DockerSandboxBackend.prewarmGlobalSandbox()
-  } catch (error) {
-    logProcessError({ scope: 'sandbox-startup' }, error)
-  }
-
   await service.init()
   registerIpcHandlers(service)
 

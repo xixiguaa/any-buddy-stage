@@ -39,6 +39,8 @@ export class AgentRuntimeService {
   private readonly deepAgentExecutor: AgentExecutor;
   /** 当前正在执行的 Run 取消控制器。 */
   private readonly abortControllersByRunId = new Map<string, AbortController>();
+  /** 当前运行关联的工作区，用于工作区删除时取消对应任务。 */
+  private readonly workspaceIdsByRunId = new Map<string, string[]>();
 
   constructor(
     private readonly appService: AppService,
@@ -120,6 +122,14 @@ export class AgentRuntimeService {
     return this.appService.cancelRuntimeRun(runId);
   }
 
+  /** 删除工作区前取消所有关联运行，避免运行继续写回已归档的工作区。 */
+  async cancelWorkspaceRuns(workspaceId: string): Promise<void> {
+    const runIds = Array.from(this.workspaceIdsByRunId.entries())
+      .filter(([, workspaceIds]) => workspaceIds.includes(workspaceId))
+      .map(([runId]) => runId);
+    await Promise.all(runIds.map(runId => this.cancel(runId)));
+  }
+
   /**
    * 处理人工审批决议（通过、拒绝或修改参数后通过）。
    * 
@@ -135,6 +145,7 @@ export class AgentRuntimeService {
   /** 在后台执行 Run，并在运行结束后释放取消控制器。 */
   private executeInBackground(context: RuntimeContext) {
     const controller = this.createAbortController(context.run.id);
+    this.workspaceIdsByRunId.set(context.run.id, [...context.run.workspaceIds]);
     const inactivityError = new Error('Agent 连续 10 分钟未返回模型或工具进度，已自动结束。请检查技能配置、网络连接或模型服务后重试。');
     let timedOut = false;
     let inactivityTimer: ReturnType<typeof setTimeout> | undefined;
@@ -160,6 +171,7 @@ export class AgentRuntimeService {
       .finally(() => {
         if (inactivityTimer) clearTimeout(inactivityTimer);
         this.clearAbortController(context.run.id, controller);
+        this.workspaceIdsByRunId.delete(context.run.id);
       });
   }
 

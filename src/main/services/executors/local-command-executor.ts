@@ -28,6 +28,7 @@ export class LocalCommandExecutor implements CommandExecutor {
     input?: InputWriter,
     maxOutputBytes = this.maxOutputBytes,
     allowClosed = false,
+    signal?: AbortSignal,
   ): Promise<CommandResult> {
     if (this.closed && !allowClosed) {
       throw new Error(`Docker 沙盒 ${this.id} 已关闭。`);
@@ -68,9 +69,20 @@ export class LocalCommandExecutor implements CommandExecutor {
       });
 
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const clearTimer = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+      };
+      const removeAbortListener = () => {
+        signal?.removeEventListener('abort', onAbort);
+      };
       const rejectOnce = (error: unknown) => {
         if (settled) return;
         settled = true;
+        clearTimer();
+        removeAbortListener();
         try {
           child.kill();
         } catch {
@@ -78,19 +90,20 @@ export class LocalCommandExecutor implements CommandExecutor {
         }
         reject(error instanceof Error ? error : new Error(String(error)));
       };
+      const onAbort = () => rejectOnce(signal?.reason ?? new Error('Docker 命令已取消。'));
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       // timeoutMs 为 0 时表示不为本地 Docker 命令设置超时。
-      const timer = this.timeoutMs > 0
+      timer = this.timeoutMs > 0
         ? setTimeout(() => {
           rejectOnce(new Error(`本地 Docker 命令执行超时 (${this.timeoutMs}ms)`));
         }, this.timeoutMs)
         : undefined;
-
-      const clearTimer = () => {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-        }
-      };
 
       child.stdout?.on('data', (chunk: Buffer) => {
         capture(stdoutChunks, chunk);
@@ -107,6 +120,7 @@ export class LocalCommandExecutor implements CommandExecutor {
 
       child.on('close', code => {
         clearTimer();
+        removeAbortListener();
         if (settled) return;
         settled = true;
         resolve({

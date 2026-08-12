@@ -59,10 +59,11 @@ const FILE_OPERATION_ERRORS = new Set<FileOperationError>([
   'invalid_path',
 ]);
 
-// 默认不限制 Docker 命令执行时长；需要限制时可通过配置显式设置正数毫秒值。
-const DEFAULT_TIMEOUT_MS = 0;
+// 默认限制单条 Docker 命令执行时长，避免异常命令无限占用运行资源。
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_CONCURRENT_DOCKER_COMMANDS = 3;
 const DEFAULT_DOCKER_IMAGE = 'nikolaik/python-nodejs:python3.12-nodejs22-slim';
 const DOCKER_IMAGES_BY_TYPE = {
   node: 'node:22-slim',
@@ -71,6 +72,10 @@ const DOCKER_IMAGES_BY_TYPE = {
 } as const;
 /** Docker 沙箱中唯一允许读写用户工作区文件的真实目录。 */
 export const DOCKER_SANDBOX_WORKDIR = '/workspace';
+/** 跨运行保留技能凭证的 Docker 命名卷，不映射到宿主工作区。 */
+const SKILL_ENV_VOLUME_NAME = 'culclaw-skill-env';
+const SKILL_ENV_DIRECTORY = '/run/culclaw/skill-env';
+const SKILL_ENV_HELPER_DIRECTORY = '/tmp/culclaw-bin';
 const GLOBAL_SANDBOX_ID = 'global';
 const GLOBAL_CONTAINER_NAME = 'culclaw-sandbox-global';
 
@@ -85,6 +90,8 @@ export type DockerSandboxBackendOptions = {
   sandboxId?: string;
   workspaceName?: string;
   workspaceId?: string;
+  signal?: AbortSignal;
+  maxConcurrentDockerCommands?: number;
 };
 
 type UploadCandidate = {
@@ -104,6 +111,73 @@ type GlobalSandboxPoolEntry = {
   backendPromise: Promise<DockerSandboxBackend>;
   executionTail: Promise<void>;
 };
+
+type DockerCommandQueueItem<T> = {
+  operation: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+};
+
+/**
+ * 限制 Docker CLI 的总并发，而非限制 Agent 任务并发。
+ * 排队中的任务仍可继续接收模型流；只有真正需要执行 Docker 命令时才等待容量。
+ */
+class DockerCommandScheduler {
+  private maxConcurrent = DEFAULT_MAX_CONCURRENT_DOCKER_COMMANDS;
+  private activeCount = 0;
+  private readonly queue: DockerCommandQueueItem<unknown>[] = [];
+
+  configure(maxConcurrent: number): void {
+    this.maxConcurrent = maxConcurrent;
+    this.drain();
+  }
+
+  execute<T>(operation: () => Promise<T>, signal?: AbortSignal, highPriority = false): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError());
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      const item: DockerCommandQueueItem<T> = { operation, resolve, reject, signal };
+      item.abortListener = () => {
+        const index = this.queue.indexOf(item as DockerCommandQueueItem<unknown>);
+        if (index >= 0) {
+          this.queue.splice(index, 1);
+          reject(createAbortError());
+        }
+      };
+      signal?.addEventListener('abort', item.abortListener, { once: true });
+      if (highPriority) {
+        this.queue.unshift(item as DockerCommandQueueItem<unknown>);
+      } else {
+        this.queue.push(item as DockerCommandQueueItem<unknown>);
+      }
+      this.drain();
+    });
+  }
+
+  private drain(): void {
+    while (this.activeCount < this.maxConcurrent && this.queue.length > 0) {
+      const item = this.queue.shift()!;
+      item.signal?.removeEventListener('abort', item.abortListener!);
+      this.activeCount += 1;
+      void item.operation()
+        .then(item.resolve, item.reject)
+        .finally(() => {
+          this.activeCount -= 1;
+          this.drain();
+        });
+    }
+  }
+}
+
+function createAbortError(): Error {
+  const error = new Error('Docker 命令已取消。');
+  error.name = 'AbortError';
+  return error;
+}
 
 function parseDockerImageType(value: string | undefined): DockerImageType | undefined {
   const imageType = value?.trim().toLowerCase();
@@ -151,11 +225,16 @@ export class DockerSandboxBackend extends BaseSandbox {
   private static globalSandboxEntry: GlobalSandboxPoolEntry | undefined;
   /** 正在关闭的全局沙箱，避免关闭和重新获取交错。 */
   private static pendingGlobalSandboxClose: Promise<void> | undefined;
+  /** 正在运行的独立沙箱，会在应用退出时一并清理。 */
+  private static readonly runSandboxBackends = new Set<DockerSandboxBackend>();
+  /** 全部沙箱共享同一个 Docker CLI 并发调度器。 */
+  private static readonly commandScheduler = new DockerCommandScheduler();
 
   private readonly timeoutMs: number;
   private readonly maxOutputBytes: number;
   private readonly maxTransferBytes: number;
   private readonly dockerImage: string;
+  private readonly signal?: AbortSignal;
   private readonly containerName: string;
   private containerWorkdir = DOCKER_SANDBOX_WORKDIR;
   private workspaceName?: string;
@@ -173,10 +252,18 @@ export class DockerSandboxBackend extends BaseSandbox {
     this.maxOutputBytes = validatePositiveNumber(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes');
     this.maxTransferBytes = validatePositiveNumber(options.maxTransferBytes ?? DEFAULT_MAX_TRANSFER_BYTES, 'maxTransferBytes');
     this.dockerImage = resolveDockerImage(options.dockerImageType, options.dockerImage);
+    this.signal = options.signal;
+    DockerSandboxBackend.commandScheduler.configure(
+      validatePositiveNumber(
+        options.maxConcurrentDockerCommands ?? DEFAULT_MAX_CONCURRENT_DOCKER_COMMANDS,
+        'maxConcurrentDockerCommands',
+      ),
+    );
     this.id = options.sandboxId ?? 'global-' + randomUUID();
     this.containerName = this.id === GLOBAL_SANDBOX_ID
       ? GLOBAL_CONTAINER_NAME
-      : 'culclaw-sandbox-' + randomUUID();
+      // 运行 ID 已唯一，使用稳定名称以便创建命令中止后仍能定位并清理容器。
+      : 'culclaw-sandbox-' + this.id;
     if (options.workspaceName) {
       this.setWorkspaceName(options.workspaceName, options.workspaceId);
     }
@@ -231,6 +318,42 @@ export class DockerSandboxBackend extends BaseSandbox {
     }
   }
 
+  /**
+   * 为单次运行创建独立 Docker 会话，避免不同任务因共享工作目录和全局租约相互阻塞。
+   */
+  static async createRunSandbox(
+    runId: string,
+    workspaceName: string,
+    workspaceId?: string,
+    signal?: AbortSignal,
+  ) {
+    const sandboxId = 'run-' + createHash('sha256').update(runId).digest('hex').slice(0, 16);
+    const backend = await DockerSandboxBackend.fromEnvironment(undefined, process.env, {
+      sandboxId,
+      workspaceName,
+      workspaceId,
+      signal,
+    });
+
+    try {
+      await backend.start();
+      DockerSandboxBackend.runSandboxBackends.add(backend);
+      let released = false;
+      return {
+        backend,
+        release: async () => {
+          if (released) return;
+          released = true;
+          DockerSandboxBackend.runSandboxBackends.delete(backend);
+          await backend.close();
+        },
+      };
+    } catch (error) {
+      await backend.close();
+      throw error;
+    }
+  }
+
   /** 预热全局沙箱，确保调用方返回时容器已完成创建。 */
   static async prewarmGlobalSandbox(): Promise<void> {
     const lease = await DockerSandboxBackend.acquireGlobalSandbox();
@@ -252,13 +375,22 @@ export class DockerSandboxBackend extends BaseSandbox {
 
   /** 应用退出时等待运行中的租约结束，再停止唯一的本地 Docker 容器以供下次启动复用。 */
   static async closeGlobalSandbox(): Promise<void> {
+    const closeRunSandboxes = async () => {
+      const backends = Array.from(DockerSandboxBackend.runSandboxBackends);
+      DockerSandboxBackend.runSandboxBackends.clear();
+      await Promise.all(backends.map(backend => backend.close().catch(() => undefined)));
+    };
+
     if (DockerSandboxBackend.pendingGlobalSandboxClose) {
-      await DockerSandboxBackend.pendingGlobalSandboxClose;
+      await Promise.all([DockerSandboxBackend.pendingGlobalSandboxClose, closeRunSandboxes()]);
       return;
     }
 
     const entry = DockerSandboxBackend.globalSandboxEntry;
-    if (!entry) return;
+    if (!entry) {
+      await closeRunSandboxes();
+      return;
+    }
 
     DockerSandboxBackend.globalSandboxEntry = undefined;
     let closePromise: Promise<void>;
@@ -268,14 +400,14 @@ export class DockerSandboxBackend extends BaseSandbox {
       }
     });
     DockerSandboxBackend.pendingGlobalSandboxClose = closePromise;
-    await closePromise;
+    await Promise.all([closePromise, closeRunSandboxes()]);
   }
 
   /** 从 culclaw.ini 或环境变量读取本地 Docker 配置。 */
   static async fromEnvironment(
     iniPath?: string,
     environment: Record<string, string | undefined> = process.env,
-    options: Pick<DockerSandboxBackendOptions, 'sandboxId'> = {},
+    options: Pick<DockerSandboxBackendOptions, 'sandboxId' | 'workspaceName' | 'workspaceId' | 'signal'> = {},
   ): Promise<DockerSandboxBackend> {
     const iniConfig = await readSandboxIni(iniPath);
     const getConf = (key: string): string | undefined => environment[key]?.trim() || iniConfig[key]?.trim();
@@ -296,9 +428,17 @@ export class DockerSandboxBackend extends BaseSandbox {
         DEFAULT_MAX_TRANSFER_BYTES,
         'SANDBOX_DOCKER_MAX_TRANSFER_BYTES',
       ),
+      maxConcurrentDockerCommands: parseEnvironmentNumber(
+        getConf('SANDBOX_DOCKER_MAX_CONCURRENT_COMMANDS'),
+        DEFAULT_MAX_CONCURRENT_DOCKER_COMMANDS,
+        'SANDBOX_DOCKER_MAX_CONCURRENT_COMMANDS',
+      ),
       dockerImage: getConf('SANDBOX_DOCKER_IMAGE') || undefined,
       dockerImageType: parseDockerImageType(getConf('SANDBOX_DOCKER_IMAGE_TYPE')),
       sandboxId: options.sandboxId,
+      workspaceName: options.workspaceName,
+      workspaceId: options.workspaceId,
+      signal: options.signal,
     });
   }
 
@@ -517,12 +657,16 @@ export class DockerSandboxBackend extends BaseSandbox {
 
     try {
       await this.containerReadyPromise?.catch(() => undefined);
-      if (this.containerId) {
+      const containerId = this.containerId ?? (this.id === GLOBAL_SANDBOX_ID
+        ? undefined
+        : await this.findContainerId(true, true).catch(() => undefined));
+      if (containerId) {
         const shouldReuseContainer = this.id === GLOBAL_SANDBOX_ID;
         const result = await this.runDocker(
-          shouldReuseContainer ? ['stop', this.containerId] : ['rm', '-f', this.containerId],
+          shouldReuseContainer ? ['stop', containerId] : ['rm', '-f', containerId],
           undefined,
           this.maxOutputBytes,
+          true,
           true,
         );
         if (result.exitCode !== 0) {
@@ -705,10 +849,12 @@ export class DockerSandboxBackend extends BaseSandbox {
       this.containerName,
       '--label',
       'culclaw.sandbox.id=' + this.id,
+      '--mount',
+      'type=volume,src=' + SKILL_ENV_VOLUME_NAME + ',dst=' + SKILL_ENV_DIRECTORY,
       this.dockerImage,
       'sh',
       '-lc',
-      'mkdir -p ' + shellQuote(this.containerWorkdir) + ' && while :; do sleep 3600; done',
+      this.createContainerBootstrapScript(),
     ];
 
     const result = await this.runDocker(command);
@@ -746,13 +892,13 @@ export class DockerSandboxBackend extends BaseSandbox {
   }
 
   /** 按固定容器名查询容器，避免仅凭历史容器 ID 产生重复容器。 */
-  private async findContainerId(includeStopped: boolean): Promise<string | undefined> {
+  private async findContainerId(includeStopped: boolean, ignoreAbort = false): Promise<string | undefined> {
     const result = await this.runDocker([
       'ps',
       includeStopped ? '-aq' : '-q',
       '--filter',
       'name=^/' + this.containerName + '$',
-    ]);
+    ], undefined, this.maxOutputBytes, false, ignoreAbort);
     if (result.exitCode !== 0) {
       throw new Error(this.formatCommandFailure(result, '查询 Docker 容器'));
     }
@@ -766,8 +912,13 @@ export class DockerSandboxBackend extends BaseSandbox {
     input?: InputWriter,
     maxOutputBytes = this.maxOutputBytes,
     allowClosed = false,
+    ignoreAbort = false,
   ): Promise<CommandResult> {
-    return this.executor.runDocker(args, input, maxOutputBytes, allowClosed);
+    return DockerSandboxBackend.commandScheduler.execute(
+      () => this.executor.runDocker(args, input, maxOutputBytes, allowClosed, ignoreAbort ? undefined : this.signal),
+      ignoreAbort ? undefined : this.signal,
+      ignoreAbort,
+    );
   }
 
   private buildDockerExecArgs(command: string, interactive = false): string[] {
@@ -787,8 +938,48 @@ export class DockerSandboxBackend extends BaseSandbox {
       this.containerId,
       'sh',
       '-lc',
-      command,
+      this.loadPersistentSkillEnvironment(command),
     ];
+  }
+
+  /** 初始化写入受控凭证的辅助命令，凭证文件由 Docker 命名卷持久化。 */
+  private createContainerBootstrapScript(): string {
+    return [
+      'mkdir -p ' + shellQuote(this.containerWorkdir) + ' ' + shellQuote(SKILL_ENV_DIRECTORY) + ' ' + shellQuote(SKILL_ENV_HELPER_DIRECTORY),
+      "cat > " + shellQuote(SKILL_ENV_HELPER_DIRECTORY + '/culclaw-set-env') + " <<'EOF'",
+      '#!/bin/sh',
+      'set -eu',
+      'if [ "$#" -ne 2 ]; then echo "usage: culclaw-set-env NAME VALUE" >&2; exit 2; fi',
+      'key="$1"',
+      'value="$2"',
+      'case "$key" in "" | [0-9]* | *[!A-Za-z0-9_]*) echo "invalid environment variable name" >&2; exit 2 ;; esac',
+      "if printf '%s' \"$value\" | grep -q '[[:cntrl:]]'; then echo \"environment variable value contains control characters\" >&2; exit 2; fi",
+      'directory=' + shellQuote(SKILL_ENV_DIRECTORY),
+      'mkdir -p "$directory"',
+      'umask 077',
+      'temporary="$directory/.$key.$$.tmp"',
+      'target="$directory/$key.env"',
+      'printf "export %s=\'" "$key" > "$temporary"',
+      "printf '%s' \"$value\" | sed \"s/'/'\\\\''/g\" >> \"$temporary\"",
+      'printf "\'\\n" >> "$temporary"',
+      'chmod 600 "$temporary"',
+      'mv -f "$temporary" "$target"',
+      'EOF',
+      'chmod 700 ' + shellQuote(SKILL_ENV_HELPER_DIRECTORY + '/culclaw-set-env'),
+      'while :; do sleep 3600; done',
+    ].join('\n');
+  }
+
+  /** 每个 Docker 命令开始前加载持久化凭证，使新容器也可直接复用配置。 */
+  private loadPersistentSkillEnvironment(command: string): string {
+    return [
+      'export PATH=' + shellQuote(SKILL_ENV_HELPER_DIRECTORY) + ':$PATH',
+      'for env_file in ' + shellQuote(SKILL_ENV_DIRECTORY) + '/*.env; do',
+      '  [ -f "$env_file" ] || continue',
+      '  . "$env_file"',
+      'done',
+      command,
+    ].join('\n');
   }
 
   private createUploadScript(): string {

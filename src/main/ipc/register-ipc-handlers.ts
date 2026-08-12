@@ -224,7 +224,8 @@ export function registerIpcHandlers(appService: AppService) {
 
   ipcMain.handle(IPC_CHANNELS.workspacesRemove, async (_event, workspaceId: string) => {
     try {
-      await appService.removeWorkspace(workspaceId)
+      // 标记删除后再中止关联运行，避免运行收尾时将产物回写。
+      await appService.removeWorkspace(workspaceId, () => agentRuntime.cancelWorkspaceRuns(workspaceId))
       return ok(undefined)
     } catch (error) {
       return fail(error)

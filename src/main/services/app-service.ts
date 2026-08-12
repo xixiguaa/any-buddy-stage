@@ -9,7 +9,6 @@ import { AppStateRepository } from '../repositories/app-state-repository.js'
 import { createDefaultState } from '../state/default-state.js'
 import { DEFAULT_EXPERTS, DEFAULT_EXPERT_TEAMS } from '../../renderer/data/experts.js'
 import { OpenAIModelService } from './openai-model-service.js'
-import { DockerSandboxBackend } from './docker-sandbox-backend.js'
 import { ChatOpenAI } from '@langchain/openai'
 import type {
   AgentEvent,
@@ -144,6 +143,8 @@ export class AppService {
 
   /** 内存中的全局完整应用状态缓存 */
   private state: AppState | null = null
+  /** 正在删除的工作区不能再接收运行时产物回写。 */
+  private readonly workspaceRemovalPendingIds = new Set<string>()
 
   constructor(
     private readonly repository: AppStateRepository,
@@ -1094,6 +1095,12 @@ ${initialPrompt.slice(0, 1000)}
       })
   }
 
+  /** 判断工作区是否仍可接收运行时产物写回。 */
+  isWorkspaceActive(workspaceId: string): boolean {
+    return !this.workspaceRemovalPendingIds.has(workspaceId)
+      && this.snapshot.workspaces.some(workspace => workspace.id === workspaceId && !workspace.isArchived)
+  }
+
   /** 创建新的本地项目工作区 */
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
     const workspace = await this.mutate(state => {
@@ -1131,21 +1138,26 @@ ${initialPrompt.slice(0, 1000)}
   }
 
   /**
-   * 归档工作区并删除 Docker 中同名的临时目录。
+   * 归档工作区；运行级 Docker 容器会在任务结束时自行删除，无需额外清理全局容器目录。
    * 宿主机工作区和任务关联均保留，以便后续从历史任务继续对话时恢复。
    */
-  async removeWorkspace(workspaceId: string): Promise<void> {
+  async removeWorkspace(workspaceId: string, beforeRemove?: () => Promise<void>): Promise<void> {
     const workspace = this.snapshot.workspaces.find(item => item.id === workspaceId)
     if (!workspace || workspace.isArchived) return
 
-    await DockerSandboxBackend.removeGlobalWorkspaceDirectory(workspace.name, workspace.id)
-    await this.mutate(state => {
-      const target = state.workspaces.find(item => item.id === workspaceId)
-      if (target) {
-        target.isArchived = true
-        target.updatedAt = nowIso()
-      }
-    })
+    this.workspaceRemovalPendingIds.add(workspaceId)
+    try {
+      await beforeRemove?.()
+      await this.mutate(state => {
+        const target = state.workspaces.find(item => item.id === workspaceId)
+        if (target) {
+          target.isArchived = true
+          target.updatedAt = nowIso()
+        }
+      })
+    } finally {
+      this.workspaceRemovalPendingIds.delete(workspaceId)
+    }
   }
 
   /** 恢复任务绑定的归档主工作区记录；Docker 目录会在下一轮沙箱运行时按名称自动创建。 */
