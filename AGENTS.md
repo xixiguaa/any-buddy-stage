@@ -2,7 +2,7 @@
 
 ## 应用概览
 
-- CulClaw 是一个 Electron Forge + Vite 桌面应用，使用 TypeScript、React 19、Ant Design、Zustand、SQLite、LangChain 和 DeepAgents。
+- AnyBuddy 是一个 Electron Forge + Vite 桌面应用，使用 TypeScript、React 19、Ant Design、Zustand、SQLite、LangChain 和 DeepAgents。
 - 主进程负责运行时、文件系统、SQLite、模型与工具调用；预加载层提供受控桥接；渲染进程负责 React 界面和状态管理。
 - 实际入口文件为 `src/main/index.ts`、`src/preload/index.ts` 和 `src/renderer/main.tsx`。Electron Forge 由 `forge.config.ts` 和 `vite.*.config.ts` 配置。
 
@@ -35,7 +35,7 @@
 
 ## 跨进程边界
 
-- 渲染进程代码必须通过 `window.culclaw` (或 `window.anybuddy` 兼容层) 调用主进程能力；不要在 `src/renderer/` 中导入 Electron、Node API 或直接访问文件系统。
+- 渲染进程代码必须通过 `window.anybuddy` (或 `window.culclaw` 兼容层) 调用主进程能力；不要在 `src/renderer/` 中导入 Electron、Node API 或直接访问文件系统。
 - 新增或修改 IPC 时，同时更新四处：`src/shared/ipc.ts`、`src/preload/bridge.ts`、`src/main/ipc/register-ipc-handlers.ts` 和 `src/renderer/api/clients.ts`。
 - 共享载荷与领域类型位于 `src/shared/types.ts`。在接入界面或服务前，先在共享层明确 IPC 契约。
 - 新增运行时订阅时，注意释放 `ipcRenderer` 监听器，保持 `subscribeActive` 与 `subscribeTask` 返回取消订阅函数的现有模式。
@@ -46,9 +46,9 @@
 - Agent 运行时由 `src/main/services/agent-runtime-service.ts` 协调，DeepAgents 执行位于 `src/main/services/deepagent-executor.ts`，项目工具在 `src/main/services/tool-registry-service.ts` 中注册。
 - 流式助手输出应保持暂态，直至运行完成。最终助手消息由 `AppService` 的 `completeRuntimeRun` 持久化。
 - 运行时补丁通过 `agent-run:task-changed:<taskId>` 到达渲染进程，并在 `src/renderer/stores/app-store.ts` 中合并；不要为每个流式 token 重建 `messages`。
-- 主状态存储在 Electron `app.getPath('userData')` 下的 `culclaw.db`，不在仓库中。
-- 模型和 MCP 配置会通过 `AppService` 镜像到 `~/.culclaw` 下的文件；请通过主进程服务 API 访问。
-- 全局技能目录为 `~/.culclaw/skills/<skillId>/SKILL.md`。DeepAgents 会在执行前将选中的技能镜像到当前后端的 `.system-skill-cache`。
+- 主状态存储在 Electron `app.getPath('userData')` 下的 `anybuddy.db`，不在仓库中。
+- 模型和 MCP 配置会通过 `AppService` 镜像到 `~/.anybuddy` 下的文件；请通过主进程服务 API 访问。
+- 全局技能目录为 `~/.anybuddy/skills/<skillId>/SKILL.md`。DeepAgents 会在执行前将选中的技能镜像到当前后端的 `.system-skill-cache`。
 
 ## 界面与状态
 

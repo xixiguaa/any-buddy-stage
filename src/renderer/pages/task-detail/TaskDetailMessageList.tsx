@@ -590,7 +590,7 @@ const MessageItem = memo(function MessageItem({
   }
 
   const subagentName = typeof message.metadata?.subagentName === 'string' ? message.metadata.subagentName : undefined
-  const expertName = String(message.metadata?.expertTeamName ?? message.metadata?.expertName ?? 'CulClaw')
+  const expertName = String(message.metadata?.expertTeamName ?? message.metadata?.expertName ?? 'AnyBuddy')
   const senderTitle = isUser
     ? '用户'
     : isAssistant
@@ -828,7 +828,7 @@ export default function TaskDetailMessageList() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             <span style={{ fontSize: '12px', fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {activeExpertTeam?.name ?? activeExpert?.name ?? 'CulClaw'} 正在执行中
+              {activeExpertTeam?.name ?? activeExpert?.name ?? 'AnyBuddy'} 正在执行中
             </span>
             <span style={{ fontSize: '11px', color: '#64748b' }}>
               {(() => {

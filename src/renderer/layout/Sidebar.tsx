@@ -21,7 +21,6 @@ import {
   SlidersOutlined
 } from '@ant-design/icons'
 import { Sparkles, ShieldAlert, Award, MoreHorizontal } from 'lucide-react'
-import logoImg from '../assets/img/logo.png'
 import { useAppStore } from '../stores/app-store.js'
 import { createCulclawClients } from '../api/clients.js'
 import { rendererApi } from '../api/bridge.js'
@@ -418,7 +417,6 @@ export default function Sidebar() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 {/* 使用项目 logo 图片 */}
                 <img
-                  src={logoImg}
                   alt="logo"
                   style={{
                     width: '130px',

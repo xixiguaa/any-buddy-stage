@@ -205,7 +205,7 @@ export default function TaskComposer({
 
   // 自动检测并载入灵感广场的“创作同款” Prompt
   useEffect(() => {
-    const raw = sessionStorage.getItem('cclaw-inspiration-create-same-prompt')
+    const raw = sessionStorage.getItem('anybuddy-inspiration-create-same-prompt') || sessionStorage.getItem('cclaw-inspiration-create-same-prompt')
     if (raw) {
       try {
         const parsed = JSON.parse(raw)
@@ -216,6 +216,7 @@ export default function TaskComposer({
           }
           hasAppliedInspirationRef.current = true
           /* 消费灵感提示词后清理 key */
+          sessionStorage.removeItem('anybuddy-inspiration-create-same-prompt')
           sessionStorage.removeItem('cclaw-inspiration-create-same-prompt')
         }
       } catch {

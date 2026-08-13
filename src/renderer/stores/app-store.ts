@@ -126,7 +126,8 @@ let selectedTaskPatchRaf: number | null = null
 let selectedTaskPatchQueue: TaskRuntimePayload[] = []
 let selectedTaskPatchTaskId: string | null = null
 let selectedTaskPatchSubscriptionVersion = 0
-const RECENT_EXPERTS_STORAGE_KEY = 'culclaw.recentExperts'
+const RECENT_EXPERTS_STORAGE_KEY = 'anybuddy.recentExperts'
+const LEGACY_RECENT_EXPERTS_STORAGE_KEY = 'culclaw.recentExperts'
 const RECENT_EXPERTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000
 const STREAM_BATCH_FALLBACK_MS = 80
 
@@ -136,7 +137,7 @@ function parseRecentExpertsFromStorage(): ExpertPreset[] {
   }
 
   try {
-    const raw = window.localStorage.getItem(RECENT_EXPERTS_STORAGE_KEY)
+    const raw = window.localStorage.getItem(RECENT_EXPERTS_STORAGE_KEY) || window.localStorage.getItem(LEGACY_RECENT_EXPERTS_STORAGE_KEY)
     if (!raw) {
       return []
     }

@@ -162,7 +162,7 @@ export default function TaskDetailRuntimeSidebar() {
           <div>
             <div style={{ fontSize: '14px', fontWeight: 600, color: '#0f172a' }}>{activeExpertTeam?.name ?? activeExpert?.name ?? '通用助手'}</div>
             <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px', lineHeight: 1.6 }}>
-              {activeExpertTeam?.description ?? activeExpert?.description ?? '当前未指定专家，使用默认 CulClaw persona。'}
+              {activeExpertTeam?.description ?? activeExpert?.description ?? '当前未指定专家，使用默认 AnyBuddy persona。'}
             </div>
           </div>
           {availableExperts.length > 0 && (

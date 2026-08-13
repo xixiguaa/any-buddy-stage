@@ -63,9 +63,10 @@ AnyBuddy 将 Agent 的工作方式与能力边界分开配置，避免将产品�
 
 容器需要提供 POSIX shell、`base64`、`dirname`、`mkdir` 和 `tr` 等基础命令。默认不限制本地 Docker 命令执行时长；可通过 `SANDBOX_DOCKER_IMAGE` 指定镜像，通过 `SANDBOX_DOCKER_TIMEOUT_MS` 设置正数毫秒超时或设置为 `0` 关闭超时。`SANDBOX_DOCKER_MAX_OUTPUT_BYTES` 和 `SANDBOX_DOCKER_MAX_TRANSFER_BYTES` 分别控制命令输出上限和文件传输上限。
 
-### culclaw.ini 配置
+### anybuddy.ini 配置
 
-桌面应用启动时会读取 `culclaw.ini`：开发环境读取项目根目录，打包后读取应用 `.exe` 同级目录。可参考 `culclaw.ini.example` 配置 `[docker]`；INI 中的本地 Docker 配置优先于同名 `SANDBOX_DOCKER_*` 环境变量。
+桌面应用启动时会读取 `anybuddy.ini`：开发环境读取项目根目录，打包后读取应用 `.exe` 同级目录。可参考 `anybuddy.ini.example` 配置 `[docker]`；INI 中的本地 Docker 配置优先于同名 `SANDBOX_DOCKER_*` 环境变量。
+
 ### 安装依赖
 
 ```bash

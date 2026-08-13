@@ -9,7 +9,7 @@ import VideoPreviewModal from './components/VideoPreviewModal.js'
 import InspirationDetailModal from './components/InspirationDetailModal.js'
 
 // 创作同款存储 Key 常量
-const INSPIRATION_CREATE_SAME_STORAGE_KEY = 'cclaw-inspiration-create-same-prompt'
+const INSPIRATION_CREATE_SAME_STORAGE_KEY = 'anybuddy-inspiration-create-same-prompt'
 
 export default function InspirationPage() {
   const navigate = useNavigate()

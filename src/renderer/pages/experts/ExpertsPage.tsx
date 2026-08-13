@@ -433,7 +433,7 @@ export default function ExpertsPage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
               <div style={{ fontSize: '15px', fontWeight: 700, color: '#334155' }}>本地技能包</div>
-              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 ~/.culclaw/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: 2 }}>技能来自本地 ~/.anybuddy/skills 目录，目录名即为技能名，含 SKILL.md 才被识别。</div>
             </div>
             <Space>
               <Input
