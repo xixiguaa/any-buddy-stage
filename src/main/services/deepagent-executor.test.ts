@@ -23,6 +23,10 @@ test('video generation requires a selected video skill and an execution intent',
 test('video generation evidence ignores preparation tools and accepts platform task ids', () => {
   assert.equal(isSuccessfulVideoGenerationResult('read_file', 'jimeng skill instructions'), false);
   assert.equal(isSuccessfulVideoGenerationResult('execute', 'HTTP 200\n{"id":"cgt-20260811143206-2xwjz"}'), true);
+  assert.equal(isSuccessfulVideoGenerationResult('execute', '{"data":{"task_id":"vid-task-1234"}}'), true);
+  assert.equal(isSuccessfulVideoGenerationResult('shell', 'Job ID: generation-20260811-0001'), true);
+  assert.equal(isSuccessfulVideoGenerationResult('command', '{"result":{"videoUrl":"https://cdn.example.test/output.webm"}}'), true);
+  assert.equal(isSuccessfulVideoGenerationResult('execute', '{"task_id":"abc"}'), false);
   assert.equal(isSuccessfulVideoGenerationResult('execute', 'HTTP 401\nUnauthorized'), false);
   assert.equal(isSuccessfulVideoGenerationResult('jimeng_video_generate', '{"status":"running"}'), true);
 });

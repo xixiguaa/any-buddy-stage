@@ -814,7 +814,7 @@ export function isSuccessfulVideoGenerationResult(toolName: string, content: str
   if (!/(?:execute|command|shell|bash|powershell|cmd)/i.test(normalizedToolName)) {
     return false;
   }
-  return /(?:\bcgt-[a-z0-9-]+\b|https?:\/\/\S+\.mp4(?:\?\S*)?|["']video_url["']\s*:)/i.test(normalizedContent);
+  return /(?:\bcgt-[a-z0-9-]+\b|https?:\/\/\S+\.(?:mp4|webm|mov)(?:\?\S*)?|["']?(?:video(?:[_ -]?url)|videoUrl)["']?\s*[:=]\s*["']?https?:\/\/\S+|["']?(?:task(?:[_ -]?id)|taskId|job(?:[_ -]?id)|jobId|request(?:[_ -]?id)|requestId|operation(?:[_ -]?id)|operationId)["']?\s*(?::|=|\s)\s*["']?[a-z0-9][a-z0-9._:-]{3,})/i.test(normalizedContent);
 }
 
 /**
